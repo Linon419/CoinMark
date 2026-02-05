@@ -1,0 +1,17 @@
+.env
+**/.venv/
+**/__pycache__/
+**/.pytest_cache/
+**/*.pyc
+
+apps/web/node_modules/
+apps/web/dist/
+
+*.db
+*_smoke.db
+_api.db
+
+
+.worktrees/
+
+.worktrees/
