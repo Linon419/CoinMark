@@ -1,0 +1,18 @@
+fastapi==0.115.8
+uvicorn[standard]==0.34.0
+httpx==0.28.1
+websockets==14.2
+pydantic==2.10.6
+pydantic-settings==2.8.0
+SQLAlchemy==2.0.38
+asyncpg==0.30.0
+aiosqlite==0.20.0
+redis==5.2.1
+orjson==3.10.15
+prometheus-client==0.21.1
+aiogram==3.22.0
+
+# 测试（可选）
+pytest==8.3.4
+pytest-asyncio==0.25.3
+aiokafka==0.10.0
