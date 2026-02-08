@@ -4,9 +4,12 @@ import asyncio
 import json
 import logging
 import time
+from contextlib import suppress
 from decimal import Decimal
 
-from aiokafka import AIOKafkaConsumer
+import nats
+from nats.js.api import AckPolicy, ConsumerConfig
+from nats.errors import TimeoutError as NATSTimeoutError
 from sqlalchemy import case, func
 
 from coinmark_api.config import settings
@@ -16,7 +19,7 @@ from coinmark_api.ingest.aggregator import TradeAggregator
 from coinmark_api.ingest.orderbook_aggregator import OrderbookAggregator
 from coinmark_api.models import Base, OrderbookFeatureBucket, TradeBucket
 from coinmark_api.services.binance.rest import get_pairs, get_ticker_24h_all
-from coinmark_api.ingest.ws import build_depth_features, reset_runtime_counters, run_depth_ws_ingest, run_trade_ws_ingest
+from coinmark_api.ingest.ws import build_depth_features, reset_runtime_counters
 from coinmark_api.services.bot.funding import refresh_funding_rate_snapshots
 from coinmark_api.services.bot.oi_marketcap import refresh_market_caps_from_binance_bapi, refresh_open_interest_snapshots
 from coinmark_api.migrations import migrate
@@ -39,164 +42,194 @@ RUNTIME_STATS = {
     "trade_flush_batches": 0,
     "orderbook_flush_rows": 0,
     "orderbook_flush_batches": 0,
-    "kafka_trade_msg": 0,
-    "kafka_depth_msg": 0,
+    "nats_trade_msg": 0,
+    "nats_depth_msg": 0,
 }
 
-def _parse_stream_source(value: str) -> str:
-    v = str(value or "ws").strip().lower()
-    if v not in {"ws", "kafka"}:
-        return "ws"
-    return v
-
-
-async def _consume_trade_from_kafka(market: str, trade_aggregator: TradeAggregator, orderbook_aggregator: OrderbookAggregator) -> None:
-    brokers = [s.strip() for s in str(settings.ingest_kafka_brokers or "").split(",") if s.strip()]
-    if not brokers:
-        raise RuntimeError("INGEST_KAFKA_BROKERS is empty")
-
-    topic = str(settings.ingest_kafka_trade_topic or "").strip()
-    if not topic:
-        raise RuntimeError("INGEST_KAFKA_TRADE_TOPIC is empty")
-
-    group_id = f"{settings.ingest_kafka_group_id_prefix}-{market}"
-    auto_offset_reset = str(settings.ingest_kafka_auto_offset_reset or "latest").strip().lower()
-    if auto_offset_reset not in {"latest", "earliest"}:
-        auto_offset_reset = "latest"
-
-    consumer = AIOKafkaConsumer(
-        topic,
-        bootstrap_servers=brokers,
-        group_id=group_id,
-        enable_auto_commit=True,
-        auto_offset_reset=auto_offset_reset,
-        value_deserializer=lambda b: b,
+def _consumer_cfg(consumer_name: str) -> ConsumerConfig:
+    return ConsumerConfig(
+        name=consumer_name,
+        durable_name=consumer_name,
+        ack_policy=AckPolicy.EXPLICIT,
+        ack_wait=30.0,
+        max_deliver=10,
     )
-    await consumer.start()
+
+
+async def _consume_trade_from_nats(market: str, trade_aggregator: TradeAggregator, orderbook_aggregator: OrderbookAggregator) -> None:
+    nats_url = str(settings.ingest_nats_url or "").strip()
+    stream = str(settings.ingest_nats_stream_raw or "").strip()
+    subject = str(settings.ingest_nats_subject_trade or "").strip()
+    consumer_name = f"{settings.ingest_nats_consumer_prefix}-{market}-trade"
+    if not nats_url:
+        raise RuntimeError("INGEST_NATS_URL is empty")
+    if not stream:
+        raise RuntimeError("INGEST_NATS_STREAM_RAW is empty")
+    if not subject:
+        raise RuntimeError("INGEST_NATS_SUBJECT_TRADE is empty")
+
+    nc = await nats.connect(nats_url, name=f"coinmark-ingest-{market}-trade")
+    js = nc.jetstream()
+    sub = await js.pull_subscribe(
+        subject,
+        stream=stream,
+        durable=consumer_name,
+        config=_consumer_cfg(consumer_name),
+    )
     logger.info(
-        "TradeKafka(%s) started brokers=%s topic=%s group=%s offset=%s",
+        "TradeNATS(%s) started url=%s stream=%s subject=%s consumer=%s",
         market,
-        brokers,
-        topic,
-        group_id,
-        auto_offset_reset,
+        nats_url,
+        stream,
+        subject,
+        consumer_name,
     )
+
     try:
-        async for msg in consumer:
+        while True:
             try:
-                payload = json.loads((msg.value or b"{}").decode("utf-8"))
-                if str(payload.get("market", "")).lower() != market:
-                    continue
-                symbol = str(payload.get("symbol") or "").upper()
-                if not symbol:
-                    continue
-                ts_ms = int(payload.get("trade_time_ms") or payload.get("event_time_ms") or 0)
-                if ts_ms <= 0:
-                    continue
-                price = Decimal(str(payload.get("price") or "0"))
-                qty = Decimal(str(payload.get("qty") or "0"))
-                if price <= 0 or qty <= 0:
-                    continue
-                notional = price * qty
-                is_buyer_maker = bool(payload.get("is_buyer_maker"))
-                if is_buyer_maker:
-                    taker_buy_notional = Decimal("0")
-                    taker_sell_notional = notional
-                else:
-                    taker_buy_notional = notional
-                    taker_sell_notional = Decimal("0")
-
-                await trade_aggregator.add_trade(
-                    market=market,
-                    symbol=symbol,
-                    ts_ms=ts_ms,
-                    price=price,
-                    taker_buy_notional=taker_buy_notional,
-                    taker_sell_notional=taker_sell_notional,
-                    quote_notional=notional,
-                    trade_count=1,
-                )
-                await orderbook_aggregator.add_trade(
-                    market=market,
-                    symbol=symbol,
-                    ts_ms=ts_ms,
-                    taker_buy_notional=taker_buy_notional,
-                    taker_sell_notional=taker_sell_notional,
-                )
-                RUNTIME_STATS["kafka_trade_msg"] += 1
-            except Exception:
+                messages = await sub.fetch(200, timeout=1)
+            except NATSTimeoutError:
                 continue
+            for msg in messages:
+                try:
+                    payload = json.loads((msg.data or b"{}").decode("utf-8"))
+                    if str(payload.get("market", "")).lower() != market:
+                        await msg.ack()
+                        continue
+                    symbol = str(payload.get("symbol") or "").upper()
+                    if not symbol:
+                        await msg.ack()
+                        continue
+                    ts_ms = int(payload.get("trade_time_ms") or payload.get("event_time_ms") or 0)
+                    if ts_ms <= 0:
+                        await msg.ack()
+                        continue
+                    price = Decimal(str(payload.get("price") or "0"))
+                    qty = Decimal(str(payload.get("qty") or "0"))
+                    if price <= 0 or qty <= 0:
+                        await msg.ack()
+                        continue
+                    notional = price * qty
+                    is_buyer_maker = bool(payload.get("is_buyer_maker"))
+                    if is_buyer_maker:
+                        taker_buy_notional = Decimal("0")
+                        taker_sell_notional = notional
+                    else:
+                        taker_buy_notional = notional
+                        taker_sell_notional = Decimal("0")
+
+                    await trade_aggregator.add_trade(
+                        market=market,
+                        symbol=symbol,
+                        ts_ms=ts_ms,
+                        price=price,
+                        taker_buy_notional=taker_buy_notional,
+                        taker_sell_notional=taker_sell_notional,
+                        quote_notional=notional,
+                        trade_count=1,
+                    )
+                    await orderbook_aggregator.add_trade(
+                        market=market,
+                        symbol=symbol,
+                        ts_ms=ts_ms,
+                        taker_buy_notional=taker_buy_notional,
+                        taker_sell_notional=taker_sell_notional,
+                    )
+                    await msg.ack()
+                    RUNTIME_STATS["nats_trade_msg"] += 1
+                except Exception:
+                    with suppress(Exception):
+                        await msg.nak()
+                    continue
     finally:
-        await consumer.stop()
+        with suppress(Exception):
+            await sub.unsubscribe()
+        await nc.drain()
+        await nc.close()
 
-async def _consume_depth_from_kafka(market: str, orderbook_aggregator: OrderbookAggregator) -> None:
-    brokers = [s.strip() for s in str(settings.ingest_kafka_brokers or "").split(",") if s.strip()]
-    if not brokers:
-        raise RuntimeError("INGEST_KAFKA_BROKERS is empty")
 
-    topic = str(settings.ingest_kafka_depth_topic or "").strip()
-    if not topic:
-        raise RuntimeError("INGEST_KAFKA_DEPTH_TOPIC is empty")
+async def _consume_depth_from_nats(market: str, orderbook_aggregator: OrderbookAggregator) -> None:
+    nats_url = str(settings.ingest_nats_url or "").strip()
+    stream = str(settings.ingest_nats_stream_raw or "").strip()
+    subject = str(settings.ingest_nats_subject_depth or "").strip()
+    consumer_name = f"{settings.ingest_nats_consumer_prefix}-{market}-depth"
+    if not nats_url:
+        raise RuntimeError("INGEST_NATS_URL is empty")
+    if not stream:
+        raise RuntimeError("INGEST_NATS_STREAM_RAW is empty")
+    if not subject:
+        raise RuntimeError("INGEST_NATS_SUBJECT_DEPTH is empty")
 
-    group_id = f"{settings.ingest_kafka_depth_group_id_prefix}-{market}"
-    auto_offset_reset = str(settings.ingest_kafka_auto_offset_reset or "latest").strip().lower()
-    if auto_offset_reset not in {"latest", "earliest"}:
-        auto_offset_reset = "latest"
-
-    consumer = AIOKafkaConsumer(
-        topic,
-        bootstrap_servers=brokers,
-        group_id=group_id,
-        enable_auto_commit=True,
-        auto_offset_reset=auto_offset_reset,
-        value_deserializer=lambda b: b,
+    nc = await nats.connect(nats_url, name=f"coinmark-ingest-{market}-depth")
+    js = nc.jetstream()
+    sub = await js.pull_subscribe(
+        subject,
+        stream=stream,
+        durable=consumer_name,
+        config=_consumer_cfg(consumer_name),
     )
-    await consumer.start()
     logger.info(
-        "DepthKafka(%s) started brokers=%s topic=%s group=%s offset=%s",
+        "DepthNATS(%s) started url=%s stream=%s subject=%s consumer=%s",
         market,
-        brokers,
-        topic,
-        group_id,
-        auto_offset_reset,
+        nats_url,
+        stream,
+        subject,
+        consumer_name,
     )
+
     try:
-        async for msg in consumer:
+        while True:
             try:
-                payload = json.loads((msg.value or b"{}").decode("utf-8"))
-                if str(payload.get("market", "")).lower() != market:
-                    continue
-
-                symbol = str(payload.get("symbol") or "").upper()
-                ts_ms = int(payload.get("event_time_ms") or 0)
-                if not symbol or ts_ms <= 0:
-                    continue
-
-                bids = payload.get("bids")
-                asks = payload.get("asks")
-                if not isinstance(bids, list) or not isinstance(asks, list):
-                    continue
-
-                features = build_depth_features({"b": bids, "a": asks})
-                if features is None:
-                    continue
-
-                spread_bps, depth_imbalance_l5, microprice_shift_bps, wall_pressure_l5, l1_depth_notional = features
-                await orderbook_aggregator.add_orderbook_sample(
-                    market=market,
-                    symbol=symbol,
-                    ts_ms=ts_ms,
-                    spread_bps=spread_bps,
-                    depth_imbalance_l5=depth_imbalance_l5,
-                    microprice_shift_bps=microprice_shift_bps,
-                    wall_pressure_l5=wall_pressure_l5,
-                    l1_depth_notional=l1_depth_notional,
-                )
-                RUNTIME_STATS["kafka_depth_msg"] += 1
-            except Exception:
+                messages = await sub.fetch(200, timeout=1)
+            except NATSTimeoutError:
                 continue
+            for msg in messages:
+                try:
+                    payload = json.loads((msg.data or b"{}").decode("utf-8"))
+                    if str(payload.get("market", "")).lower() != market:
+                        await msg.ack()
+                        continue
+
+                    symbol = str(payload.get("symbol") or "").upper()
+                    ts_ms = int(payload.get("event_time_ms") or 0)
+                    if not symbol or ts_ms <= 0:
+                        await msg.ack()
+                        continue
+
+                    bids = payload.get("bids")
+                    asks = payload.get("asks")
+                    if not isinstance(bids, list) or not isinstance(asks, list):
+                        await msg.ack()
+                        continue
+
+                    features = build_depth_features({"b": bids, "a": asks})
+                    if features is None:
+                        await msg.ack()
+                        continue
+
+                    spread_bps, depth_imbalance_l5, microprice_shift_bps, wall_pressure_l5, l1_depth_notional = features
+                    await orderbook_aggregator.add_orderbook_sample(
+                        market=market,
+                        symbol=symbol,
+                        ts_ms=ts_ms,
+                        spread_bps=spread_bps,
+                        depth_imbalance_l5=depth_imbalance_l5,
+                        microprice_shift_bps=microprice_shift_bps,
+                        wall_pressure_l5=wall_pressure_l5,
+                        l1_depth_notional=l1_depth_notional,
+                    )
+                    await msg.ack()
+                    RUNTIME_STATS["nats_depth_msg"] += 1
+                except Exception:
+                    with suppress(Exception):
+                        await msg.nak()
+                    continue
     finally:
-        await consumer.stop()
+        with suppress(Exception):
+            await sub.unsubscribe()
+        await nc.drain()
+        await nc.close()
 
 def _apply_symbol_limit(symbols: list[str]) -> list[str]:
     if settings.ingest_symbol_limit and settings.ingest_symbol_limit > 0:
@@ -370,8 +403,8 @@ async def _runtime_report_loop(aggregator: TradeAggregator, orderbook_aggregator
     while True:
         await asyncio.sleep(max(10, int(settings.ingest_runtime_report_interval_sec)))
         trade_msg_count, depth_msg_count = reset_runtime_counters()
-        trade_msg_count += int(RUNTIME_STATS["kafka_trade_msg"])
-        depth_msg_count += int(RUNTIME_STATS["kafka_depth_msg"])
+        trade_msg_count += int(RUNTIME_STATS["nats_trade_msg"])
+        depth_msg_count += int(RUNTIME_STATS["nats_depth_msg"])
 
         trade_bucket_count = len(getattr(aggregator, "_deltas", {}))
         orderbook_bucket_count = len(getattr(orderbook_aggregator, "_deltas", {}))
@@ -392,8 +425,8 @@ async def _runtime_report_loop(aggregator: TradeAggregator, orderbook_aggregator
         RUNTIME_STATS["trade_flush_batches"] = 0
         RUNTIME_STATS["orderbook_flush_rows"] = 0
         RUNTIME_STATS["orderbook_flush_batches"] = 0
-        RUNTIME_STATS["kafka_trade_msg"] = 0
-        RUNTIME_STATS["kafka_depth_msg"] = 0
+        RUNTIME_STATS["nats_trade_msg"] = 0
+        RUNTIME_STATS["nats_depth_msg"] = 0
 
 
 async def _funding_loop() -> None:
@@ -642,45 +675,26 @@ async def main() -> None:
 
     tasks = []
 
-    trade_source_spot = _parse_stream_source(settings.ingest_trade_source_spot)
-    trade_source_swap = _parse_stream_source(settings.ingest_trade_source_swap)
-    depth_source_spot = _parse_stream_source(settings.ingest_depth_source_spot)
-    depth_source_swap = _parse_stream_source(settings.ingest_depth_source_swap)
-
     logger.info(
-        "IngestSource trade_spot=%s trade_swap=%s depth_spot=%s depth_swap=%s depth_enabled=%s",
-        trade_source_spot,
-        trade_source_swap,
-        depth_source_spot,
-        depth_source_swap,
+        "IngestSource hard-cut nats url=%s stream=%s trade_subject=%s depth_subject=%s depth_enabled=%s",
+        settings.ingest_nats_url,
+        settings.ingest_nats_stream_raw,
+        settings.ingest_nats_subject_trade,
+        settings.ingest_nats_subject_depth,
         settings.ingest_enable_depth,
     )
 
     if settings.ingest_enable_spot:
-        spot_pairs = _apply_symbol_limit(await get_pairs("spot"))
-        if trade_source_spot == "kafka":
-            tasks.append(_consume_trade_from_kafka("spot", aggregator, orderbook_aggregator))
-        else:
-            tasks.append(run_trade_ws_ingest("spot", spot_pairs, aggregator, orderbook_aggregator))
+        tasks.append(_consume_trade_from_nats("spot", aggregator, orderbook_aggregator))
 
         if settings.ingest_enable_depth:
-            if depth_source_spot == "kafka":
-                tasks.append(_consume_depth_from_kafka("spot", orderbook_aggregator))
-            else:
-                tasks.append(run_depth_ws_ingest("spot", spot_pairs, orderbook_aggregator))
+            tasks.append(_consume_depth_from_nats("spot", orderbook_aggregator))
 
     if settings.ingest_enable_swap:
-        swap_pairs = _apply_symbol_limit(await get_pairs("swap"))
-        if trade_source_swap == "kafka":
-            tasks.append(_consume_trade_from_kafka("swap", aggregator, orderbook_aggregator))
-        else:
-            tasks.append(run_trade_ws_ingest("swap", swap_pairs, aggregator, orderbook_aggregator))
+        tasks.append(_consume_trade_from_nats("swap", aggregator, orderbook_aggregator))
 
         if settings.ingest_enable_depth:
-            if depth_source_swap == "kafka":
-                tasks.append(_consume_depth_from_kafka("swap", orderbook_aggregator))
-            else:
-                tasks.append(run_depth_ws_ingest("swap", swap_pairs, orderbook_aggregator))
+            tasks.append(_consume_depth_from_nats("swap", orderbook_aggregator))
 
     if not tasks:
         raise RuntimeError("No ingest market enabled, check INGEST_ENABLE_SPOT/INGEST_ENABLE_SWAP")

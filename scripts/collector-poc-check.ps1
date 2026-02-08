@@ -12,13 +12,13 @@ Set-Location $root
 
 $compose = "docker compose -f infra/docker-compose.yml"
 $container = "infra-collector-go-1"
-$topic = "coinmark.raw_trade.poc"
+$stream = "COINMARK_RAW"
 
 Write-Host "== Collector PoC Check =="
 Write-Host "DurationSec=$DurationSec SampleIntervalSec=$SampleIntervalSec ConsumeN=$ConsumeN"
 
 Write-Host "`n[1/4] Service status"
-Invoke-Expression "$compose ps collector-go redpanda"
+Invoke-Expression "$compose ps collector-go nats"
 
 Write-Host "`n[2/4] Resource sampling (collector-go)"
 $samples = @()
@@ -45,26 +45,39 @@ for ($i = 0; $i -lt $loops; $i++) {
     Start-Sleep -Seconds $SampleIntervalSec
 }
 
-Write-Host "`n[3/4] Topic sample consume"
-$consumeLines = @()
+Write-Host "`n[3/4] JetStream stream check"
+$streamMessages = 0
 try {
-    $consume = Invoke-Expression "$compose exec -T redpanda rpk topic consume $topic --brokers localhost:9092 -n $ConsumeN -f '%v'"
-    $consumeLines = @($consume | Where-Object { $_ -and $_.Trim() -ne "" })
-    if ($consumeLines.Count -eq 1 -and $consumeLines[0] -match '\}\{') {
-        $consumeLines = @([regex]::Split($consumeLines[0], '(?<=\})(?=\{)') | Where-Object { $_ -and $_.Trim() -ne "" })
+    $jsz = Invoke-RestMethod -Uri "http://localhost:8222/jsz?streams=true" -Method Get
+    $target = $null
+    if ($jsz.streams -is [System.Array]) {
+        $target = $jsz.streams | Where-Object { $_.name -eq $stream } | Select-Object -First 1
     }
-    Write-Host "Consumed messages: $($consumeLines.Count)"
-    $consumeLines | Select-Object -First 3 | ForEach-Object { Write-Host $_ }
+    if (-not $target -and $jsz.account_details) {
+        foreach ($acct in $jsz.account_details) {
+            if ($acct.stream_detail) {
+                $target = $acct.stream_detail | Where-Object { $_.name -eq $stream } | Select-Object -First 1
+                if ($target) { break }
+            }
+        }
+    }
+    if ($null -ne $target) {
+        $streamMessages = [int64]$target.state.messages
+        Write-Host "Stream $stream messages: $streamMessages"
+    }
+    else {
+        Write-Host "Stream $stream not found"
+    }
 }
 catch {
-    Write-Host "Consume failed: $($_.Exception.Message)"
+    Write-Host "JetStream query failed: $($_.Exception.Message)"
 }
 
 Write-Host "`n[4/4] Collector log summary"
 $logs = Invoke-Expression "$compose logs --since=${DurationSec}s --tail=400 collector-go"
 $heartbeat = @($logs | Select-String -Pattern "collector heartbeat")
-$reconnect = @($logs | Select-String -Pattern "trade ws disconnected")
-$sendFail = @($logs | Select-String -Pattern "kafka send failed")
+$reconnect = @($logs | Select-String -Pattern "(trade|depth) ws disconnected")
+$sendFail = @($logs | Select-String -Pattern "nats publish failed")
 
 Write-Host "heartbeat lines: $($heartbeat.Count)"
 Write-Host "reconnect lines: $($reconnect.Count)"
@@ -80,5 +93,5 @@ if ($samples.Count -gt 0) {
     Write-Host ("CPU avg={0:N2}% max={1:N2}%" -f $cpuAvg, $cpuMax)
 }
 
-Write-Host "sampled messages: $($consumeLines.Count)"
+Write-Host "stream messages: $streamMessages"
 Write-Host "reconnect=$($reconnect.Count), send_fail=$($sendFail.Count)"
