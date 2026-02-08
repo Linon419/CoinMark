@@ -401,6 +401,50 @@ func (c *Collector) resolveSymbols(ctx context.Context) ([]string, error) {
 		return items, nil
 	}
 
+	if c.cfg.SymbolLimit > 0 {
+		topByCap, capErr := binance.FetchTopUSDTSymbolsByMarketCap(ctx, c.cfg.SymbolLimit, 20*time.Second)
+		if capErr != nil {
+			log.Printf("collector marketcap top symbols failed, fallback exchangeInfo: %v", capErr)
+		} else if len(topByCap) > 0 {
+			var (
+				marketSymbols []string
+				err           error
+			)
+			if c.cfg.Market == "spot" {
+				marketSymbols, err = binance.FetchSpotUSDTTradingSymbols(ctx, c.cfg.BinanceRESTBase, 15*time.Second)
+			} else {
+				marketSymbols, err = binance.FetchSwapUSDTPerpetualSymbols(ctx, c.cfg.BinanceRESTBase, 15*time.Second)
+			}
+			if err != nil {
+				return nil, err
+			}
+
+			marketSet := make(map[string]struct{}, len(marketSymbols))
+			for _, sym := range marketSymbols {
+				marketSet[strings.ToUpper(strings.TrimSpace(sym))] = struct{}{}
+			}
+
+			filtered := make([]string, 0, c.cfg.SymbolLimit)
+			for _, sym := range topByCap {
+				norm := strings.ToUpper(strings.TrimSpace(sym))
+				if _, ok := marketSet[norm]; !ok {
+					continue
+				}
+				filtered = append(filtered, norm)
+				if len(filtered) >= c.cfg.SymbolLimit {
+					break
+				}
+			}
+
+			filtered = dedupeSymbols(filtered)
+			if len(filtered) > 0 {
+				log.Printf("collector symbols selected by marketcap topN=%d market=%s picked=%d", c.cfg.SymbolLimit, c.cfg.Market, len(filtered))
+				return filtered, nil
+			}
+			log.Printf("collector marketcap selection empty after market filter, fallback exchangeInfo")
+		}
+	}
+
 	var (
 		items []string
 		err   error

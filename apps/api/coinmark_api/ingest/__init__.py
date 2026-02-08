@@ -1,2 +1,2 @@
-"""WS Ingest Worker。"""
+"""Legacy ingest helpers kept for API compatibility."""
 

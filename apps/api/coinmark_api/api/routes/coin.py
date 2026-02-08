@@ -33,6 +33,7 @@ from coinmark_api.services.binance.rest import (
 )
 from coinmark_api.services.market_supply import get_supply_snapshot
 from coinmark_api.services.binance.backfill import backfill_trade_buckets_from_klines
+from coinmark_api.services.clickhouse import get_clickhouse_client
 
 
 router = APIRouter()
@@ -53,6 +54,30 @@ _SIGNAL_COOLDOWN_MS: dict[str, int] = {
 }
 _ABSORPTION_SIGNAL_COOLDOWN_STATE: dict[str, dict[str, Any]] = {}
 _FUND_SNAPSHOT_REPAIR_TS_MS: dict[str, int] = {}
+
+
+def _escape_ch_literal(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("'", "\\'")
+
+
+def _build_trade_like_row_from_ch(row: dict) -> Any:
+    class _TradeLike:
+        pass
+
+    item = _TradeLike()
+    item.market = str(row.get("market") or "")
+    item.symbol = str(row.get("symbol") or "")
+    item.bucket = str(row.get("bucket") or "")
+    item.bucket_start_ms = int(row.get("bucket_start_ms") or 0)
+    item.taker_buy_notional = Decimal(str(row.get("taker_buy_notional") or "0"))
+    item.taker_sell_notional = Decimal(str(row.get("taker_sell_notional") or "0"))
+    item.quote_notional = Decimal(str(row.get("quote_notional") or "0"))
+    item.trade_count = int(row.get("trade_count") or 0)
+    item.open_price = Decimal(str(row.get("open_price"))) if row.get("open_price") is not None else None
+    item.close_price = Decimal(str(row.get("close_price"))) if row.get("close_price") is not None else None
+    item.high_price = Decimal(str(row.get("high_price"))) if row.get("high_price") is not None else None
+    item.low_price = Decimal(str(row.get("low_price"))) if row.get("low_price") is not None else None
+    return item
 
 
 def _base_from_symbol(symbol: str) -> str:
@@ -1302,15 +1327,68 @@ async def coin_fund_snapshots(
     current_hour_start_ms = _floor_bucket_start_with_offset_ms(now_utc_ms, hour_ms, offset_ms)
     closed_cutoffs = list(range(start_ms + hour_ms, current_hour_start_ms + 1, hour_ms))
 
-    async def _load_trade_rows() -> tuple[str, list[TradeBucket], dict[str, list[TradeBucket]]]:
+    async def _load_trade_rows() -> tuple[str, list[Any], dict[str, list[Any]]]:
         bucket_candidates = ["1m", "15m", "1h"]
         used_bucket = bucket_candidates[-1]
-        rows: list[TradeBucket] = []
-        rows_by_bucket: dict[str, list[TradeBucket]] = {}
+        rows: list[Any] = []
+        rows_by_bucket: dict[str, list[Any]] = {}
+
+        ch_client = get_clickhouse_client()
+        if ch_client is not None:
+            try:
+                candidates: list[tuple[bool, int, int, str, list[Any]]] = []
+                escaped_symbol = _escape_ch_literal(sym)
+                for bucket in bucket_candidates:
+                    escaped_bucket = _escape_ch_literal(bucket)
+                    query = f"""
+SELECT
+  market,
+  symbol,
+  bucket,
+  bucket_start_ms,
+  taker_buy_notional,
+  taker_sell_notional,
+  quote_notional,
+  trade_count,
+  open_price,
+  close_price,
+  high_price,
+  low_price
+FROM trade_buckets FINAL
+WHERE symbol = '{escaped_symbol}'
+  AND bucket = '{escaped_bucket}'
+  AND bucket_start_ms >= {int(start_ms)}
+  AND bucket_start_ms <= {int(now_utc_ms)}
+ORDER BY bucket_start_ms ASC
+"""
+                    result_rows = await ch_client.query_json(query)
+                    bucket_rows = [_build_trade_like_row_from_ch(item) for item in result_rows]
+                    rows_by_bucket[bucket] = bucket_rows
+                    if not bucket_rows:
+                        continue
+                    bucket_ms = _bucket_ms(bucket)
+                    first_ms = int(bucket_rows[0].bucket_start_ms)
+                    covered = first_ms <= start_ms + bucket_ms
+                    gap_ms = max(0, first_ms - start_ms)
+                    candidates.append((covered, gap_ms, bucket_ms, bucket, bucket_rows))
+
+                if candidates:
+                    covered_candidates = [item for item in candidates if item[0]]
+                    if covered_candidates:
+                        covered_candidates.sort(key=lambda item: (item[2], item[1]))
+                        chosen = covered_candidates[0]
+                    else:
+                        candidates.sort(key=lambda item: (item[1], item[2]))
+                        chosen = candidates[0]
+                    used_bucket = chosen[3]
+                    rows = chosen[4]
+                    return used_bucket, rows, rows_by_bucket
+            except Exception:
+                rows_by_bucket = {}
 
         async with SessionLocal() as session:
             end_ms = now_utc_ms
-            candidates: list[tuple[bool, int, int, str, list[TradeBucket]]] = []
+            candidates: list[tuple[bool, int, int, str, list[Any]]] = []
             for bucket in bucket_candidates:
                 query = (
                     select(TradeBucket)
@@ -1477,7 +1555,11 @@ async def coin_fund_snapshots(
     cooldown_ms = 90 * 1000
     if now_utc_ms - last_repair_ts > cooldown_ms:
         _FUND_SNAPSHOT_REPAIR_TS_MS[repair_key] = now_utc_ms
-        repair_intervals = [("1m", 240), ("15m", 192), ("1h", 96)]
+        # stale 时按“当前统计窗口”动态回补，避免仅补最近 240 分钟导致 UTC 当日前半段缺口。
+        # Binance K 线单次 limit 上限约为 1500，做一个保守上限。
+        window_minutes = max(1, int((now_utc_ms - start_ms + 60_000 - 1) // 60_000))
+        repair_1m_limit = min(1500, max(240, window_minutes + 5))
+        repair_intervals = [("1m", repair_1m_limit), ("15m", 192), ("1h", 96)]
         backfill_concurrency = max(1, min(2, int(settings.backfill_concurrency)))
         backfill_batch = max(100, int(settings.ingest_db_batch_size))
 

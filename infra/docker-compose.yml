@@ -1,17 +1,18 @@
 ﻿services:
-  postgres:
-    image: postgres:16-alpine
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
     mem_limit: 2g
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-coinmark}
-      POSTGRES_USER: ${POSTGRES_USER:-coinmark}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-coinmark}
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-default}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-coinmark}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-coinmark}
     ports:
-      - "5432:5432"
+      - "8123:8123"
+      - "9000:9000"
     volumes:
-      - coinmark_pg:/var/lib/postgresql/data
+      - coinmark_ch:/var/lib/clickhouse
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8123/ping | grep -q 'Ok'"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -31,7 +32,7 @@
 
   nats:
     image: nats:2.10-alpine
-    mem_limit: 256m
+    mem_limit: 768m
     command: ["-js", "-m", "8222", "-sd", "/data"]
     ports:
       - "4222:4222"
@@ -46,9 +47,9 @@
     mem_limit: 768m
     env_file:
       - ../.env
+    volumes:
+      - coinmark_appdata:/data
     depends_on:
-      postgres:
-        condition: service_healthy
       redis:
         condition: service_healthy
     ports:
@@ -57,20 +58,20 @@
 
   ingest:
     build:
-      context: ../apps/api
+      context: ../apps/ingest-go
       dockerfile: Dockerfile
-    mem_limit: 3072m
+    mem_limit: 1024m
+    user: "0:0"
     restart: unless-stopped
     env_file:
       - ../.env
+    volumes:
+      - coinmark_appdata:/data
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
+      clickhouse:
         condition: service_healthy
       nats:
         condition: service_started
-    command: ["python", "-m", "coinmark_api.ingest.run"]
 
   web:
     build:
@@ -93,9 +94,9 @@
     restart: unless-stopped
     env_file:
       - ../.env
+    volumes:
+      - coinmark_appdata:/data
     depends_on:
-      postgres:
-        condition: service_healthy
       redis:
         condition: service_healthy
     command: ["python", "-m", "coinmark_api.telegram.run"]
@@ -116,8 +117,8 @@
       COLLECTOR_NATS_SUBJECT_DEPTH: coinmark.raw.depth
       COLLECTOR_NATS_CLIENT_NAME: collector-go-swap
       COLLECTOR_ENABLE_DEPTH: true
-      COLLECTOR_DEPTH_UPDATE_MS: 100
-      COLLECTOR_SYMBOL_LIMIT: 0
+      COLLECTOR_DEPTH_UPDATE_MS: ${COLLECTOR_DEPTH_UPDATE_MS_SWAP:-500}
+      COLLECTOR_SYMBOL_LIMIT: ${COLLECTOR_SYMBOL_LIMIT:-200}
       COLLECTOR_STREAMS_PER_CONN: 200
       COLLECTOR_LOG_INTERVAL_SEC: 15
     depends_on:
@@ -140,8 +141,8 @@
       COLLECTOR_NATS_SUBJECT_DEPTH: coinmark.raw.depth
       COLLECTOR_NATS_CLIENT_NAME: collector-go-spot
       COLLECTOR_ENABLE_DEPTH: true
-      COLLECTOR_DEPTH_UPDATE_MS: 100
-      COLLECTOR_SYMBOL_LIMIT: 0
+      COLLECTOR_DEPTH_UPDATE_MS: ${COLLECTOR_DEPTH_UPDATE_MS_SPOT:-1000}
+      COLLECTOR_SYMBOL_LIMIT: ${COLLECTOR_SYMBOL_LIMIT:-200}
       COLLECTOR_STREAMS_PER_CONN: 200
       COLLECTOR_LOG_INTERVAL_SEC: 15
     depends_on:
@@ -149,6 +150,7 @@
         condition: service_started
 
 volumes:
-  coinmark_pg:
+  coinmark_ch:
+  coinmark_appdata:
   coinmark_redis:
   coinmark_nats:

@@ -10,6 +10,10 @@ class Settings(BaseSettings):
 
     database_url: str
     redis_url: str
+    clickhouse_url: str = ""
+    clickhouse_db: str = "default"
+    clickhouse_user: str = ""
+    clickhouse_password: str = ""
 
     api_host: str = "0.0.0.0"
     api_port: int = 8000
@@ -28,10 +32,6 @@ class Settings(BaseSettings):
     ingest_enable_spot: bool = True
     ingest_enable_swap: bool = True
     ingest_enable_depth: bool = True
-    ingest_trade_source_spot: str = "nats"
-    ingest_trade_source_swap: str = "nats"
-    ingest_depth_source_spot: str = "nats"
-    ingest_depth_source_swap: str = "nats"
     ingest_nats_url: str = "nats://nats:4222"
     ingest_nats_stream_raw: str = "COINMARK_RAW"
     ingest_nats_subject_trade: str = "coinmark.raw.trade"

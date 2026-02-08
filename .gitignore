@@ -13,5 +13,11 @@ _api.db
 
 
 .worktrees/
+.serena/
+.claude/
 
-.worktrees/
+# local temp artifacts
+tmp_*
+tmp_assets/
+*.har
+image copy*.png

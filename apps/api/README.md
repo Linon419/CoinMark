@@ -25,8 +25,9 @@
 3) 启动 API：
 - `.\.venv\Scripts\python -m uvicorn coinmark_api.main:app --host 127.0.0.1 --port 8000`
 
-4) 启动 Ingest（另开一个终端）：
-- `.\.venv\Scripts\python -m coinmark_api.ingest.run`
+4) 启动 Ingest-Go（另开一个终端）：
+- `cd ..\ingest-go`
+- `go run ./cmd/ingest`
 
 > 提示：全量订阅会占用较多资源，开发期可用 `INGEST_SYMBOL_LIMIT=50` 先跑通链路。
 
