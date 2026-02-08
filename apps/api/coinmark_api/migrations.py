@@ -283,3 +283,43 @@ CREATE TABLE IF NOT EXISTS orderbook_real_levels_1m (
         await conn.exec_driver_sql(
             "CREATE INDEX IF NOT EXISTS ix_orderbook_real_level_market_state ON orderbook_real_levels_1m (market, signal_state, bucket_start_ms);"
         )
+
+        # price_impact_wall_candidates：仅保留通过规则的“有效挂单墙候选”
+        await conn.exec_driver_sql(
+            """
+CREATE TABLE IF NOT EXISTS price_impact_wall_candidates (
+  id SERIAL PRIMARY KEY,
+  market VARCHAR(8) NOT NULL,
+  symbol VARCHAR(32) NOT NULL,
+  bucket_start_ms BIGINT NOT NULL,
+  zone_type VARCHAR(8) NOT NULL,
+
+  zone_low NUMERIC(38, 18) NOT NULL,
+  zone_high NUMERIC(38, 18) NOT NULL,
+
+  signal_state VARCHAR(16) NOT NULL,
+  confidence VARCHAR(8) NOT NULL,
+
+  real_score NUMERIC(10, 4) NOT NULL DEFAULT 0,
+  impact_ratio NUMERIC(10, 4) NOT NULL DEFAULT 0,
+  survive_count INTEGER NOT NULL DEFAULT 0,
+  cancel_ratio NUMERIC(10, 4) NOT NULL DEFAULT 0,
+
+  reasons JSONB NOT NULL DEFAULT '[]'::jsonb,
+  details JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+
+  UNIQUE (market, symbol, bucket_start_ms, zone_type)
+);
+"""
+        )
+        await conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_price_impact_wall_time ON price_impact_wall_candidates (market, bucket_start_ms);"
+        )
+        await conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_price_impact_wall_symbol ON price_impact_wall_candidates (market, symbol, bucket_start_ms);"
+        )
+        await conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_price_impact_wall_state ON price_impact_wall_candidates (market, confidence, bucket_start_ms);"
+        )

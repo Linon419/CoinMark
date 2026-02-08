@@ -185,6 +185,10 @@ def _event_base_score(event_type: str) -> float:
     t = (event_type or "").lower()
     if t in {"breakout_up", "breakout_down"}:
         return 60.0
+    if t == "signal_lab_persistent_buy":
+        return 65.0
+    if t in {"signal_lab_bid_wall", "signal_lab_ask_wall"}:
+        return 62.0
     if t == "volume_spike":
         return 45.0
     if t == "amplitude_spike":
@@ -265,6 +269,32 @@ def _event_narrative(
         if amplitude is not None:
             return f"{symbol} {tf_signal} 振幅显著扩大至 {amplitude * 100.0:.2f}%"
         return f"{symbol} {tf_signal} 振幅显著扩大"
+
+    if t == "signal_lab_persistent_buy":
+        score = _to_float(data.get("score"))
+        buy_ratio = _to_float(data.get("buyRatio"))
+        large_count = _to_float(data.get("largeBuyCount"))
+        parts: list[str] = [f"{symbol} 出现持续吸筹信号"]
+        if score is not None:
+            parts.append(f"评分 {score:.1f}")
+        if buy_ratio is not None:
+            parts.append(f"买入占比 {buy_ratio * 100.0:.1f}%")
+        if large_count is not None:
+            parts.append(f"大单次数 {int(large_count)}")
+        return "，".join(parts)
+
+    if t in {"signal_lab_bid_wall", "signal_lab_ask_wall"}:
+        impact_ratio = _to_float(data.get("impactRatio"))
+        survive_count = _to_float(data.get("surviveCount"))
+        confidence = str(data.get("confidence") or "MEDIUM")
+        zone_type = "买盘" if t == "signal_lab_bid_wall" else "卖盘"
+        parts: list[str] = [f"{symbol} 出现可影响价格的{zone_type}挂单墙"]
+        if impact_ratio is not None:
+            parts.append(f"影响比 {impact_ratio:.2f}")
+        if survive_count is not None:
+            parts.append(f"存活 {int(survive_count)} 分钟")
+        parts.append(f"置信度 {confidence}")
+        return "，".join(parts)
 
     return title or f"{symbol} 出现市场异动"
 

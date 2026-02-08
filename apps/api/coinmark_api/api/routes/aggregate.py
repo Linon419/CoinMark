@@ -6,12 +6,52 @@ from decimal import Decimal, InvalidOperation
 from fastapi import APIRouter, Query
 from sqlalchemy import and_, func, select
 
+from coinmark_api.api.routes.coin import coin_fund_snapshots
 from coinmark_api.services.binance.rest import get_klines, get_pairs, get_ticker_24h_all
 from coinmark_api.db import SessionLocal
 from coinmark_api.models import TradeBucket
 
 
 router = APIRouter()
+
+
+def _normalize_legacy_symbol(raw: str) -> str:
+    sym = raw.strip().upper()
+    if "/" not in sym:
+        return sym
+    parts = [part for part in sym.split("/") if part]
+    if len(parts) >= 2:
+        return f"{parts[0]}{parts[1]}"
+    return sym.replace("/", "")
+
+
+@router.get("/aggregate/fundSnapshots")
+async def fund_snapshots_legacy(
+    symbol: str = Query(..., min_length=3, max_length=64),
+    tz_offset_min: int = Query(0, alias="tzOffsetMin"),
+    time_mode: str = Query("utc", alias="timeMode", pattern="^(utc|local)$"),
+) -> dict:
+    normalized_symbol = _normalize_legacy_symbol(symbol)
+    payload = await coin_fund_snapshots(
+        symbol=normalized_symbol,
+        tz_offset_min=tz_offset_min,
+        time_mode=time_mode,
+    )
+    items = payload.get("items") or []
+
+    swap_data = []
+    spot_data = []
+    for idx, item in enumerate(items, start=1):
+        key = int(item.get("key") or idx)
+        swap_data.append({"key": key, "value": float(item.get("swapValue") or 0.0)})
+        spot_data.append({"key": key, "value": float(item.get("spotValue") or 0.0)})
+
+    return {
+        "code": 20000,
+        "msg": "",
+        "status": 1,
+        "data": {"swapData": swap_data, "spotData": spot_data},
+    }
 
 
 @router.get("/aggregate/basicinfo")

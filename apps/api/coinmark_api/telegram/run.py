@@ -60,6 +60,9 @@ def _event_type_label(event_type: str) -> str:
         "breakout_down": "向下跌破",
         "volume_spike": "量能放大",
         "amplitude_spike": "振幅放大",
+        "signal_lab_persistent_buy": "SignalLab 吸筹",
+        "signal_lab_bid_wall": "SignalLab 买盘墙",
+        "signal_lab_ask_wall": "SignalLab 卖盘墙",
     }
     return mapping.get((event_type or "").lower(), event_type)
 
@@ -68,6 +71,10 @@ def _event_base_score(event_type: str) -> float:
     t = (event_type or "").lower()
     if t in {"breakout_up", "breakout_down"}:
         return 60.0
+    if t == "signal_lab_persistent_buy":
+        return 65.0
+    if t in {"signal_lab_bid_wall", "signal_lab_ask_wall"}:
+        return 62.0
     if t == "volume_spike":
         return 45.0
     if t == "amplitude_spike":
@@ -131,6 +138,30 @@ def _event_narrative(row: AnomalyEvent) -> str:
     if t == "amplitude_spike":
         amp = _to_float(details.get("amplitude"))
         return f"{symbol} 振幅扩大到 {_fmt_pct(amp)}" if amp is not None else f"{symbol} 振幅扩大"
+    if t == "signal_lab_persistent_buy":
+        score = _to_float(details.get("score"))
+        buy_ratio = _to_float(details.get("buyRatio"))
+        large_count = _to_float(details.get("largeBuyCount"))
+        parts = [f"{symbol} SignalLab 持续吸筹"]
+        if score is not None:
+            parts.append(f"评分 {score:.1f}")
+        if buy_ratio is not None:
+            parts.append(f"买入占比 {buy_ratio * 100:.1f}%")
+        if large_count is not None:
+            parts.append(f"大单次数 {int(large_count)}")
+        return "，".join(parts)
+    if t in {"signal_lab_bid_wall", "signal_lab_ask_wall"}:
+        impact_ratio = _to_float(details.get("impactRatio"))
+        survive_count = _to_float(details.get("surviveCount"))
+        confidence = str(details.get("confidence") or "MEDIUM")
+        side_text = "买盘" if t == "signal_lab_bid_wall" else "卖盘"
+        parts = [f"{symbol} SignalLab {side_text}挂单墙"]
+        if impact_ratio is not None:
+            parts.append(f"影响比 {impact_ratio:.2f}")
+        if survive_count is not None:
+            parts.append(f"存活 {int(survive_count)} 分钟")
+        parts.append(f"置信度 {confidence}")
+        return "，".join(parts)
     return str(row.title or f"{symbol} 出现异动")
 
 
