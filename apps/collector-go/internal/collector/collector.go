@@ -15,7 +15,7 @@ import (
 
 	"coinmark/collector-go/internal/binance"
 	"coinmark/collector-go/internal/config"
-	"coinmark/collector-go/internal/kafka"
+	"coinmark/collector-go/internal/nats"
 )
 
 type Collector struct {
@@ -28,21 +28,31 @@ type Collector struct {
 	wsReconnectCount      atomic.Int64
 	tradeSendFailCount    atomic.Int64
 	depthSendFailCount    atomic.Int64
-	tradeProducer         *kafka.Producer
-	depthProducer         *kafka.Producer
+	tradeProducer         *nats.Publisher
+	depthProducer         *nats.Publisher
 	depthUseTradeProducer bool
 }
 
 func New(cfg config.Config) (*Collector, error) {
-	tradeProducer, err := kafka.NewProducer(cfg.KafkaBrokers, cfg.KafkaClientID, cfg.KafkaTopic)
+	tradeProducer, err := nats.NewPublisher(
+		cfg.NATSURL,
+		cfg.NATSClientName+"-trade",
+		cfg.NATSStreamRaw,
+		cfg.NATSSubjectTrade,
+	)
 	if err != nil {
 		return nil, err
 	}
 
 	depthProducer := tradeProducer
 	depthUseTradeProducer := true
-	if cfg.EnableDepth && cfg.KafkaDepthTopic != cfg.KafkaTopic {
-		depthProducer, err = kafka.NewProducer(cfg.KafkaBrokers, cfg.KafkaClientID+"-depth", cfg.KafkaDepthTopic)
+	if cfg.EnableDepth && cfg.NATSSubjectDepth != cfg.NATSSubjectTrade {
+		depthProducer, err = nats.NewPublisher(
+			cfg.NATSURL,
+			cfg.NATSClientName+"-depth",
+			cfg.NATSStreamRaw,
+			cfg.NATSSubjectDepth,
+		)
 		if err != nil {
 			_ = tradeProducer.Close()
 			return nil, err
@@ -71,13 +81,14 @@ func (c *Collector) Run(ctx context.Context) error {
 	}()
 
 	log.Printf(
-		"collector starting market=%s ws=%s trade_topic=%s depth_enabled=%t depth_topic=%s brokers=%v",
+		"collector starting market=%s ws=%s nats_url=%s stream=%s trade_subject=%s depth_enabled=%t depth_subject=%s",
 		c.cfg.Market,
 		c.cfg.BinanceWSBaseURL,
-		c.cfg.KafkaTopic,
+		c.cfg.NATSURL,
+		c.cfg.NATSStreamRaw,
+		c.cfg.NATSSubjectTrade,
 		c.cfg.EnableDepth,
-		c.cfg.KafkaDepthTopic,
-		c.cfg.KafkaBrokers,
+		c.cfg.NATSSubjectDepth,
 	)
 
 	symbols, err := c.resolveSymbols(ctx)
@@ -289,9 +300,12 @@ func (c *Collector) consumeTradeConn(ctx context.Context, wsURL string) error {
 		if err != nil {
 			continue
 		}
-		if err := c.tradeProducer.Send([]byte(symbol), b); err != nil {
+		sendCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		err = c.tradeProducer.Send(sendCtx, b)
+		cancel()
+		if err != nil {
 			c.tradeSendFailCount.Add(1)
-			log.Printf("trade kafka send failed: %v", err)
+			log.Printf("trade nats publish failed: %v", err)
 			continue
 		}
 		c.tradeMsgCount.Add(1)
@@ -361,9 +375,12 @@ func (c *Collector) consumeDepthConn(ctx context.Context, wsURL string) error {
 		if err != nil {
 			continue
 		}
-		if err := c.depthProducer.Send([]byte(symbol), b); err != nil {
+		sendCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		err = c.depthProducer.Send(sendCtx, b)
+		cancel()
+		if err != nil {
 			c.depthSendFailCount.Add(1)
-			log.Printf("depth kafka send failed: %v", err)
+			log.Printf("depth nats publish failed: %v", err)
 			continue
 		}
 		c.depthMsgCount.Add(1)

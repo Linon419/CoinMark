@@ -10,10 +10,11 @@ import (
 type Config struct {
 	BinanceWSBaseURL string
 	BinanceRESTBase  string
-	KafkaBrokers     []string
-	KafkaTopic       string
-	KafkaDepthTopic  string
-	KafkaClientID    string
+	NATSURL          string
+	NATSStreamRaw    string
+	NATSSubjectTrade string
+	NATSSubjectDepth string
+	NATSClientName   string
 	Symbols          []string
 	SymbolLimit      int
 	StreamsPerConn   int
@@ -27,10 +28,11 @@ func Load() (Config, error) {
 	cfg := Config{
 		BinanceWSBaseURL: getenv("COLLECTOR_BINANCE_WS_BASE_URL", "wss://fstream.binance.com/stream"),
 		BinanceRESTBase:  getenv("COLLECTOR_BINANCE_REST_BASE", "https://fapi.binance.com"),
-		KafkaBrokers:     splitCSV(getenv("COLLECTOR_KAFKA_BROKERS", "redpanda:9092")),
-		KafkaTopic:       getenv("COLLECTOR_KAFKA_TOPIC", "coinmark.raw_trade.poc"),
-		KafkaDepthTopic:  getenv("COLLECTOR_KAFKA_DEPTH_TOPIC", "coinmark.raw_depth.poc"),
-		KafkaClientID:    getenv("COLLECTOR_KAFKA_CLIENT_ID", "collector-go-poc"),
+		NATSURL:          getenv("COLLECTOR_NATS_URL", "nats://nats:4222"),
+		NATSStreamRaw:    getenv("COLLECTOR_NATS_STREAM_RAW", "COINMARK_RAW"),
+		NATSSubjectTrade: getenv("COLLECTOR_NATS_SUBJECT_TRADE", "coinmark.raw.trade"),
+		NATSSubjectDepth: getenv("COLLECTOR_NATS_SUBJECT_DEPTH", "coinmark.raw.depth"),
+		NATSClientName:   getenv("COLLECTOR_NATS_CLIENT_NAME", "collector-go"),
 		Symbols:          splitCSV(getenv("COLLECTOR_SYMBOLS", "")),
 		SymbolLimit:      getenvInt("COLLECTOR_SYMBOL_LIMIT", 0),
 		StreamsPerConn:   getenvInt("COLLECTOR_STREAMS_PER_CONN", 200),
@@ -43,14 +45,20 @@ func Load() (Config, error) {
 	if cfg.Market != "spot" && cfg.Market != "swap" {
 		return Config{}, fmt.Errorf("COLLECTOR_MARKET must be 'spot' or 'swap', got: %s", cfg.Market)
 	}
-	if len(cfg.KafkaBrokers) == 0 {
-		return Config{}, fmt.Errorf("COLLECTOR_KAFKA_BROKERS is empty")
+	if cfg.NATSURL == "" {
+		return Config{}, fmt.Errorf("COLLECTOR_NATS_URL is empty")
 	}
-	if cfg.KafkaTopic == "" {
-		return Config{}, fmt.Errorf("COLLECTOR_KAFKA_TOPIC is empty")
+	if cfg.NATSStreamRaw == "" {
+		return Config{}, fmt.Errorf("COLLECTOR_NATS_STREAM_RAW is empty")
 	}
-	if cfg.EnableDepth && cfg.KafkaDepthTopic == "" {
-		return Config{}, fmt.Errorf("COLLECTOR_KAFKA_DEPTH_TOPIC is empty while COLLECTOR_ENABLE_DEPTH=true")
+	if cfg.NATSSubjectTrade == "" {
+		return Config{}, fmt.Errorf("COLLECTOR_NATS_SUBJECT_TRADE is empty")
+	}
+	if cfg.EnableDepth && cfg.NATSSubjectDepth == "" {
+		return Config{}, fmt.Errorf("COLLECTOR_NATS_SUBJECT_DEPTH is empty while COLLECTOR_ENABLE_DEPTH=true")
+	}
+	if cfg.NATSClientName == "" {
+		cfg.NATSClientName = "collector-go"
 	}
 	if cfg.DepthUpdateMs < 100 {
 		cfg.DepthUpdateMs = 100
