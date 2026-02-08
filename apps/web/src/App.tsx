@@ -67,6 +67,9 @@ export default function App() {
             <NavLink to="/anomalies" className={({ isActive }) => `cm-navLink ${isActive ? "cm-navLink--active" : ""}`}>
               异动统计
             </NavLink>
+            <NavLink to="/signal-lab" className={({ isActive }) => `cm-navLink ${isActive ? "cm-navLink--active" : ""}`}>
+              SignalLab
+            </NavLink>
           </Space>
 
           <Space>

@@ -55,6 +55,9 @@ const EVENT_TYPES = [
   { label: "跌破", value: "breakout_down" },
   { label: "量能异常", value: "volume_spike" },
   { label: "振幅异常", value: "amplitude_spike" },
+  { label: "持续吸筹", value: "signal_lab_persistent_buy" },
+  { label: "买盘墙", value: "signal_lab_bid_wall" },
+  { label: "卖盘墙", value: "signal_lab_ask_wall" },
 ];
 
 const SINCE_OPTIONS = [

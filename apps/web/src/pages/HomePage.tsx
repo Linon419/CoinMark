@@ -272,6 +272,9 @@ export default function HomePage() {
     breakout_down: "跌破",
     volume_spike: "量能",
     amplitude_spike: "振幅",
+    signal_lab_persistent_buy: "持续吸筹",
+    signal_lab_bid_wall: "买盘墙",
+    signal_lab_ask_wall: "卖盘墙",
   };
 
   return (

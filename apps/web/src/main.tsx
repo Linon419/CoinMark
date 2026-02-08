@@ -8,6 +8,7 @@ import HomePage from "./pages/HomePage";
 import CoinPage from "./pages/CoinPage";
 import AnomaliesPage from "./pages/AnomaliesPage";
 import IntradayPage from "./pages/IntradayPage";
+import SignalLabPage from "./pages/SignalLabPage";
 import { NotificationCenterProvider } from "./stores/notificationCenter";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
@@ -21,6 +22,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
             <Route path="intraday" element={<IntradayPage />} />
             <Route path="intraday/:symbol" element={<IntradayPage />} />
             <Route path="anomalies" element={<AnomaliesPage />} />
+            <Route path="signal-lab" element={<SignalLabPage />} />
           </Route>
         </Routes>
       </BrowserRouter>
