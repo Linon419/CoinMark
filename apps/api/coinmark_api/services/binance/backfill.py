@@ -5,9 +5,7 @@ import time
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from coinmark_api.db import SessionLocal
-from coinmark_api.db_upsert import insert
-from coinmark_api.models import TradeBucket
+from coinmark_api.ch import insert_trade_buckets
 from coinmark_api.services.binance.rest import get_klines
 
 
@@ -124,30 +122,8 @@ async def backfill_trade_buckets_from_klines(
         dedup[k] = v
     values = list(dedup.values())
 
-    async with SessionLocal() as session:
-        written = 0
-        for chunk in _chunk(values, db_batch_size):
-            stmt = insert(TradeBucket).values(chunk)
-            stmt = stmt.on_conflict_do_update(
-                index_elements=["market", "symbol", "bucket", "bucket_start_ms"],
-                set_={
-                    "taker_buy_notional": stmt.excluded.taker_buy_notional,
-                    "taker_sell_notional": stmt.excluded.taker_sell_notional,
-                    "quote_notional": stmt.excluded.quote_notional,
-                    "trade_count": stmt.excluded.trade_count,
-                    "first_trade_ms": stmt.excluded.first_trade_ms,
-                    "last_trade_ms": stmt.excluded.last_trade_ms,
-                    "open_price": stmt.excluded.open_price,
-                    "close_price": stmt.excluded.close_price,
-                    "high_price": stmt.excluded.high_price,
-                    "low_price": stmt.excluded.low_price,
-                },
-            )
-            res = await session.execute(stmt)
-            try:
-                written += int(res.rowcount or 0)
-            except Exception:
-                pass
-        await session.commit()
-
+    # Split into chunks and write to ClickHouse
+    written = 0
+    for chunk in _chunk(values, db_batch_size):
+        written += await insert_trade_buckets(chunk)
     return written

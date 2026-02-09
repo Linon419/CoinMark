@@ -7,18 +7,20 @@ from decimal import Decimal
 from typing import Literal, Any
 
 from fastapi import APIRouter, Query
-from sqlalchemy import and_, desc, select
+from sqlalchemy import and_, select
 import asyncio
 
 from coinmark_api.config import settings
 from coinmark_api.db import SessionLocal
-from coinmark_api.models import (
-    AssetMarketCap,
-    FundingRateSnapshot,
-    OpenInterestSnapshot,
-    OrderbookFeatureBucket,
-    SRLevel,
-    TradeBucket,
+from coinmark_api.models import SRLevel
+from coinmark_api.ch import (
+    TradeBucketRow,
+    OBFeatureRow,
+    query_trade_buckets,
+    query_orderbook_features,
+    query_funding_by_symbol,
+    query_oi_by_symbol,
+    query_market_cap_by_asset,
 )
 from coinmark_api.services.institutional_levels import get_symbol_latest_institutional_levels
 from coinmark_api.services.binance.rest import (
@@ -33,7 +35,6 @@ from coinmark_api.services.binance.rest import (
 )
 from coinmark_api.services.market_supply import get_supply_snapshot
 from coinmark_api.services.binance.backfill import backfill_trade_buckets_from_klines
-from coinmark_api.services.clickhouse import get_clickhouse_client
 
 
 router = APIRouter()
@@ -54,30 +55,6 @@ _SIGNAL_COOLDOWN_MS: dict[str, int] = {
 }
 _ABSORPTION_SIGNAL_COOLDOWN_STATE: dict[str, dict[str, Any]] = {}
 _FUND_SNAPSHOT_REPAIR_TS_MS: dict[str, int] = {}
-
-
-def _escape_ch_literal(value: str) -> str:
-    return value.replace("\\", "\\\\").replace("'", "\\'")
-
-
-def _build_trade_like_row_from_ch(row: dict) -> Any:
-    class _TradeLike:
-        pass
-
-    item = _TradeLike()
-    item.market = str(row.get("market") or "")
-    item.symbol = str(row.get("symbol") or "")
-    item.bucket = str(row.get("bucket") or "")
-    item.bucket_start_ms = int(row.get("bucket_start_ms") or 0)
-    item.taker_buy_notional = Decimal(str(row.get("taker_buy_notional") or "0"))
-    item.taker_sell_notional = Decimal(str(row.get("taker_sell_notional") or "0"))
-    item.quote_notional = Decimal(str(row.get("quote_notional") or "0"))
-    item.trade_count = int(row.get("trade_count") or 0)
-    item.open_price = Decimal(str(row.get("open_price"))) if row.get("open_price") is not None else None
-    item.close_price = Decimal(str(row.get("close_price"))) if row.get("close_price") is not None else None
-    item.high_price = Decimal(str(row.get("high_price"))) if row.get("high_price") is not None else None
-    item.low_price = Decimal(str(row.get("low_price"))) if row.get("low_price") is not None else None
-    return item
 
 
 def _base_from_symbol(symbol: str) -> str:
@@ -288,7 +265,7 @@ def _trend_label(score: int) -> str:
     return "强上升"
 
 
-def _extract_candles(rows: list[TradeBucket]) -> list[dict]:
+def _extract_candles(rows: list[TradeBucketRow]) -> list[dict]:
     out: list[dict] = []
     for r in rows:
         o = _to_float(r.open_price)
@@ -395,23 +372,14 @@ async def coin_detail_basic(
     hourly_start_ms = now_ms - 8 * day_ms
     m15_start_ms = now_ms - day_ms
 
+    fund = None
+    oi = None
+    if effective_market == "swap":
+        fund = await query_funding_by_symbol(sym)
+        oi = await query_oi_by_symbol(sym)
+    cap = await query_market_cap_by_asset(asset)
+
     async with SessionLocal() as session:
-        fund = None
-        oi = None
-        if effective_market == "swap":
-            fund = (
-                (await session.execute(select(FundingRateSnapshot).where(FundingRateSnapshot.symbol == sym)))
-                .scalars()
-                .first()
-            )
-            oi = (
-                (await session.execute(select(OpenInterestSnapshot).where(OpenInterestSnapshot.symbol == sym)))
-                .scalars()
-                .first()
-            )
-        cap = (
-            (await session.execute(select(AssetMarketCap).where(AssetMarketCap.asset == asset))).scalars().first()
-        )
         levels = (
             (
                 await session.execute(
@@ -423,61 +391,10 @@ async def coin_detail_basic(
             .scalars()
             .all()
         )
-        daily_rows = (
-            (
-                await session.execute(
-                    select(TradeBucket)
-                    .where(
-                        and_(
-                            TradeBucket.market == effective_market,
-                            TradeBucket.symbol == sym,
-                            TradeBucket.bucket == "1d",
-                            TradeBucket.bucket_start_ms >= daily_start_ms,
-                            TradeBucket.bucket_start_ms <= last_closed_day_ms,
-                        )
-                    )
-                    .order_by(TradeBucket.bucket_start_ms.asc())
-                )
-            )
-            .scalars()
-            .all()
-        )
-        hourly_rows = (
-            (
-                await session.execute(
-                    select(TradeBucket)
-                    .where(
-                        and_(
-                            TradeBucket.market == effective_market,
-                            TradeBucket.symbol == sym,
-                            TradeBucket.bucket == "1h",
-                            TradeBucket.bucket_start_ms >= hourly_start_ms,
-                        )
-                    )
-                    .order_by(TradeBucket.bucket_start_ms.asc())
-                )
-            )
-            .scalars()
-            .all()
-        )
-        m15_rows = (
-            (
-                await session.execute(
-                    select(TradeBucket)
-                    .where(
-                        and_(
-                            TradeBucket.market == effective_market,
-                            TradeBucket.symbol == sym,
-                            TradeBucket.bucket == "15m",
-                            TradeBucket.bucket_start_ms >= m15_start_ms,
-                        )
-                    )
-                    .order_by(TradeBucket.bucket_start_ms.asc())
-                )
-            )
-            .scalars()
-            .all()
-        )
+
+    daily_rows = await query_trade_buckets(market=effective_market, symbol=sym, bucket="1d", start_ms=daily_start_ms, end_ms=last_closed_day_ms)
+    hourly_rows = await query_trade_buckets(market=effective_market, symbol=sym, bucket="1h", start_ms=hourly_start_ms)
+    m15_rows = await query_trade_buckets(market=effective_market, symbol=sym, bucket="15m", start_ms=m15_start_ms)
 
     if last_price is not None:
         levels.sort(key=lambda r: abs(float(r.level_price) - float(last_price)))
@@ -806,48 +723,13 @@ async def coin_hourly_flow(
     start_ms = last_closed - hours * b
     live_cutoff_ms = (now_ms // minute_ms) * minute_ms
     include_live_partial = (live_cutoff_ms - cur) >= minute_ms
-    live_rows: list[TradeBucket] = []
+    live_rows: list[TradeBucketRow] = []
 
-    async with SessionLocal() as session:
-        rows = (
-            (
-                await session.execute(
-                    select(TradeBucket)
-                    .where(
-                        and_(
-                            TradeBucket.symbol == sym,
-                            TradeBucket.bucket == "1h",
-                            TradeBucket.bucket_start_ms >= start_ms,
-                            TradeBucket.bucket_start_ms <= last_closed,
-                        )
-                    )
-                    .order_by(TradeBucket.bucket_start_ms.asc())
-                )
-            )
-            .scalars()
-            .all()
-        )
-        if include_live_partial:
-            live_rows = (
-                (
-                    await session.execute(
-                        select(TradeBucket)
-                        .where(
-                            and_(
-                                TradeBucket.symbol == sym,
-                                TradeBucket.bucket == "1m",
-                                TradeBucket.bucket_start_ms >= cur,
-                                TradeBucket.bucket_start_ms < live_cutoff_ms,
-                            )
-                        )
-                        .order_by(TradeBucket.bucket_start_ms.asc())
-                    )
-                )
-                .scalars()
-                .all()
-            )
+    rows = await query_trade_buckets(symbol=sym, bucket="1h", start_ms=start_ms, end_ms=last_closed)
+    if include_live_partial:
+        live_rows = await query_trade_buckets(symbol=sym, bucket="1m", start_ms=cur, end_ms=live_cutoff_ms - 1)
 
-    by_key: dict[tuple[str, int], TradeBucket] = {(r.market, int(r.bucket_start_ms)): r for r in rows}
+    by_key: dict[tuple[str, int], TradeBucketRow] = {(r.market, int(r.bucket_start_ms)): r for r in rows}
     timeline = list(range(start_ms, last_closed + 1, b))
     out = []
     for ts in timeline:
@@ -906,27 +788,9 @@ async def coin_daily_flow(
     last_closed = cur - b
     start_ms = last_closed - (days - 1) * b
 
-    async with SessionLocal() as session:
-        rows = (
-            (
-                await session.execute(
-                    select(TradeBucket)
-                    .where(
-                        and_(
-                            TradeBucket.symbol == sym,
-                            TradeBucket.bucket == "1d",
-                            TradeBucket.bucket_start_ms >= start_ms,
-                            TradeBucket.bucket_start_ms <= last_closed,
-                        )
-                    )
-                    .order_by(TradeBucket.bucket_start_ms.asc())
-                )
-            )
-            .scalars()
-            .all()
-        )
+    rows = await query_trade_buckets(symbol=sym, bucket="1d", start_ms=start_ms, end_ms=last_closed)
 
-    by_key: dict[tuple[str, int], TradeBucket] = {(r.market, int(r.bucket_start_ms)): r for r in rows}
+    by_key: dict[tuple[str, int], TradeBucketRow] = {(r.market, int(r.bucket_start_ms)): r for r in rows}
     timeline = list(range(start_ms, last_closed + 1, b))
     out = []
     for ts in timeline:
@@ -1017,45 +881,8 @@ async def coin_oi_hourly(
         start_ms = min(ts_list)
         end_ms = max(ts_list)
 
-        async with SessionLocal() as session:
-            price_rows_1m = (
-                (
-                    await session.execute(
-                        select(TradeBucket)
-                        .where(
-                            and_(
-                                TradeBucket.market == "swap",
-                                TradeBucket.symbol == sym,
-                                TradeBucket.bucket == "1m",
-                                TradeBucket.bucket_start_ms >= start_ms,
-                                TradeBucket.bucket_start_ms <= end_ms,
-                            )
-                        )
-                        .order_by(TradeBucket.bucket_start_ms.asc())
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            price_rows_1h = (
-                (
-                    await session.execute(
-                        select(TradeBucket)
-                        .where(
-                            and_(
-                                TradeBucket.market == "swap",
-                                TradeBucket.symbol == sym,
-                                TradeBucket.bucket == "1h",
-                                TradeBucket.bucket_start_ms >= start_ms,
-                                TradeBucket.bucket_start_ms <= end_ms,
-                            )
-                        )
-                        .order_by(TradeBucket.bucket_start_ms.asc())
-                    )
-                )
-                .scalars()
-                .all()
-            )
+        price_rows_1m = await query_trade_buckets(market="swap", symbol=sym, bucket="1m", start_ms=start_ms, end_ms=end_ms)
+        price_rows_1h = await query_trade_buckets(market="swap", symbol=sym, bucket="1h", start_ms=start_ms, end_ms=end_ms)
 
         price_map_1m = {int(r.bucket_start_ms): _to_float(r.close_price) for r in price_rows_1m}
         price_map_1h = {int(r.bucket_start_ms): _to_float(r.close_price) for r in price_rows_1h}
@@ -1114,26 +941,7 @@ async def coin_oi_daily(
         start_ms = min(ts_list)
         end_ms = max(ts_list)
 
-        async with SessionLocal() as session:
-            price_rows_1d = (
-                (
-                    await session.execute(
-                        select(TradeBucket)
-                        .where(
-                            and_(
-                                TradeBucket.market == "swap",
-                                TradeBucket.symbol == sym,
-                                TradeBucket.bucket == "1d",
-                                TradeBucket.bucket_start_ms >= start_ms,
-                                TradeBucket.bucket_start_ms <= end_ms,
-                            )
-                        )
-                        .order_by(TradeBucket.bucket_start_ms.asc())
-                    )
-                )
-                .scalars()
-                .all()
-            )
+        price_rows_1d = await query_trade_buckets(market="swap", symbol=sym, bucket="1d", start_ms=start_ms, end_ms=end_ms)
 
         price_map_1d = {int(r.bucket_start_ms): _to_float(r.close_price) for r in price_rows_1d}
         for item in items:
@@ -1207,25 +1015,7 @@ async def coin_sr_short(
     start_ms = now_ms - lookback_ms
     bucket = "15m" if timeframe == "15m" else "1h"
 
-    async with SessionLocal() as session:
-        rows = (
-            (
-                await session.execute(
-                    select(TradeBucket)
-                    .where(
-                        and_(
-                            TradeBucket.market == effective_market,
-                            TradeBucket.symbol == sym,
-                            TradeBucket.bucket == bucket,
-                            TradeBucket.bucket_start_ms >= start_ms,
-                        )
-                    )
-                    .order_by(TradeBucket.bucket_start_ms.asc())
-                )
-            )
-            .scalars()
-            .all()
-        )
+    rows = await query_trade_buckets(market=effective_market, symbol=sym, bucket=bucket, start_ms=start_ms)
 
     candles: list[tuple[int, float, float, float, float]] = []
     for r in rows:
@@ -1333,99 +1123,32 @@ async def coin_fund_snapshots(
         rows: list[Any] = []
         rows_by_bucket: dict[str, list[Any]] = {}
 
-        ch_client = get_clickhouse_client()
-        if ch_client is not None:
-            try:
-                candidates: list[tuple[bool, int, int, str, list[Any]]] = []
-                escaped_symbol = _escape_ch_literal(sym)
-                for bucket in bucket_candidates:
-                    escaped_bucket = _escape_ch_literal(bucket)
-                    query = f"""
-SELECT
-  market,
-  symbol,
-  bucket,
-  bucket_start_ms,
-  taker_buy_notional,
-  taker_sell_notional,
-  quote_notional,
-  trade_count,
-  open_price,
-  close_price,
-  high_price,
-  low_price
-FROM trade_buckets FINAL
-WHERE symbol = '{escaped_symbol}'
-  AND bucket = '{escaped_bucket}'
-  AND bucket_start_ms >= {int(start_ms)}
-  AND bucket_start_ms <= {int(now_utc_ms)}
-ORDER BY bucket_start_ms ASC
-"""
-                    result_rows = await ch_client.query_json(query)
-                    bucket_rows = [_build_trade_like_row_from_ch(item) for item in result_rows]
-                    rows_by_bucket[bucket] = bucket_rows
-                    if not bucket_rows:
-                        continue
-                    bucket_ms = _bucket_ms(bucket)
-                    first_ms = int(bucket_rows[0].bucket_start_ms)
-                    covered = first_ms <= start_ms + bucket_ms
-                    gap_ms = max(0, first_ms - start_ms)
-                    candidates.append((covered, gap_ms, bucket_ms, bucket, bucket_rows))
+        candidates: list[tuple[bool, int, int, str, list[Any]]] = []
+        for bucket in bucket_candidates:
+            bucket_rows = await query_trade_buckets(symbol=sym, bucket=bucket, start_ms=start_ms, end_ms=now_utc_ms)
+            rows_by_bucket[bucket] = bucket_rows
+            if not bucket_rows:
+                continue
+            bms = _bucket_ms(bucket)
+            first_ms = int(bucket_rows[0].bucket_start_ms)
+            covered = first_ms <= start_ms + bms
+            gap_ms = max(0, first_ms - start_ms)
+            candidates.append((covered, gap_ms, bms, bucket, bucket_rows))
 
-                if candidates:
-                    covered_candidates = [item for item in candidates if item[0]]
-                    if covered_candidates:
-                        covered_candidates.sort(key=lambda item: (item[2], item[1]))
-                        chosen = covered_candidates[0]
-                    else:
-                        candidates.sort(key=lambda item: (item[1], item[2]))
-                        chosen = candidates[0]
-                    used_bucket = chosen[3]
-                    rows = chosen[4]
-                    return used_bucket, rows, rows_by_bucket
-            except Exception:
-                rows_by_bucket = {}
-
-        async with SessionLocal() as session:
-            end_ms = now_utc_ms
-            candidates: list[tuple[bool, int, int, str, list[Any]]] = []
-            for bucket in bucket_candidates:
-                query = (
-                    select(TradeBucket)
-                    .where(
-                        and_(
-                            TradeBucket.symbol == sym,
-                            TradeBucket.bucket == bucket,
-                            TradeBucket.bucket_start_ms >= start_ms,
-                            TradeBucket.bucket_start_ms <= end_ms,
-                        )
-                    )
-                    .order_by(TradeBucket.bucket_start_ms.asc())
-                )
-                bucket_rows = (await session.execute(query)).scalars().all()
-                rows_by_bucket[bucket] = bucket_rows
-                if not bucket_rows:
-                    continue
-                bucket_ms = _bucket_ms(bucket)
-                first_ms = int(bucket_rows[0].bucket_start_ms)
-                covered = first_ms <= start_ms + bucket_ms
-                gap_ms = max(0, first_ms - start_ms)
-                candidates.append((covered, gap_ms, bucket_ms, bucket, bucket_rows))
-
-            if candidates:
-                covered_candidates = [item for item in candidates if item[0]]
-                if covered_candidates:
-                    covered_candidates.sort(key=lambda item: (item[2], item[1]))
-                    chosen = covered_candidates[0]
-                else:
-                    candidates.sort(key=lambda item: (item[1], item[2]))
-                    chosen = candidates[0]
-                used_bucket = chosen[3]
-                rows = chosen[4]
+        if candidates:
+            covered_candidates = [item for item in candidates if item[0]]
+            if covered_candidates:
+                covered_candidates.sort(key=lambda item: (item[2], item[1]))
+                chosen = covered_candidates[0]
+            else:
+                candidates.sort(key=lambda item: (item[1], item[2]))
+                chosen = candidates[0]
+            used_bucket = chosen[3]
+            rows = chosen[4]
 
         return used_bucket, rows, rows_by_bucket
 
-    def _build_trade_response(used_bucket: str, rows: list[TradeBucket], source_suffix: str | None = None) -> dict:
+    def _build_trade_response(used_bucket: str, rows: list[TradeBucketRow], source_suffix: str | None = None) -> dict:
         by_market: dict[str, list[tuple[int, float]]] = {"spot": [], "swap": []}
         for row in rows:
             net = (row.taker_buy_notional or Decimal("0")) - (row.taker_sell_notional or Decimal("0"))
@@ -1486,7 +1209,7 @@ ORDER BY bucket_start_ms ASC
             "items": items,
         }
 
-    def _assess_trade_bucket_health(rows_by_bucket: dict[str, list[TradeBucket]]) -> tuple[bool, str]:
+    def _assess_trade_bucket_health(rows_by_bucket: dict[str, list[TradeBucketRow]]) -> tuple[bool, str]:
         rows_1m = rows_by_bucket.get("1m") or []
         if not rows_1m:
             return False, "no_1m_rows"
@@ -1605,43 +1328,8 @@ async def coin_fund_snapshot_health(
     offset_ms = int(tz_offset_min) * 60 * 1000 if time_mode == "local" else 0
     current_hour_start_ms = _floor_bucket_start_with_offset_ms(now_utc_ms, hour_ms, offset_ms)
 
-    async with SessionLocal() as session:
-        rows_1m = (
-            (
-                await session.execute(
-                    select(TradeBucket)
-                    .where(
-                        and_(
-                            TradeBucket.symbol == sym,
-                            TradeBucket.bucket == "1m",
-                            TradeBucket.bucket_start_ms >= recent_start_ms,
-                            TradeBucket.bucket_start_ms <= now_utc_ms,
-                        )
-                    )
-                    .order_by(TradeBucket.bucket_start_ms.asc())
-                )
-            )
-            .scalars()
-            .all()
-        )
-        rows_1h = (
-            (
-                await session.execute(
-                    select(TradeBucket)
-                    .where(
-                        and_(
-                            TradeBucket.symbol == sym,
-                            TradeBucket.bucket == "1h",
-                            TradeBucket.bucket_start_ms >= current_hour_start_ms - 2 * hour_ms,
-                            TradeBucket.bucket_start_ms < current_hour_start_ms,
-                        )
-                    )
-                    .order_by(TradeBucket.bucket_start_ms.asc())
-                )
-            )
-            .scalars()
-            .all()
-        )
+    rows_1m = await query_trade_buckets(symbol=sym, bucket="1m", start_ms=recent_start_ms, end_ms=now_utc_ms)
+    rows_1h = await query_trade_buckets(symbol=sym, bucket="1h", start_ms=current_hour_start_ms - 2 * hour_ms, end_ms=current_hour_start_ms - 1)
 
     latest_1m_by_market: dict[str, int] = {}
     for row in rows_1m:
@@ -1754,25 +1442,7 @@ async def coin_fund_intraday(
     timeline = [day_start_ms + i * bucket_ms for i in range(start_index, total_count)]
 
     query_bucket = "1m" if bucket == "5m" else bucket
-    async with SessionLocal() as session:
-        rows = (
-            (
-                await session.execute(
-                    select(TradeBucket)
-                    .where(
-                        and_(
-                            TradeBucket.symbol == sym,
-                            TradeBucket.bucket == query_bucket,
-                            TradeBucket.bucket_start_ms >= day_start_ms,
-                            TradeBucket.bucket_start_ms <= last_bucket_start,
-                        )
-                    )
-                    .order_by(TradeBucket.bucket_start_ms.asc())
-                )
-            )
-            .scalars()
-            .all()
-        )
+    rows = await query_trade_buckets(symbol=sym, bucket=query_bucket, start_ms=day_start_ms, end_ms=last_bucket_start)
 
     by_market: dict[str, dict[int, float]] = {"spot": {}, "swap": {}}
     for r in rows:
@@ -1848,27 +1518,9 @@ async def coin_orderbook_intraday(
 
     start_ms = max(0, last_bucket_start - (int(limit) - 1) * bucket_ms)
 
-    async with SessionLocal() as session:
-        rows = (
-            (
-                await session.execute(
-                    select(OrderbookFeatureBucket)
-                    .where(
-                        and_(
-                            OrderbookFeatureBucket.symbol == sym,
-                            OrderbookFeatureBucket.bucket == bucket,
-                            OrderbookFeatureBucket.bucket_start_ms >= start_ms,
-                            OrderbookFeatureBucket.bucket_start_ms <= last_bucket_start,
-                        )
-                    )
-                    .order_by(OrderbookFeatureBucket.bucket_start_ms.asc())
-                )
-            )
-            .scalars()
-            .all()
-        )
+    rows = await query_orderbook_features(symbol=sym, bucket=bucket, start_ms=start_ms, end_ms=last_bucket_start)
 
-    by_market: dict[str, dict[int, OrderbookFeatureBucket]] = {"spot": {}, "swap": {}}
+    by_market: dict[str, dict[int, OBFeatureRow]] = {"spot": {}, "swap": {}}
     for row in rows:
         by_market.setdefault(row.market, {})[int(row.bucket_start_ms)] = row
 
@@ -1893,7 +1545,7 @@ async def coin_orderbook_intraday(
         if swap is not None:
             swap_available = True
 
-        def _item_of(row: OrderbookFeatureBucket | None) -> dict:
+        def _item_of(row: OBFeatureRow | None) -> dict:
             if row is None:
                 return {
                     "spreadBps": None,
@@ -1952,46 +1604,11 @@ async def coin_orderbook_absorption_signal(
     lookback_minutes = 3 * 24 * 60
     start_ms = max(0, now_ms - lookback_minutes * 60 * 1000)
 
-    async with SessionLocal() as session:
-        ob_rows = (
-            (
-                await session.execute(
-                    select(OrderbookFeatureBucket)
-                    .where(
-                        and_(
-                            OrderbookFeatureBucket.market == effective_market,
-                            OrderbookFeatureBucket.symbol == sym,
-                            OrderbookFeatureBucket.bucket == "1m",
-                            OrderbookFeatureBucket.bucket_start_ms >= start_ms,
-                        )
-                    )
-                    .order_by(OrderbookFeatureBucket.bucket_start_ms.asc())
-                )
-            )
-            .scalars()
-            .all()
-        )
-        trade_rows = (
-            (
-                await session.execute(
-                    select(TradeBucket)
-                    .where(
-                        and_(
-                            TradeBucket.market == effective_market,
-                            TradeBucket.symbol == sym,
-                            TradeBucket.bucket == "1m",
-                            TradeBucket.bucket_start_ms >= start_ms,
-                        )
-                    )
-                    .order_by(TradeBucket.bucket_start_ms.asc())
-                )
-            )
-            .scalars()
-            .all()
-        )
+    ob_rows = await query_orderbook_features(market=effective_market, symbol=sym, bucket="1m", start_ms=start_ms)
+    trade_rows = await query_trade_buckets(market=effective_market, symbol=sym, bucket="1m", start_ms=start_ms)
 
-    ob_map: dict[int, OrderbookFeatureBucket] = {int(r.bucket_start_ms): r for r in ob_rows}
-    tr_map: dict[int, TradeBucket] = {int(r.bucket_start_ms): r for r in trade_rows}
+    ob_map: dict[int, OBFeatureRow] = {int(r.bucket_start_ms): r for r in ob_rows}
+    tr_map: dict[int, TradeBucketRow] = {int(r.bucket_start_ms): r for r in trade_rows}
 
     timeline = sorted(set(ob_map.keys()) | set(tr_map.keys()))
     if not timeline:
@@ -2274,25 +1891,7 @@ async def coin_recent(
 ) -> dict:
     sym = symbol.strip().upper()
     effective_market, market_fallback = await _resolve_effective_market_for_symbol(market, sym)
-    async with SessionLocal() as session:
-        rows = (
-            (
-                await session.execute(
-                    select(TradeBucket)
-                    .where(
-                        and_(
-                            TradeBucket.market == effective_market,
-                            TradeBucket.symbol == sym,
-                            TradeBucket.bucket == "15m",
-                        )
-                    )
-                    .order_by(desc(TradeBucket.bucket_start_ms))
-                    .limit(limit)
-                )
-            )
-            .scalars()
-            .all()
-        )
+    rows = await query_trade_buckets(market=effective_market, symbol=sym, bucket="15m", start_ms=0, order="desc", limit=limit)
 
     items = []
     for r in reversed(rows):
@@ -2329,25 +1928,7 @@ async def coin_recent_daily(
 ) -> dict:
     sym = symbol.strip().upper()
     effective_market, market_fallback = await _resolve_effective_market_for_symbol(market, sym)
-    async with SessionLocal() as session:
-        rows = (
-            (
-                await session.execute(
-                    select(TradeBucket)
-                    .where(
-                        and_(
-                            TradeBucket.market == effective_market,
-                            TradeBucket.symbol == sym,
-                            TradeBucket.bucket == "1d",
-                        )
-                    )
-                    .order_by(desc(TradeBucket.bucket_start_ms))
-                    .limit(days)
-                )
-            )
-            .scalars()
-            .all()
-        )
+    rows = await query_trade_buckets(market=effective_market, symbol=sym, bucket="1d", start_ms=0, order="desc", limit=days)
 
     items = []
     for r in reversed(rows):

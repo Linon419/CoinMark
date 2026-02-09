@@ -4,12 +4,10 @@ import time
 from decimal import Decimal, InvalidOperation
 
 from fastapi import APIRouter, Query
-from sqlalchemy import and_, func, select
 
 from coinmark_api.api.routes.coin import coin_fund_snapshots
 from coinmark_api.services.binance.rest import get_klines, get_pairs, get_ticker_24h_all
-from coinmark_api.db import SessionLocal
-from coinmark_api.models import TradeBucket
+from coinmark_api.ch import TradeBucketRow, query_trade_buckets
 
 
 router = APIRouter()
@@ -128,56 +126,33 @@ async def returns_rank(
     bms = _bucket_ms(bucket)
     last_closed_start = (now_ms // bms) * bms - bms
 
-    async with SessionLocal() as session:
-        cnt = (
-            await session.execute(
-                select(func.count()).where(
-                    and_(
-                        TradeBucket.market == market,
-                        TradeBucket.bucket == bucket,
-                        TradeBucket.bucket_start_ms == last_closed_start,
-                    )
-                )
-            )
-        ).scalar_one()
+    probe = await query_trade_buckets(
+        market=market, bucket=bucket,
+        start_ms=last_closed_start, end_ms=last_closed_start, limit=1,
+    )
 
-        target_start = last_closed_start
-        if cnt == 0:
-            target_start = (
-                await session.execute(
-                    select(func.max(TradeBucket.bucket_start_ms)).where(
-                        and_(TradeBucket.market == market, TradeBucket.bucket == bucket)
-                    )
-                )
-            ).scalar_one_or_none()
-
-        if target_start is None:
-            return {
-                "market": market,
-                "bucket": bucket,
-                "bucketStartMs": None,
-                "bucketEndMs": None,
-                "gainers": [],
-                "losers": [],
-            }
-
-        rows = (
-            (
-                await session.execute(
-                    select(TradeBucket).where(
-                        and_(
-                            TradeBucket.market == market,
-                            TradeBucket.bucket == bucket,
-                            TradeBucket.bucket_start_ms == target_start,
-                            TradeBucket.open_price.is_not(None),
-                            TradeBucket.close_price.is_not(None),
-                        )
-                    )
-                )
-            )
-            .scalars()
-            .all()
+    target_start = last_closed_start
+    if not probe:
+        fallback = await query_trade_buckets(
+            market=market, bucket=bucket, start_ms=0, order="desc", limit=1,
         )
+        target_start = fallback[0].bucket_start_ms if fallback else None
+
+    if target_start is None:
+        return {
+            "market": market,
+            "bucket": bucket,
+            "bucketStartMs": None,
+            "bucketEndMs": None,
+            "gainers": [],
+            "losers": [],
+        }
+
+    rows: list[TradeBucketRow] = await query_trade_buckets(
+        market=market, bucket=bucket,
+        start_ms=target_start, end_ms=target_start,
+    )
+    rows = [r for r in rows if r.open_price is not None and r.close_price is not None]
 
     items = []
     for r in rows:

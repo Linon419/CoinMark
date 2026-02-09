@@ -5,9 +5,10 @@ from typing import Any
 
 from sqlalchemy import and_, delete, desc, func, select
 
+from coinmark_api.ch import query_orderbook_features, query_trade_buckets
 from coinmark_api.db import SessionLocal
 from coinmark_api.db_upsert import insert
-from coinmark_api.models import AbsorptionSignalSnapshot, OrderbookFeatureBucket, TradeBucket
+from coinmark_api.models import AbsorptionSignalSnapshot
 from coinmark_api.services.binance.rest import get_ticker_24h_all
 
 
@@ -143,187 +144,153 @@ async def refresh_absorption_signal_snapshots(market: str = "swap", top_n: int =
     if not symbols:
         return
 
-    async with SessionLocal() as session:
-        ob_rows = (
-            (
-                await session.execute(
-                    select(OrderbookFeatureBucket)
-                    .where(
-                        and_(
-                            OrderbookFeatureBucket.market == market,
-                            OrderbookFeatureBucket.bucket == "1m",
-                            OrderbookFeatureBucket.symbol.in_(symbols),
-                            OrderbookFeatureBucket.bucket_start_ms >= full_start_ms,
-                        )
-                    )
-                    .order_by(OrderbookFeatureBucket.symbol.asc(), OrderbookFeatureBucket.bucket_start_ms.asc())
-                )
+    ob_rows = await query_orderbook_features(market=market, symbols=symbols, bucket="1m", start_ms=full_start_ms)
+    tr_rows = await query_trade_buckets(market=market, symbols=symbols, bucket="1m", start_ms=full_start_ms)
+
+    ob_by_symbol: dict[str, dict[int, Any]] = {}
+    tr_by_symbol: dict[str, dict[int, Any]] = {}
+    for row in ob_rows:
+        ob_by_symbol.setdefault(row.symbol, {})[int(row.bucket_start_ms)] = row
+    for row in tr_rows:
+        tr_by_symbol.setdefault(row.symbol, {})[int(row.bucket_start_ms)] = row
+
+    values: list[dict[str, Any]] = []
+    for sym in symbols:
+        ob_map = ob_by_symbol.get(sym, {})
+        tr_map = tr_by_symbol.get(sym, {})
+        timeline = sorted(set(ob_map.keys()) | set(tr_map.keys()))
+        if len(timeline) < 240:
+            continue
+
+        rows: list[dict[str, Any]] = []
+        for ts in timeline:
+            ob = ob_map.get(ts)
+            tr = tr_map.get(ts)
+
+            buy = _to_float(ob.taker_buy_notional if ob else (tr.taker_buy_notional if tr else 0)) or 0.0
+            sell = _to_float(ob.taker_sell_notional if ob else (tr.taker_sell_notional if tr else 0)) or 0.0
+            net = buy - sell
+            denom = buy + sell
+            aggr_buy_ratio = (buy / denom) if denom > 0 else None
+
+            sample_count = int(ob.sample_count or 0) if ob else 0
+            spread_bps = (_to_float(ob.spread_bps_sum) / sample_count) if (ob and sample_count > 0 and _to_float(ob.spread_bps_sum) is not None) else None
+
+            replenish_score = None
+            if ob:
+                dep = int(ob.depletion_events or 0)
+                rep = int(ob.replenishment_events or 0)
+                replenish_score = 50.0 if dep <= 0 else _clamp(rep / dep * 100.0, 0.0, 100.0)
+
+            close_price = _to_float(tr.close_price) if tr else None
+            rows.append(
+                {
+                    "ts": ts,
+                    "netBuyNotional": net,
+                    "aggrBuyRatio": aggr_buy_ratio,
+                    "spreadBps": spread_bps,
+                    "replenishScore": replenish_score,
+                    "closePrice": close_price,
+                }
             )
-            .scalars()
-            .all()
-        )
-        tr_rows = (
-            (
-                await session.execute(
-                    select(TradeBucket)
-                    .where(
-                        and_(
-                            TradeBucket.market == market,
-                            TradeBucket.bucket == "1m",
-                            TradeBucket.symbol.in_(symbols),
-                            TradeBucket.bucket_start_ms >= full_start_ms,
-                        )
-                    )
-                    .order_by(TradeBucket.symbol.asc(), TradeBucket.bucket_start_ms.asc())
-                )
-            )
-            .scalars()
-            .all()
-        )
 
-        ob_by_symbol: dict[str, dict[int, OrderbookFeatureBucket]] = {}
-        tr_by_symbol: dict[str, dict[int, TradeBucket]] = {}
-        for row in ob_rows:
-            ob_by_symbol.setdefault(row.symbol, {})[int(row.bucket_start_ms)] = row
-        for row in tr_rows:
-            tr_by_symbol.setdefault(row.symbol, {})[int(row.bucket_start_ms)] = row
+        for i in range(len(rows)):
+            prev = rows[i - 1] if i > 0 else None
+            cur_close = rows[i].get("closePrice")
+            prev_close = prev.get("closePrice") if prev else None
+            if cur_close is not None and prev_close is not None and prev_close > 0:
+                rows[i]["ret1m"] = cur_close / prev_close - 1.0
+            else:
+                rows[i]["ret1m"] = 0.0
 
-        values: list[dict[str, Any]] = []
-        for sym in symbols:
-            ob_map = ob_by_symbol.get(sym, {})
-            tr_map = tr_by_symbol.get(sym, {})
-            timeline = sorted(set(ob_map.keys()) | set(tr_map.keys()))
-            if len(timeline) < 240:
-                continue
+        spread_values = [float(r["spreadBps"]) for r in rows if r.get("spreadBps") is not None]
 
-            rows: list[dict[str, Any]] = []
-            for ts in timeline:
-                ob = ob_map.get(ts)
-                tr = tr_map.get(ts)
+        for side in ("LONG_BIAS", "SHORT_BIAS"):
+            w4h = _window_eval(rows, spread_values, 240, side, persistence_threshold=0.60, impact_threshold_pct=0.35)
+            w1d = _window_eval(rows, spread_values, 1440, side, persistence_threshold=0.55, impact_threshold_pct=0.80)
+            w3d = _window_eval(rows, spread_values, 4320, side, persistence_threshold=0.50, impact_threshold_pct=1.60)
+            s4h = _score_window(w4h, side)
+            s1d = _score_window(w1d, side)
+            s3d = _score_window(w3d, side)
 
-                buy = _to_float(ob.taker_buy_notional if ob else (tr.taker_buy_notional if tr else 0)) or 0.0
-                sell = _to_float(ob.taker_sell_notional if ob else (tr.taker_sell_notional if tr else 0)) or 0.0
-                net = buy - sell
-                denom = buy + sell
-                aggr_buy_ratio = (buy / denom) if denom > 0 else None
+            state = "NONE"
+            if w3d["passed"] and s3d >= 78:
+                state = "STRONG"
+            elif w1d["passed"] and s1d >= 65:
+                state = "CONFIRM"
+            elif w4h["passed"] and s4h >= 55:
+                state = "WATCH"
 
-                sample_count = int(ob.sample_count or 0) if ob else 0
-                spread_bps = (_to_float(ob.spread_bps_sum) / sample_count) if (ob and sample_count > 0 and _to_float(ob.spread_bps_sum) is not None) else None
-
-                replenish_score = None
-                if ob:
-                    dep = int(ob.depletion_events or 0)
-                    rep = int(ob.replenishment_events or 0)
-                    replenish_score = 50.0 if dep <= 0 else _clamp(rep / dep * 100.0, 0.0, 100.0)
-
-                close_price = _to_float(tr.close_price) if tr else None
-                rows.append(
-                    {
-                        "ts": ts,
-                        "netBuyNotional": net,
-                        "aggrBuyRatio": aggr_buy_ratio,
-                        "spreadBps": spread_bps,
-                        "replenishScore": replenish_score,
-                        "closePrice": close_price,
-                    }
-                )
-
-            for i in range(len(rows)):
-                prev = rows[i - 1] if i > 0 else None
-                cur_close = rows[i].get("closePrice")
-                prev_close = prev.get("closePrice") if prev else None
-                if cur_close is not None and prev_close is not None and prev_close > 0:
-                    rows[i]["ret1m"] = cur_close / prev_close - 1.0
-                else:
-                    rows[i]["ret1m"] = 0.0
-
-            spread_values = [float(r["spreadBps"]) for r in rows if r.get("spreadBps") is not None]
-
-            for side in ("LONG_BIAS", "SHORT_BIAS"):
-                w4h = _window_eval(rows, spread_values, 240, side, persistence_threshold=0.60, impact_threshold_pct=0.35)
-                w1d = _window_eval(rows, spread_values, 1440, side, persistence_threshold=0.55, impact_threshold_pct=0.80)
-                w3d = _window_eval(rows, spread_values, 4320, side, persistence_threshold=0.50, impact_threshold_pct=1.60)
-                s4h = _score_window(w4h, side)
-                s1d = _score_window(w1d, side)
-                s3d = _score_window(w3d, side)
-
-                state = "NONE"
-                if w3d["passed"] and s3d >= 78:
-                    state = "STRONG"
-                elif w1d["passed"] and s1d >= 65:
-                    state = "CONFIRM"
-                elif w4h["passed"] and s4h >= 55:
+            score = 0.0
+            continuation_reason: str | None = None
+            if state == "NONE":
+                recent4h = rows[-240:] if rows else []
+                recent12h = rows[-720:] if len(rows) >= 720 else rows
+                flow4h = _safe_mean([float(r.get("netBuyNotional") or 0.0) for r in recent4h]) or 0.0
+                flow12h = _safe_mean([float(r.get("netBuyNotional") or 0.0) for r in recent12h]) or 0.0
+                persistence_1d = float(w1d.get("buyPersistenceRatio") or 0.0) if side == "LONG_BIAS" else float(w1d.get("sellPersistenceRatio") or 0.0)
+                continuation_ok = (
+                    flow4h > 0 and flow12h > 0 if side == "LONG_BIAS" else flow4h < 0 and flow12h < 0
+                ) and persistence_1d >= 0.50 and float(w1d.get("netRetAbsPct") or 99.0) <= 1.20
+                if continuation_ok and max(s4h, s1d) >= 52:
                     state = "WATCH"
+                    score = max(52.0, min(68.0, max(s4h, s1d)))
+                    continuation_reason = "FLOW_CONTINUATION_12H"
 
-                score = 0.0
-                continuation_reason: str | None = None
-                if state == "NONE":
-                    recent4h = rows[-240:] if rows else []
-                    recent12h = rows[-720:] if len(rows) >= 720 else rows
-                    flow4h = _safe_mean([float(r.get("netBuyNotional") or 0.0) for r in recent4h]) or 0.0
-                    flow12h = _safe_mean([float(r.get("netBuyNotional") or 0.0) for r in recent12h]) or 0.0
-                    persistence_1d = float(w1d.get("buyPersistenceRatio") or 0.0) if side == "LONG_BIAS" else float(w1d.get("sellPersistenceRatio") or 0.0)
-                    continuation_ok = (
-                        flow4h > 0 and flow12h > 0 if side == "LONG_BIAS" else flow4h < 0 and flow12h < 0
-                    ) and persistence_1d >= 0.50 and float(w1d.get("netRetAbsPct") or 99.0) <= 1.20
-                    if continuation_ok and max(s4h, s1d) >= 52:
-                        state = "WATCH"
-                        score = max(52.0, min(68.0, max(s4h, s1d)))
-                        continuation_reason = "FLOW_CONTINUATION_12H"
+            if state == "WATCH":
+                score = max(score, s4h)
+            elif state == "CONFIRM":
+                score = max(s4h, s1d)
+            elif state == "STRONG":
+                score = max(s4h, s1d, s3d)
 
-                if state == "WATCH":
-                    score = max(score, s4h)
-                elif state == "CONFIRM":
-                    score = max(s4h, s1d)
-                elif state == "STRONG":
-                    score = max(s4h, s1d, s3d)
+            impact_vals: list[float] = []
+            for r in rows[-20:]:
+                net = float(r.get("netBuyNotional") or 0.0)
+                ret = float(r.get("ret1m") or 0.0)
+                if abs(net) > 1e-9:
+                    impact_vals.append(abs(ret) / abs(net))
+            impact_avg = _safe_mean(impact_vals)
 
-                impact_vals: list[float] = []
-                for r in rows[-20:]:
-                    net = float(r.get("netBuyNotional") or 0.0)
-                    ret = float(r.get("ret1m") or 0.0)
-                    if abs(net) > 1e-9:
-                        impact_vals.append(abs(ret) / abs(net))
-                impact_avg = _safe_mean(impact_vals)
+            net_strength = _safe_mean([float(r.get("netBuyNotional") or 0.0) for r in rows[-20:]])
 
-                net_strength = _safe_mean([float(r.get("netBuyNotional") or 0.0) for r in rows[-20:]])
+            reasons: list[str] = []
+            if w4h["passed"]:
+                reasons.append("4h通过")
+            if w1d["passed"]:
+                reasons.append("1d通过")
+            if w3d["passed"]:
+                reasons.append("3d通过")
+            if not reasons:
+                reasons.append("未触发")
 
-                reasons: list[str] = []
-                if w4h["passed"]:
-                    reasons.append("4h通过")
-                if w1d["passed"]:
-                    reasons.append("1d通过")
-                if w3d["passed"]:
-                    reasons.append("3d通过")
-                if not reasons:
-                    reasons.append("未触发")
+            if continuation_reason:
+                reasons.append(continuation_reason)
 
-                if continuation_reason:
-                    reasons.append(continuation_reason)
+            values.append(
+                {
+                    "market": market,
+                    "symbol": sym,
+                    "bucket_start_ms": bucket_start_ms,
+                    "direction": side,
+                    "signal_state": state,
+                    "score": score,
+                    "net_flow_strength": net_strength,
+                    "impact_per_notional": impact_avg,
+                    "window_4h_passed": bool(w4h["passed"]),
+                    "window_1d_passed": bool(w1d["passed"]),
+                    "window_3d_passed": bool(w3d["passed"]),
+                    "windows": {
+                        "4h": {**w4h, "score": s4h},
+                        "1d": {**w1d, "score": s1d},
+                        "3d": {**w3d, "score": s3d},
+                    },
+                    "reasons": reasons,
+                }
+            )
 
-                values.append(
-                    {
-                        "market": market,
-                        "symbol": sym,
-                        "bucket_start_ms": bucket_start_ms,
-                        "direction": side,
-                        "signal_state": state,
-                        "score": score,
-                        "net_flow_strength": net_strength,
-                        "impact_per_notional": impact_avg,
-                        "window_4h_passed": bool(w4h["passed"]),
-                        "window_1d_passed": bool(w1d["passed"]),
-                        "window_3d_passed": bool(w3d["passed"]),
-                        "windows": {
-                            "4h": {**w4h, "score": s4h},
-                            "1d": {**w1d, "score": s1d},
-                            "3d": {**w3d, "score": s3d},
-                        },
-                        "reasons": reasons,
-                    }
-                )
-
-        if values:
+    if values:
+        async with SessionLocal() as session:
             stmt = insert(AbsorptionSignalSnapshot).values(values)
             stmt = stmt.on_conflict_do_update(
                 index_elements=["market", "symbol", "bucket_start_ms", "direction"],

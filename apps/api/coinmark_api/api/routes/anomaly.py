@@ -8,7 +8,7 @@ from fastapi import APIRouter, Query
 from sqlalchemy import and_, desc, func, select
 
 from coinmark_api.db import SessionLocal
-from coinmark_api.models import AnomalyEvent, SRLevel, OrderbookFeatureBucket, TradeBucket
+from coinmark_api.models import AnomalyEvent, SRLevel
 from coinmark_api.services.absorption_signal import list_latest_absorption_signals
 from coinmark_api.services.institutional_levels import list_latest_institutional_levels
 
@@ -189,6 +189,8 @@ def _event_base_score(event_type: str) -> float:
         return 65.0
     if t in {"signal_lab_bid_wall", "signal_lab_ask_wall"}:
         return 62.0
+    if t in {"signal_lab_climax_short", "signal_lab_climax_long"}:
+        return 68.0
     if t == "volume_spike":
         return 45.0
     if t == "amplitude_spike":
@@ -281,6 +283,27 @@ def _event_narrative(
             parts.append(f"买入占比 {buy_ratio * 100.0:.1f}%")
         if large_count is not None:
             parts.append(f"大单次数 {int(large_count)}")
+        return "，".join(parts)
+
+    if t in {"signal_lab_climax_short", "signal_lab_climax_long"}:
+        direction = str(data.get("direction") or "short")
+        dir_cn = "看空" if direction == "short" else "看多"
+        vol_ratio = _to_float(data.get("volumeRatio"))
+        cascade_ratio = _to_float(data.get("cascadeBuyRatio"))
+        ob_imb = _to_float(data.get("obImbalance"))
+        score = _to_float(data.get("score"))
+        parts: list[str] = [f"{symbol} 天量反转{dir_cn}"]
+        if vol_ratio is not None:
+            parts.append(f"量能 {vol_ratio:.1f}x")
+        if cascade_ratio is not None:
+            if direction == "short":
+                parts.append(f"砸盘买比 {cascade_ratio * 100:.0f}%")
+            else:
+                parts.append(f"抢筹买比 {cascade_ratio * 100:.0f}%")
+        if ob_imb is not None:
+            parts.append(f"深度偏移 {ob_imb:+.2f}")
+        if score is not None:
+            parts.append(f"评分 {score:.1f}")
         return "，".join(parts)
 
     if t in {"signal_lab_bid_wall", "signal_lab_ask_wall"}:

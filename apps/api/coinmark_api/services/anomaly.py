@@ -8,9 +8,10 @@ from typing import Any, Iterable
 
 from sqlalchemy import and_, select, func
 
+from coinmark_api.ch import TradeBucketRow, query_trade_buckets
 from coinmark_api.db import SessionLocal
 from coinmark_api.db_upsert import insert
-from coinmark_api.models import AnomalyEvent, SRLevel, TradeBucket
+from coinmark_api.models import AnomalyEvent, SRLevel
 
 
 def _to_decimal(v: Any) -> Decimal | None:
@@ -167,112 +168,100 @@ async def refresh_sr_levels(
     if not symbols:
         return
 
+    all_values: list[dict[str, Any]] = []
+
+    for sym in symbols:
+        rows = await query_trade_buckets(
+            market=market, symbol=sym, bucket="4h",
+            start_ms=0, order="desc", limit=lookback_4h,
+        )
+        if len(rows) < 20:
+            continue
+
+        candles: list[Candle] = []
+        for r in reversed(rows):
+            o = _to_decimal(r.open_price)
+            h = _to_decimal(r.high_price)
+            l = _to_decimal(r.low_price)
+            c = _to_decimal(r.close_price)
+            qv = _to_decimal(r.quote_notional) or Decimal("0")
+            if o is None or h is None or l is None or c is None:
+                continue
+            candles.append(
+                Candle(
+                    start_ms=int(r.bucket_start_ms),
+                    open=o,
+                    high=h,
+                    low=l,
+                    close=c,
+                    quote_notional=qv,
+                )
+            )
+
+        pivots = _find_pivots(candles, zigzag_pct, zigzag_min_bars)
+        if not pivots:
+            continue
+
+        level_candidates = _cluster_prices((p for _, p in pivots), cluster_pct)
+        if not level_candidates:
+            continue
+
+        now_ms = int(time.time() * 1000)
+        values: list[dict[str, Any]] = []
+        for lp in level_candidates:
+            level_price = _quantize_level_price(lp)
+            tol = abs(level_price) * cluster_pct
+            touches = 0
+            last_touch_ms = 0
+            touch_qv = Decimal("0")
+
+            for c in candles:
+                if c.low - tol <= level_price <= c.high + tol:
+                    touches += 1
+                    last_touch_ms = max(last_touch_ms, c.start_ms + _bucket_ms("4h"))
+                    touch_qv += c.quote_notional
+
+            if touches < min_touches:
+                continue
+
+            recency_days = max(0.0, (now_ms - last_touch_ms) / 86_400_000.0)
+            recency_factor = math.exp(-recency_days / 10.0)
+            volume_bonus = 1.0 + math.log1p(float(touch_qv / Decimal("1000000")))
+            strength = float(touches) * volume_bonus * recency_factor
+
+            values.append(
+                {
+                    "market": market,
+                    "symbol": sym,
+                    "level_price": level_price,
+                    "timeframe": "4h",
+                    "touches": touches,
+                    "strength_score": Decimal(str(strength)),
+                    "last_touch_ms": int(last_touch_ms),
+                }
+            )
+
+        if not values:
+            continue
+
+        values.sort(key=lambda x: float(x["strength_score"]), reverse=True)
+        all_values.extend(values[:max_levels_per_symbol])
+
+    if not all_values:
+        return
+
     async with SessionLocal() as session:
-        # 逐个 symbol 查 4h 历史，避免一次 IN 拉太多导致内存峰值
-        for sym in symbols:
-            rows = (
-                (
-                    await session.execute(
-                        select(TradeBucket)
-                        .where(
-                            and_(
-                                TradeBucket.market == market,
-                                TradeBucket.symbol == sym,
-                                TradeBucket.bucket == "4h",
-                            )
-                        )
-                        .order_by(TradeBucket.bucket_start_ms.desc())
-                        .limit(lookback_4h)
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            if len(rows) < 20:
-                continue
-
-            candles: list[Candle] = []
-            for r in reversed(rows):
-                o = _to_decimal(r.open_price)
-                h = _to_decimal(r.high_price)
-                l = _to_decimal(r.low_price)
-                c = _to_decimal(r.close_price)
-                qv = _to_decimal(r.quote_notional) or Decimal("0")
-                if o is None or h is None or l is None or c is None:
-                    continue
-                candles.append(
-                    Candle(
-                        start_ms=int(r.bucket_start_ms),
-                        open=o,
-                        high=h,
-                        low=l,
-                        close=c,
-                        quote_notional=qv,
-                    )
-                )
-
-            pivots = _find_pivots(candles, zigzag_pct, zigzag_min_bars)
-            if not pivots:
-                continue
-
-            level_candidates = _cluster_prices((p for _, p in pivots), cluster_pct)
-            if not level_candidates:
-                continue
-
-            now_ms = int(time.time() * 1000)
-            values: list[dict[str, Any]] = []
-            for lp in level_candidates:
-                level_price = _quantize_level_price(lp)
-                tol = abs(level_price) * cluster_pct
-                touches = 0
-                last_touch_ms = 0
-                touch_qv = Decimal("0")
-
-                for c in candles:
-                    if c.low - tol <= level_price <= c.high + tol:
-                        touches += 1
-                        last_touch_ms = max(last_touch_ms, c.start_ms + _bucket_ms("4h"))
-                        touch_qv += c.quote_notional
-
-                if touches < min_touches:
-                    continue
-
-                # strength：可解释、可复算、可调参
-                recency_days = max(0.0, (now_ms - last_touch_ms) / 86_400_000.0)
-                recency_factor = math.exp(-recency_days / 10.0)
-                volume_bonus = 1.0 + math.log1p(float(touch_qv / Decimal("1000000")))
-                strength = float(touches) * volume_bonus * recency_factor
-
-                values.append(
-                    {
-                        "market": market,
-                        "symbol": sym,
-                        "level_price": level_price,
-                        "timeframe": "4h",
-                        "touches": touches,
-                        "strength_score": Decimal(str(strength)),
-                        "last_touch_ms": int(last_touch_ms),
-                    }
-                )
-
-            if not values:
-                continue
-
-            values.sort(key=lambda x: float(x["strength_score"]), reverse=True)
-            values = values[:max_levels_per_symbol]
-
-            stmt = insert(SRLevel).values(values)
-            stmt = stmt.on_conflict_do_update(
-                index_elements=["market", "symbol", "timeframe", "level_price"],
-                set_={
-                    "touches": stmt.excluded.touches,
-                    "strength_score": stmt.excluded.strength_score,
-                    "last_touch_ms": stmt.excluded.last_touch_ms,
-                    "updated_at": func.now(),  # type: ignore[name-defined]
-                },
-            )
-            await session.execute(stmt)
-
+        stmt = insert(SRLevel).values(all_values)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["market", "symbol", "timeframe", "level_price"],
+            set_={
+                "touches": stmt.excluded.touches,
+                "strength_score": stmt.excluded.strength_score,
+                "last_touch_ms": stmt.excluded.last_touch_ms,
+                "updated_at": func.now(),  # type: ignore[name-defined]
+            },
+        )
+        await session.execute(stmt)
         await session.commit()
 
 
@@ -298,6 +287,16 @@ async def scan_anomalies(
     last_closed_start = cur_start - b15
     start_ms = last_closed_start - (history_15m + 4) * b15
 
+    # 拉取 15m 历史（ClickHouse）
+    rows = await query_trade_buckets(
+        market=market, symbols=symbols, bucket="15m",
+        start_ms=start_ms, end_ms=last_closed_start,
+    )
+
+    series: dict[str, list[TradeBucketRow]] = {}
+    for r in rows:
+        series.setdefault(r.symbol, []).append(r)
+
     async with SessionLocal() as session:
         # 预取 sr_levels
         lvl_rows = (
@@ -321,31 +320,6 @@ async def scan_anomalies(
         for r in lvl_rows:
             levels_by_symbol.setdefault(r.symbol, []).append(r)
 
-        # 拉取 15m 历史
-        rows = (
-            (
-                await session.execute(
-                    select(TradeBucket)
-                    .where(
-                        and_(
-                            TradeBucket.market == market,
-                            TradeBucket.bucket == "15m",
-                            TradeBucket.symbol.in_(symbols),
-                            TradeBucket.bucket_start_ms >= start_ms,
-                            TradeBucket.bucket_start_ms <= last_closed_start,
-                        )
-                    )
-                    .order_by(TradeBucket.symbol.asc(), TradeBucket.bucket_start_ms.asc())
-                )
-            )
-            .scalars()
-            .all()
-        )
-
-        series: dict[str, list[TradeBucket]] = {}
-        for r in rows:
-            series.setdefault(r.symbol, []).append(r)
-
         new_events: list[dict[str, Any]] = []
         for sym, s in series.items():
             if len(s) < 10:
@@ -354,7 +328,7 @@ async def scan_anomalies(
             if not lvls:
                 continue
 
-            def _candle(tb: TradeBucket) -> Candle | None:
+            def _candle(tb: TradeBucketRow) -> Candle | None:
                 o = _to_decimal(tb.open_price)
                 h = _to_decimal(tb.high_price)
                 l = _to_decimal(tb.low_price)
