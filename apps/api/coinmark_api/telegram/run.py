@@ -13,9 +13,10 @@ from redis.asyncio import Redis
 from redis.asyncio import from_url as redis_from_url
 from sqlalchemy import and_, desc, func, select
 
+from coinmark_api.ch import TradeBucketRow, query_trade_buckets
 from coinmark_api.config import settings
 from coinmark_api.db import SessionLocal
-from coinmark_api.models import AbsorptionSignalSnapshot, AnomalyEvent, TradeBucket
+from coinmark_api.models import AbsorptionSignalSnapshot, AnomalyEvent
 
 
 logging.basicConfig(level=getattr(logging, settings.api_log_level.upper(), logging.INFO))
@@ -289,22 +290,14 @@ class TgAnomalyNotifier:
 class QueryService:
     @staticmethod
     async def latest_price(symbol: str, market: str = "swap") -> dict[str, Any] | None:
-        async with SessionLocal() as session:
-            stmt = (
-                select(TradeBucket)
-                .where(
-                    and_(
-                        TradeBucket.market == market,
-                        TradeBucket.symbol == symbol,
-                        TradeBucket.bucket == "1m",
-                    )
-                )
-                .order_by(TradeBucket.bucket_start_ms.desc())
-                .limit(1)
-            )
-            row = (await session.execute(stmt)).scalars().first()
-        if not row:
+        rows = await query_trade_buckets(
+            market=market, symbol=symbol, bucket="1m",
+            start_ms=int(time.time() * 1000) - 5 * 60_000,
+            order="desc", limit=1,
+        )
+        if not rows:
             return None
+        row: TradeBucketRow = rows[0]
         close_price = _to_float(row.close_price)
         buy = _to_float(row.taker_buy_notional) or 0.0
         sell = _to_float(row.taker_sell_notional) or 0.0
@@ -319,23 +312,14 @@ class QueryService:
 
     @staticmethod
     async def fund_snapshot(symbol: str, market: str = "swap") -> dict[str, Any] | None:
-        async with SessionLocal() as session:
-            stmt = (
-                select(TradeBucket)
-                .where(
-                    and_(
-                        TradeBucket.market == market,
-                        TradeBucket.symbol == symbol,
-                        TradeBucket.bucket == "1h",
-                    )
-                )
-                .order_by(TradeBucket.bucket_start_ms.desc())
-                .limit(24)
-            )
-            rows = (await session.execute(stmt)).scalars().all()
+        rows = await query_trade_buckets(
+            market=market, symbol=symbol, bucket="1h",
+            start_ms=int(time.time() * 1000) - 25 * 3_600_000,
+            order="desc", limit=24,
+        )
         if not rows:
             return None
-        latest = rows[0]
+        latest: TradeBucketRow = rows[0]
         net_1h = (_to_float(latest.taker_buy_notional) or 0.0) - (_to_float(latest.taker_sell_notional) or 0.0)
         net_24h = 0.0
         for r in rows:

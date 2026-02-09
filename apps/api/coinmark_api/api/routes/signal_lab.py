@@ -20,20 +20,27 @@ MarketScope = Literal["spot", "swap", "both"]
 
 
 class SignalLabParamBody(BaseModel):
+    bucket: str = Field(default="1h", pattern="^(1m|15m|1h|4h)$")
     z_threshold: float = Field(default=2.8, ge=1.0, le=6.0)
-    lookback_minutes: int = Field(default=1440, ge=60, le=7 * 24 * 60)
-    detection_window_minutes: int = Field(default=240, ge=15, le=24 * 60)
-    min_large_count: int = Field(default=6, ge=1, le=20)
+    lookback_minutes: int = Field(default=4320, ge=60, le=30 * 24 * 60)
+    detection_window_minutes: int = Field(default=1440, ge=15, le=7 * 24 * 60)
+    min_large_count: int = Field(default=3, ge=1, le=20)
     buy_ratio_threshold: float = Field(default=0.8, ge=0.5, le=1.0)
-    min_persistent_span_minutes: int = Field(default=90, ge=10, le=24 * 60)
-    min_avg_interval_minutes: int = Field(default=8, ge=1, le=120)
-    min_distinct_time_buckets: int = Field(default=4, ge=2, le=24)
-    forecast_horizon_minutes: int = Field(default=60, ge=5, le=24 * 60)
-    cooldown_minutes: int = Field(default=180, ge=1, le=12 * 60)
+    min_persistent_span_minutes: int = Field(default=180, ge=10, le=7 * 24 * 60)
+    min_avg_interval_minutes: int = Field(default=60, ge=1, le=1440)
+    min_distinct_time_buckets: int = Field(default=3, ge=2, le=24)
+    forecast_horizon_minutes: int = Field(default=240, ge=5, le=7 * 24 * 60)
+    cooldown_minutes: int = Field(default=720, ge=1, le=48 * 60)
+    single_large_z_threshold: float = Field(default=3.5, ge=2.0, le=8.0)
+    single_large_min_notional: float = Field(default=10000.0, ge=0, le=1000000)
+    single_large_cooldown_minutes: int = Field(default=240, ge=1, le=48 * 60)
+    slope_window_minutes: int = Field(default=720, ge=10, le=7 * 24 * 60)
+    slope_r2_threshold: float = Field(default=0.7, ge=0.3, le=1.0)
     symbol_limit: int = Field(default=200, ge=20, le=400)
 
     def to_service(self) -> SignalLabParams:
         return SignalLabParams(
+            bucket=str(self.bucket),
             z_threshold=float(self.z_threshold),
             lookback_minutes=int(self.lookback_minutes),
             detection_window_minutes=int(self.detection_window_minutes),
@@ -44,6 +51,11 @@ class SignalLabParamBody(BaseModel):
             min_distinct_time_buckets=int(self.min_distinct_time_buckets),
             forecast_horizon_minutes=int(self.forecast_horizon_minutes),
             cooldown_minutes=int(self.cooldown_minutes),
+            single_large_z_threshold=float(self.single_large_z_threshold),
+            single_large_min_notional=float(self.single_large_min_notional),
+            single_large_cooldown_minutes=int(self.single_large_cooldown_minutes),
+            slope_window_minutes=int(self.slope_window_minutes),
+            slope_r2_threshold=float(self.slope_r2_threshold),
             symbol_limit=int(self.symbol_limit),
         )
 
@@ -78,18 +90,25 @@ async def realtime(
     limit: int = Query(100, ge=10, le=300),
     min_signal_state: str = Query("CONFIRM", alias="minSignalState", pattern="^(WATCH|CONFIRM|STRONG|HIGH)$"),
     sync_score_flow: bool = Query(True, alias="syncScoreFlow"),
+    bucket: str = Query("1h", pattern="^(1m|15m|1h|4h)$"),
     z_threshold: float = Query(2.8, alias="zThreshold", ge=1.0, le=6.0),
-    lookback_minutes: int = Query(1440, alias="lookbackMinutes", ge=60, le=7 * 24 * 60),
-    detection_window_minutes: int = Query(240, alias="detectionWindowMinutes", ge=15, le=24 * 60),
-    min_large_count: int = Query(6, alias="minLargeCount", ge=1, le=20),
+    lookback_minutes: int = Query(4320, alias="lookbackMinutes", ge=60, le=30 * 24 * 60),
+    detection_window_minutes: int = Query(1440, alias="detectionWindowMinutes", ge=15, le=7 * 24 * 60),
+    min_large_count: int = Query(3, alias="minLargeCount", ge=1, le=20),
     buy_ratio_threshold: float = Query(0.8, alias="buyRatioThreshold", ge=0.5, le=1.0),
-    min_persistent_span_minutes: int = Query(90, alias="minPersistentSpanMinutes", ge=10, le=24 * 60),
-    min_avg_interval_minutes: int = Query(8, alias="minAvgIntervalMinutes", ge=1, le=120),
-    min_distinct_time_buckets: int = Query(4, alias="minDistinctTimeBuckets", ge=2, le=24),
-    cooldown_minutes: int = Query(180, alias="cooldownMinutes", ge=1, le=12 * 60),
+    min_persistent_span_minutes: int = Query(180, alias="minPersistentSpanMinutes", ge=10, le=7 * 24 * 60),
+    min_avg_interval_minutes: int = Query(60, alias="minAvgIntervalMinutes", ge=1, le=1440),
+    min_distinct_time_buckets: int = Query(3, alias="minDistinctTimeBuckets", ge=2, le=24),
+    cooldown_minutes: int = Query(720, alias="cooldownMinutes", ge=1, le=48 * 60),
+    single_large_z_threshold: float = Query(3.5, alias="singleLargeZThreshold", ge=2.0, le=8.0),
+    single_large_min_notional: float = Query(10000.0, alias="singleLargeMinNotional", ge=0, le=1000000),
+    single_large_cooldown_minutes: int = Query(240, alias="singleLargeCooldownMinutes", ge=1, le=48 * 60),
+    slope_window_minutes: int = Query(720, alias="slopeWindowMinutes", ge=10, le=7 * 24 * 60),
+    slope_r2_threshold: float = Query(0.7, alias="slopeR2Threshold", ge=0.3, le=1.0),
     symbol_limit: int = Query(200, alias="symbolLimit", ge=20, le=400),
 ) -> dict:
     params = SignalLabParams(
+        bucket=str(bucket),
         z_threshold=float(z_threshold),
         lookback_minutes=int(lookback_minutes),
         detection_window_minutes=int(detection_window_minutes),
@@ -99,6 +118,11 @@ async def realtime(
         min_avg_interval_minutes=int(min_avg_interval_minutes),
         min_distinct_time_buckets=int(min_distinct_time_buckets),
         cooldown_minutes=int(cooldown_minutes),
+        single_large_z_threshold=float(single_large_z_threshold),
+        single_large_min_notional=float(single_large_min_notional),
+        single_large_cooldown_minutes=int(single_large_cooldown_minutes),
+        slope_window_minutes=int(slope_window_minutes),
+        slope_r2_threshold=float(slope_r2_threshold),
         symbol_limit=int(symbol_limit),
     )
     return await get_realtime_signals(

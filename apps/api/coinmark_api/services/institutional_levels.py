@@ -5,9 +5,12 @@ from typing import Any, Literal
 
 from sqlalchemy import and_, desc, func, select
 
-from coinmark_api.db import SessionLocal
+from coinmark_api.ch import OBFeatureRow, TradeBucketRow, query_market_caps, query_orderbook_features, query_trade_buckets
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from coinmark_api.db import SessionLocal, write_session
 from coinmark_api.db_upsert import insert
-from coinmark_api.models import AssetMarketCap, InstitutionalLevelSnapshot, OrderbookFeatureBucket, TradeBucket
+from coinmark_api.models import InstitutionalLevelSnapshot
 from coinmark_api.services.binance.rest import get_ticker_24h_all
 
 
@@ -74,8 +77,8 @@ def _signal_rank(state: str) -> int:
 
 
 def _build_merged_rows(
-    ob_map: dict[int, OrderbookFeatureBucket],
-    tr_map: dict[int, TradeBucket],
+    ob_map: dict[int, OBFeatureRow],
+    tr_map: dict[int, TradeBucketRow],
 ) -> list[dict[str, Any]]:
     timeline = sorted(set(ob_map.keys()) | set(tr_map.keys()))
     if not timeline:
@@ -103,6 +106,12 @@ def _build_merged_rows(
             rep = int(ob.replenishment_events or 0)
             replenish_score = 50.0 if dep <= 0 else _clamp(rep / dep * 100.0, 0.0, 100.0)
 
+        wall_pressure_l20 = None
+        depth_imbalance_l20 = None
+        if ob and sample_count > 0:
+            wall_pressure_l20 = _to_float(ob.wall_pressure_l20_sum) / sample_count if _to_float(ob.wall_pressure_l20_sum) is not None else None
+            depth_imbalance_l20 = _to_float(ob.depth_imbalance_l20_sum) / sample_count if _to_float(ob.depth_imbalance_l20_sum) is not None else None
+
         rows.append(
             {
                 "ts": ts,
@@ -116,6 +125,8 @@ def _build_merged_rows(
                 "closePrice": _to_float(tr.close_price) if tr else None,
                 "highPrice": _to_float(tr.high_price) if tr else None,
                 "lowPrice": _to_float(tr.low_price) if tr else None,
+                "wallPressureL20": wall_pressure_l20,
+                "depthImbalanceL20": depth_imbalance_l20,
             }
         )
 
@@ -269,7 +280,14 @@ def _score_zone(
     recent_quote = _safe_mean(quote_vals[-20:]) or 0.0
     part_rank = _percentile_rank(participation, recent_participation) or 0.0
     quote_rank = _percentile_rank(quote_vals, recent_quote) or 0.0
-    size_score = _clamp(((part_rank + quote_rank) / 2.0) * 100.0, 0.0, 100.0)
+    base_size_score = ((part_rank + quote_rank) / 2.0) * 100.0
+
+    l20_vals = [float(r.get("wallPressureL20") or 0.0) for r in recent60 if r.get("wallPressureL20") is not None]
+    l20_mean = _safe_mean(l20_vals) or 0.0
+    l20_aligned = side_sign * l20_mean
+    deep_wall_bonus = _clamp(l20_aligned * 25.0, -10.0, 15.0)
+
+    size_score = _clamp(base_size_score + deep_wall_bonus, 0.0, 100.0)
 
     dep_sum = sum(int(r.get("depletionEvents") or 0) for r in recent60)
     rep_sum = sum(int(r.get("replenishmentEvents") or 0) for r in recent60)
@@ -343,7 +361,7 @@ def _score_zone(
     }
 
 
-async def refresh_institutional_level_snapshots(market: str = "swap", top_n: int = 200) -> None:
+async def refresh_institutional_level_snapshots(market: str = "swap", top_n: int = 200, *, session: AsyncSession | None = None) -> None:
     now_ms = int(time.time() * 1000)
     full_start_ms = now_ms - 24 * 60 * 60 * 1000
     bucket_start_ms = (now_ms // 60_000) * 60_000
@@ -366,120 +384,85 @@ async def refresh_institutional_level_snapshots(market: str = "swap", top_n: int
     if not symbols:
         return
 
-    async with SessionLocal() as session:
-        assets = sorted({s[:-4] for s in symbols if s.endswith("USDT")})
-        market_cap_by_symbol: dict[str, float] = {}
-        if assets:
-            cap_rows = (
-                await session.execute(
-                    select(AssetMarketCap.asset, AssetMarketCap.market_cap_usd).where(AssetMarketCap.asset.in_(assets))
-                )
-            ).all()
-            for asset, cap in cap_rows:
-                cap_value = _to_float(cap)
-                if cap_value is not None and cap_value > 0:
-                    market_cap_by_symbol[f"{str(asset).upper()}USDT"] = cap_value
+    assets = sorted({s[:-4] for s in symbols if s.endswith("USDT")})
+    market_cap_by_symbol: dict[str, float] = {}
+    if assets:
+        cap_rows = await query_market_caps(assets=assets)
+        for r in cap_rows:
+            cap_value = _to_float(r.market_cap_usd)
+            if cap_value is not None and cap_value > 0:
+                market_cap_by_symbol[f"{str(r.asset).upper()}USDT"] = cap_value
 
-        ob_rows = (
-            (
-                await session.execute(
-                    select(OrderbookFeatureBucket)
-                    .where(
-                        and_(
-                            OrderbookFeatureBucket.market == market,
-                            OrderbookFeatureBucket.bucket == "1m",
-                            OrderbookFeatureBucket.symbol.in_(symbols),
-                            OrderbookFeatureBucket.bucket_start_ms >= full_start_ms,
-                        )
-                    )
-                    .order_by(OrderbookFeatureBucket.symbol.asc(), OrderbookFeatureBucket.bucket_start_ms.asc())
-                )
+    ob_rows = await query_orderbook_features(market=market, symbols=symbols, bucket="1m", start_ms=full_start_ms)
+    tr_rows = await query_trade_buckets(market=market, symbols=symbols, bucket="1m", start_ms=full_start_ms)
+
+    ob_by_symbol: dict[str, dict[int, OBFeatureRow]] = {}
+    tr_by_symbol: dict[str, dict[int, TradeBucketRow]] = {}
+    for row in ob_rows:
+        ob_by_symbol.setdefault(row.symbol, {})[int(row.bucket_start_ms)] = row
+    for row in tr_rows:
+        tr_by_symbol.setdefault(row.symbol, {})[int(row.bucket_start_ms)] = row
+
+    values: list[dict[str, Any]] = []
+    for sym in symbols:
+        merged_rows = _build_merged_rows(ob_by_symbol.get(sym, {}), tr_by_symbol.get(sym, {}))
+        if len(merged_rows) < 20:
+            continue
+        for zone_type in ("bid", "ask"):
+            snap = _score_zone(
+                merged_rows,
+                zone_type,
+                liquidity_24h_quote=quote_volume_24h_by_symbol.get(sym),
+                market_cap_usd=market_cap_by_symbol.get(sym),
             )
-            .scalars()
-            .all()
-        )
-        tr_rows = (
-            (
-                await session.execute(
-                    select(TradeBucket)
-                    .where(
-                        and_(
-                            TradeBucket.market == market,
-                            TradeBucket.bucket == "1m",
-                            TradeBucket.symbol.in_(symbols),
-                            TradeBucket.bucket_start_ms >= full_start_ms,
-                        )
-                    )
-                    .order_by(TradeBucket.symbol.asc(), TradeBucket.bucket_start_ms.asc())
-                )
-            )
-            .scalars()
-            .all()
-        )
-
-        ob_by_symbol: dict[str, dict[int, OrderbookFeatureBucket]] = {}
-        tr_by_symbol: dict[str, dict[int, TradeBucket]] = {}
-        for row in ob_rows:
-            ob_by_symbol.setdefault(row.symbol, {})[int(row.bucket_start_ms)] = row
-        for row in tr_rows:
-            tr_by_symbol.setdefault(row.symbol, {})[int(row.bucket_start_ms)] = row
-
-        values: list[dict[str, Any]] = []
-        for sym in symbols:
-            merged_rows = _build_merged_rows(ob_by_symbol.get(sym, {}), tr_by_symbol.get(sym, {}))
-            if len(merged_rows) < 20:
+            if not snap:
                 continue
-            for zone_type in ("bid", "ask"):
-                snap = _score_zone(
-                    merged_rows,
-                    zone_type,
-                    liquidity_24h_quote=quote_volume_24h_by_symbol.get(sym),
-                    market_cap_usd=market_cap_by_symbol.get(sym),
-                )
-                if not snap:
-                    continue
-                values.append(
-                    {
-                        "market": market,
-                        "symbol": sym,
-                        "bucket_start_ms": bucket_start_ms,
-                        "zone_type": zone_type,
-                        "zone_low": snap["zone_low"],
-                        "zone_high": snap["zone_high"],
-                        "real_score": snap["real_score"],
-                        "signal_state": snap["signal_state"],
-                        "persistence_score": snap["persistence_score"],
-                        "absorb_score": snap["absorb_score"],
-                        "replenish_score": snap["replenish_score"],
-                        "defend_score": snap["defend_score"],
-                        "flow_align_score": snap["flow_align_score"],
-                        "size_score": snap["size_score"],
-                        "cancel_penalty": snap["cancel_penalty"],
-                        "reasons": snap["reasons"],
-                    }
-                )
-
-        if values:
-            stmt = insert(InstitutionalLevelSnapshot).values(values)
-            stmt = stmt.on_conflict_do_update(
-                index_elements=["market", "symbol", "bucket_start_ms", "zone_type"],
-                set_={
-                    "zone_low": stmt.excluded.zone_low,
-                    "zone_high": stmt.excluded.zone_high,
-                    "real_score": stmt.excluded.real_score,
-                    "signal_state": stmt.excluded.signal_state,
-                    "persistence_score": stmt.excluded.persistence_score,
-                    "absorb_score": stmt.excluded.absorb_score,
-                    "replenish_score": stmt.excluded.replenish_score,
-                    "defend_score": stmt.excluded.defend_score,
-                    "flow_align_score": stmt.excluded.flow_align_score,
-                    "size_score": stmt.excluded.size_score,
-                    "cancel_penalty": stmt.excluded.cancel_penalty,
-                    "reasons": stmt.excluded.reasons,
-                },
+            values.append(
+                {
+                    "market": market,
+                    "symbol": sym,
+                    "bucket_start_ms": bucket_start_ms,
+                    "zone_type": zone_type,
+                    "zone_low": snap["zone_low"],
+                    "zone_high": snap["zone_high"],
+                    "real_score": snap["real_score"],
+                    "signal_state": snap["signal_state"],
+                    "persistence_score": snap["persistence_score"],
+                    "absorb_score": snap["absorb_score"],
+                    "replenish_score": snap["replenish_score"],
+                    "defend_score": snap["defend_score"],
+                    "flow_align_score": snap["flow_align_score"],
+                    "size_score": snap["size_score"],
+                    "cancel_penalty": snap["cancel_penalty"],
+                    "reasons": snap["reasons"],
+                }
             )
+
+    if values:
+        stmt = insert(InstitutionalLevelSnapshot).values(values)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["market", "symbol", "bucket_start_ms", "zone_type"],
+            set_={
+                "zone_low": stmt.excluded.zone_low,
+                "zone_high": stmt.excluded.zone_high,
+                "real_score": stmt.excluded.real_score,
+                "signal_state": stmt.excluded.signal_state,
+                "persistence_score": stmt.excluded.persistence_score,
+                "absorb_score": stmt.excluded.absorb_score,
+                "replenish_score": stmt.excluded.replenish_score,
+                "defend_score": stmt.excluded.defend_score,
+                "flow_align_score": stmt.excluded.flow_align_score,
+                "size_score": stmt.excluded.size_score,
+                "cancel_penalty": stmt.excluded.cancel_penalty,
+                "reasons": stmt.excluded.reasons,
+            },
+        )
+        if session is not None:
             await session.execute(stmt)
-            await session.commit()
+        else:
+            async with write_session() as s:
+                await s.execute(stmt)
+                await s.commit()
 
 
 def _apply_state_filter(state: str):

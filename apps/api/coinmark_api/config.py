@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     hub_broadcast_max_events_per_sec: int = 200
     hub_anomaly_scan_interval_sec: int = 2
     hub_anomaly_scan_batch_size: int = 200
+    hub_wall_refresh_interval_sec: int = 300
+    hub_climax_scan_interval_sec: int = 60
 
     ingest_enable_spot: bool = True
     ingest_enable_swap: bool = True

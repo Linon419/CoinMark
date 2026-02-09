@@ -5,9 +5,10 @@ from typing import Any, Literal
 
 from sqlalchemy import and_, desc, func, select
 
-from coinmark_api.db import SessionLocal
+from coinmark_api.db import SessionLocal, write_session
 from coinmark_api.db_upsert import insert
-from coinmark_api.models import AnomalyEvent, InstitutionalLevelSnapshot, PriceImpactWallCandidate, TradeBucket
+from coinmark_api.ch import query_trade_flow_agg
+from coinmark_api.models import AnomalyEvent, InstitutionalLevelSnapshot, PriceImpactWallCandidate
 from coinmark_api.services.institutional_levels import refresh_institutional_level_snapshots
 
 Market = Literal["spot", "swap"]
@@ -46,37 +47,36 @@ def _wall_confidence(score: int) -> str:
     return "LOW"
 
 
-def _score_wall_candidate(row: InstitutionalLevelSnapshot, *, agg_flow_confirm: bool) -> dict[str, Any]:
+def _score_wall_candidate(
+    row: InstitutionalLevelSnapshot,
+    *,
+    survive_count: int,
+    agg_flow_confirm: bool,
+) -> dict[str, Any]:
     real_score = _to_float(row.real_score)
-    impact_ratio = round(_clamp(_to_float(row.absorb_score) / 30.0, 0.0, 8.0), 4)
-    survive_count = int(round(_clamp(_to_float(row.persistence_score), 0.0, 100.0) * 0.6))
-    cancel_ratio = round(_clamp(_to_float(row.cancel_penalty) / 100.0, 0.0, 1.0), 4)
+    absorb_score = _to_float(row.absorb_score)
+    cancel_penalty = _to_float(row.cancel_penalty)
+    impact_ratio = round(_clamp(absorb_score / 15.0, 0.0, 7.0), 4)
+    cancel_ratio = round(_clamp(cancel_penalty / 100.0, 0.0, 1.0), 4)
 
-    score = 0
-    if real_score >= 75:
-        score += 2
-    elif real_score >= 60:
-        score += 1
+    strength = (
+        0.35 * _clamp(real_score, 0, 100)
+        + 0.25 * _clamp(survive_count / 15.0 * 100.0, 0, 100)
+        + 0.20 * _clamp(absorb_score, 0, 100)
+        + 0.20 * (100.0 if agg_flow_confirm else 0.0)
+        - 0.10 * _clamp(cancel_penalty, 0, 100)
+    )
+    strength = _clamp(strength, 0, 100)
 
-    if survive_count >= 10:
-        score += 2
-    elif survive_count >= 5:
-        score += 1
+    if strength >= 60:
+        confidence = "HIGH"
+    elif strength >= 35:
+        confidence = "MEDIUM"
+    else:
+        confidence = "LOW"
 
-    if impact_ratio > 3.0:
-        score += 2
-    elif impact_ratio > 1.5:
-        score += 1
-
-    if cancel_ratio <= 0.30:
-        score += 1
-
-    if agg_flow_confirm:
-        score += 2
-
-    confidence = _wall_confidence(score)
     return {
-        "score": score,
+        "score": round(strength, 2),
         "confidence": confidence,
         "realScore": round(real_score, 4),
         "impactRatio": impact_ratio,
@@ -85,8 +85,60 @@ def _score_wall_candidate(row: InstitutionalLevelSnapshot, *, agg_flow_confirm: 
     }
 
 
-async def _load_symbol_flow_bias(
+async def _compute_survive_counts(
     session,
+    *,
+    market: str,
+    keys: list[tuple[str, str]],
+    lookback_ms: int,
+) -> dict[tuple[str, str], int]:
+    """Count consecutive recent snapshots with signal_state >= WATCH per (symbol, zone_type).
+
+    Rows are ordered newest-first. We count from the newest snapshot backwards,
+    stopping at the first NONE.
+    """
+    if not keys:
+        return {}
+    now_ms = int(time.time() * 1000)
+    since_ms = now_ms - lookback_ms
+    symbols = sorted({s for s, _ in keys})
+    stmt = (
+        select(
+            InstitutionalLevelSnapshot.symbol,
+            InstitutionalLevelSnapshot.zone_type,
+            InstitutionalLevelSnapshot.signal_state,
+        )
+        .where(
+            and_(
+                InstitutionalLevelSnapshot.market == market,
+                InstitutionalLevelSnapshot.symbol.in_(symbols),
+                InstitutionalLevelSnapshot.bucket_start_ms >= since_ms,
+            )
+        )
+        .order_by(
+            InstitutionalLevelSnapshot.symbol,
+            InstitutionalLevelSnapshot.zone_type,
+            desc(InstitutionalLevelSnapshot.bucket_start_ms),
+        )
+    )
+    rows = (await session.execute(stmt)).all()
+
+    from collections import defaultdict
+    counts: dict[tuple[str, str], int] = defaultdict(int)
+    stopped: set[tuple[str, str]] = set()
+    for symbol, zone_type, signal_state in rows:
+        k = (str(symbol), str(zone_type))
+        if k in stopped:
+            continue
+        if str(signal_state) in ("WATCH", "CONFIRM", "STRONG"):
+            counts[k] += 1
+        else:
+            stopped.add(k)
+
+    return dict(counts)
+
+
+async def _load_symbol_flow_bias(
     *,
     market: Market,
     symbols: list[str],
@@ -94,37 +146,12 @@ async def _load_symbol_flow_bias(
 ) -> dict[str, dict[str, float]]:
     if not symbols:
         return {}
-
     since_ms = int(time.time() * 1000) - max(15, int(lookback_minutes)) * 60 * 1000
-    stmt = (
-        select(
-            TradeBucket.symbol,
-            func.sum(TradeBucket.taker_buy_notional).label("buy_sum"),
-            func.sum(TradeBucket.taker_sell_notional).label("sell_sum"),
-        )
-        .where(
-            and_(
-                TradeBucket.market == market,
-                TradeBucket.bucket == "1m",
-                TradeBucket.symbol.in_(symbols),
-                TradeBucket.bucket_start_ms >= since_ms,
-            )
-        )
-        .group_by(TradeBucket.symbol)
-    )
-    rows = (await session.execute(stmt)).all()
-
+    agg = await query_trade_flow_agg(market=market, symbols=symbols, bucket="1m", start_ms=since_ms)
     out: dict[str, dict[str, float]] = {}
-    for symbol, buy_sum, sell_sum in rows:
-        buy = _to_float(buy_sum)
-        sell = _to_float(sell_sum)
+    for symbol, buy, sell in agg:
         total = buy + sell
-        out[str(symbol)] = {
-            "buy": buy,
-            "sell": sell,
-            "net": buy - sell,
-            "buyRatio": (buy / total) if total > 0 else 0.0,
-        }
+        out[symbol] = {"buy": buy, "sell": sell, "net": buy - sell, "buyRatio": (buy / total) if total > 0 else 0.0}
     return out
 
 
@@ -238,9 +265,9 @@ async def refresh_price_impact_walls(
     total_candidates = 0
     total_inserted_events = 0
 
-    async with SessionLocal() as session:
+    async with write_session() as session:
         for market in _markets(market_scope):
-            await refresh_institutional_level_snapshots(market=market, top_n=symbol_limit)
+            await refresh_institutional_level_snapshots(market=market, top_n=symbol_limit, session=session)
 
             stmt = (
                 select(InstitutionalLevelSnapshot)
@@ -262,9 +289,15 @@ async def refresh_price_impact_walls(
                     continue
                 latest_by_key[key] = row
 
+            survive_map = await _compute_survive_counts(
+                session,
+                market=market,
+                keys=list(latest_by_key.keys()),
+                lookback_ms=6 * 60 * 60 * 1000,
+            )
+
             symbols = sorted({symbol for symbol, _ in latest_by_key.keys()})
             flow_map = await _load_symbol_flow_bias(
-                session,
                 market=market,
                 symbols=symbols,
                 lookback_minutes=flow_window_minutes,
@@ -272,16 +305,17 @@ async def refresh_price_impact_walls(
 
             candidates: list[dict[str, Any]] = []
             values: list[dict[str, Any]] = []
-            for (_, zone_type), row in latest_by_key.items():
+            for (sym_key, zone_type), row in latest_by_key.items():
                 flow = flow_map.get(str(row.symbol), {})
                 buy_ratio = _to_float(flow.get("buyRatio"))
                 net_flow = _to_float(flow.get("net"))
                 agg_flow_confirm = (
-                    (zone_type == "bid" and net_flow > 0 and buy_ratio >= 0.70)
-                    or (zone_type == "ask" and net_flow < 0 and buy_ratio <= 0.30)
+                    (zone_type == "bid" and net_flow > 0 and buy_ratio >= 0.60)
+                    or (zone_type == "ask" and net_flow < 0 and buy_ratio <= 0.40)
                 )
 
-                scored = _score_wall_candidate(row, agg_flow_confirm=agg_flow_confirm)
+                real_survive = survive_map.get((sym_key, zone_type), 0)
+                scored = _score_wall_candidate(row, survive_count=real_survive, agg_flow_confirm=agg_flow_confirm)
                 confidence = str(scored["confidence"])
                 if confidence == "LOW":
                     continue
