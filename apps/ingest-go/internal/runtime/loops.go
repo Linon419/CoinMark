@@ -346,10 +346,6 @@ func (s *Service) BackfillOnce(ctx context.Context) error {
 			limit int
 		}{
 			{"1m", s.cfg.Backfill1mLimit},
-			{"15m", s.cfg.Backfill15mLimit},
-			{"1h", s.cfg.Backfill1hLimit},
-			{"4h", s.cfg.Backfill4hLimit},
-			{"1d", s.cfg.Backfill1dLimit},
 		}
 
 		for _, interval := range intervals {

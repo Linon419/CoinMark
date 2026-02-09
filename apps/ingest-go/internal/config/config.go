@@ -9,7 +9,6 @@ import (
 )
 
 type Config struct {
-	DatabaseURL string
 	IngestClickHouseURL string
 
 	IngestEnableSpot  bool
@@ -30,10 +29,6 @@ type Config struct {
 	BackfillTopN        int
 	BackfillConcurrency int
 	Backfill1mLimit     int
-	Backfill15mLimit    int
-	Backfill1hLimit     int
-	Backfill4hLimit     int
-	Backfill1dLimit     int
 
 	OIRefreshTopN        int
 	OIRefreshIntervalSec int
@@ -76,14 +71,7 @@ func mustString(name, def string) string {
 }
 
 func Load() (*Config, error) {
-	databaseURL := strings.TrimSpace(os.Getenv("DATABASE_URL"))
-	if databaseURL == "" {
-		return nil, fmt.Errorf("DATABASE_URL is empty")
-	}
-	databaseURL = normalizeDatabaseURL(databaseURL)
-
 	c := &Config{
-		DatabaseURL: databaseURL,
 		IngestClickHouseURL: mustString("INGEST_CLICKHOUSE_URL", mustString("CLICKHOUSE_URL", "")),
 
 		IngestEnableSpot:  mustBool("INGEST_ENABLE_SPOT", true),
@@ -103,11 +91,7 @@ func Load() (*Config, error) {
 		BackfillEnable:      mustBool("BACKFILL_ENABLE", false),
 		BackfillTopN:        mustInt("BACKFILL_TOP_N", 120),
 		BackfillConcurrency: mustInt("BACKFILL_CONCURRENCY", 8),
-		Backfill1mLimit:     mustInt("BACKFILL_1M_LIMIT", 0),
-		Backfill15mLimit:    mustInt("BACKFILL_15M_LIMIT", 200),
-		Backfill1hLimit:     mustInt("BACKFILL_1H_LIMIT", 200),
-		Backfill4hLimit:     mustInt("BACKFILL_4H_LIMIT", 180),
-		Backfill1dLimit:     mustInt("BACKFILL_1D_LIMIT", 60),
+		Backfill1mLimit:     mustInt("BACKFILL_1M_LIMIT", 1500),
 
 		OIRefreshTopN:        mustInt("OI_REFRESH_TOP_N", 300),
 		OIRefreshIntervalSec: mustInt("OI_REFRESH_INTERVAL_SEC", 300),
@@ -123,18 +107,6 @@ func Load() (*Config, error) {
 	return c, nil
 }
 
-func normalizeDatabaseURL(raw string) string {
-	if strings.HasPrefix(raw, "sqlite+aiosqlite:///") {
-		return "sqlite:///" + strings.TrimPrefix(raw, "sqlite+aiosqlite:///")
-	}
-	if strings.HasPrefix(raw, "postgresql+asyncpg://") {
-		return "postgres://" + strings.TrimPrefix(raw, "postgresql+asyncpg://")
-	}
-	if strings.HasPrefix(raw, "postgresql+psycopg://") {
-		return "postgres://" + strings.TrimPrefix(raw, "postgresql+psycopg://")
-	}
-	return raw
-}
 
 func (c *Config) FlushInterval() time.Duration {
 	return time.Duration(max(1, c.IngestFlushIntervalSec)) * time.Second

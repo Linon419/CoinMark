@@ -28,6 +28,7 @@ type Collector struct {
 	wsReconnectCount      atomic.Int64
 	tradeSendFailCount    atomic.Int64
 	depthSendFailCount    atomic.Int64
+	depthSkipCount        atomic.Int64
 	tradeProducer         *nats.Publisher
 	depthProducer         *nats.Publisher
 	depthUseTradeProducer bool
@@ -117,7 +118,7 @@ func (c *Collector) Run(ctx context.Context) error {
 	}
 
 	if c.cfg.EnableDepth {
-		depthSuffix := fmt.Sprintf("depth5@%dms", c.cfg.DepthUpdateMs)
+		depthSuffix := fmt.Sprintf("depth%d@%dms", c.cfg.DepthLevel, c.cfg.DepthUpdateMs)
 		depthChunks := buildStreamChunks(symbols, c.cfg.StreamsPerConn, depthSuffix)
 		log.Printf(
 			"collector depth streams symbols=%d chunk_size=%d conn=%d update=%dms",
@@ -143,12 +144,13 @@ func (c *Collector) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			d := time.Since(started).Round(time.Second)
 			log.Printf(
-				"collector stopping uptime=%s trade_msg=%d trade_bytes=%d depth_msg=%d depth_bytes=%d reconnect=%d trade_send_fail=%d depth_send_fail=%d",
+				"collector stopping uptime=%s trade_msg=%d trade_bytes=%d depth_msg=%d depth_bytes=%d depth_skip=%d reconnect=%d trade_send_fail=%d depth_send_fail=%d",
 				d,
 				c.tradeMsgCount.Load(),
 				c.tradeByteCount.Load(),
 				c.depthMsgCount.Load(),
 				c.depthByteCount.Load(),
+				c.depthSkipCount.Load(),
 				c.wsReconnectCount.Load(),
 				c.tradeSendFailCount.Load(),
 				c.depthSendFailCount.Load(),
@@ -160,11 +162,12 @@ func (c *Collector) Run(ctx context.Context) error {
 			}
 		case <-ticker.C:
 			log.Printf(
-				"collector heartbeat trade_msg=%d trade_bytes=%d depth_msg=%d depth_bytes=%d reconnect=%d trade_send_fail=%d depth_send_fail=%d",
+				"collector heartbeat trade_msg=%d trade_bytes=%d depth_msg=%d depth_bytes=%d depth_skip=%d reconnect=%d trade_send_fail=%d depth_send_fail=%d",
 				c.tradeMsgCount.Load(),
 				c.tradeByteCount.Load(),
 				c.depthMsgCount.Load(),
 				c.depthByteCount.Load(),
+				c.depthSkipCount.Load(),
 				c.wsReconnectCount.Load(),
 				c.tradeSendFailCount.Load(),
 				c.depthSendFailCount.Load(),
@@ -321,7 +324,9 @@ func (c *Collector) consumeDepthConn(ctx context.Context, wsURL string) error {
 	}
 	defer conn.Close()
 
-	source := sourceDepthNameForMarket(c.cfg.Market)
+	source := sourceDepthNameForMarket(c.cfg.Market, c.cfg.DepthLevel)
+	sampleEvery := c.cfg.DepthSampleEvery
+	var msgSeq int64
 	for {
 		if ctx.Err() != nil {
 			return nil
@@ -330,6 +335,14 @@ func (c *Collector) consumeDepthConn(ctx context.Context, wsURL string) error {
 		_, payload, err := conn.ReadMessage()
 		if err != nil {
 			return fmt.Errorf("read ws: %w", err)
+		}
+
+		if sampleEvery > 1 {
+			msgSeq++
+			if msgSeq%int64(sampleEvery) != 0 {
+				c.depthSkipCount.Add(1)
+				continue
+			}
 		}
 
 		var env binance.DepthStreamEnvelope
@@ -473,11 +486,11 @@ func sourceNameForMarket(market string) string {
 	return "binance_futures_aggtrade"
 }
 
-func sourceDepthNameForMarket(market string) string {
+func sourceDepthNameForMarket(market string, level int) string {
 	if strings.EqualFold(market, "spot") {
-		return "binance_spot_depth5"
+		return fmt.Sprintf("binance_spot_depth%d", level)
 	}
-	return "binance_futures_depth5"
+	return fmt.Sprintf("binance_futures_depth%d", level)
 }
 
 func streamSymbol(stream string) string {

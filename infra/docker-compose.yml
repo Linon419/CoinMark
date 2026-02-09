@@ -86,21 +86,6 @@
     depends_on:
       - api
 
-  tg-bot:
-    build:
-      context: ../apps/api
-      dockerfile: Dockerfile
-    mem_limit: 512m
-    restart: unless-stopped
-    env_file:
-      - ../.env
-    volumes:
-      - coinmark_appdata:/data
-    depends_on:
-      redis:
-        condition: service_healthy
-    command: ["python", "-m", "coinmark_api.telegram.run"]
-
   collector-go:
     build:
       context: ../apps/collector-go
@@ -118,6 +103,8 @@
       COLLECTOR_NATS_CLIENT_NAME: collector-go-swap
       COLLECTOR_ENABLE_DEPTH: true
       COLLECTOR_DEPTH_UPDATE_MS: ${COLLECTOR_DEPTH_UPDATE_MS_SWAP:-500}
+      COLLECTOR_DEPTH_LEVEL: 20
+      COLLECTOR_DEPTH_SAMPLE_EVERY: 2
       COLLECTOR_SYMBOL_LIMIT: ${COLLECTOR_SYMBOL_LIMIT:-200}
       COLLECTOR_STREAMS_PER_CONN: 200
       COLLECTOR_LOG_INTERVAL_SEC: 15
@@ -142,6 +129,8 @@
       COLLECTOR_NATS_CLIENT_NAME: collector-go-spot
       COLLECTOR_ENABLE_DEPTH: true
       COLLECTOR_DEPTH_UPDATE_MS: ${COLLECTOR_DEPTH_UPDATE_MS_SPOT:-1000}
+      COLLECTOR_DEPTH_LEVEL: 20
+      COLLECTOR_DEPTH_SAMPLE_EVERY: 2
       COLLECTOR_SYMBOL_LIMIT: ${COLLECTOR_SYMBOL_LIMIT:-200}
       COLLECTOR_STREAMS_PER_CONN: 200
       COLLECTOR_LOG_INTERVAL_SEC: 15

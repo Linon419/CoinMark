@@ -15,6 +15,8 @@ type DepthFeatures struct {
 	MicropriceShiftBPS decimal.Decimal
 	WallPressureL5     decimal.Decimal
 	L1DepthNotional    decimal.Decimal
+	DepthImbalanceL20  decimal.Decimal
+	WallPressureL20    decimal.Decimal
 }
 
 func BuildDepthFeatures(bids, asks []DepthLevel) (*DepthFeatures, bool) {
@@ -34,19 +36,35 @@ func BuildDepthFeatures(bids, asks []DepthLevel) (*DepthFeatures, bool) {
 	askNotionalL5 := decimal.Zero
 	maxBidNotionalL5 := decimal.Zero
 	maxAskNotionalL5 := decimal.Zero
+	bidNotionalL20 := decimal.Zero
+	askNotionalL20 := decimal.Zero
+	maxBidNotionalL20 := decimal.Zero
+	maxAskNotionalL20 := decimal.Zero
 
-	for i := 0; i < len(bids) && i < 5; i++ {
+	for i := 0; i < len(bids) && i < 20; i++ {
 		notional := bids[i].Price.Mul(bids[i].Qty)
-		bidNotionalL5 = bidNotionalL5.Add(notional)
-		if notional.GreaterThan(maxBidNotionalL5) {
-			maxBidNotionalL5 = notional
+		bidNotionalL20 = bidNotionalL20.Add(notional)
+		if notional.GreaterThan(maxBidNotionalL20) {
+			maxBidNotionalL20 = notional
+		}
+		if i < 5 {
+			bidNotionalL5 = bidNotionalL5.Add(notional)
+			if notional.GreaterThan(maxBidNotionalL5) {
+				maxBidNotionalL5 = notional
+			}
 		}
 	}
-	for i := 0; i < len(asks) && i < 5; i++ {
+	for i := 0; i < len(asks) && i < 20; i++ {
 		notional := asks[i].Price.Mul(asks[i].Qty)
-		askNotionalL5 = askNotionalL5.Add(notional)
-		if notional.GreaterThan(maxAskNotionalL5) {
-			maxAskNotionalL5 = notional
+		askNotionalL20 = askNotionalL20.Add(notional)
+		if notional.GreaterThan(maxAskNotionalL20) {
+			maxAskNotionalL20 = notional
+		}
+		if i < 5 {
+			askNotionalL5 = askNotionalL5.Add(notional)
+			if notional.GreaterThan(maxAskNotionalL5) {
+				maxAskNotionalL5 = notional
+			}
 		}
 	}
 
@@ -54,6 +72,12 @@ func BuildDepthFeatures(bids, asks []DepthLevel) (*DepthFeatures, bool) {
 	depthImbalanceL5 := decimal.Zero
 	if depthDenom.GreaterThan(decimal.Zero) {
 		depthImbalanceL5 = bidNotionalL5.Sub(askNotionalL5).Div(depthDenom)
+	}
+
+	depthDenomL20 := bidNotionalL20.Add(askNotionalL20)
+	depthImbalanceL20 := decimal.Zero
+	if depthDenomL20.GreaterThan(decimal.Zero) {
+		depthImbalanceL20 = bidNotionalL20.Sub(askNotionalL20).Div(depthDenomL20)
 	}
 
 	microDenom := bid1.Qty.Add(ask1.Qty)
@@ -69,6 +93,12 @@ func BuildDepthFeatures(bids, asks []DepthLevel) (*DepthFeatures, bool) {
 		wallPressureL5 = maxBidNotionalL5.Sub(maxAskNotionalL5).Div(wallDenom)
 	}
 
+	wallDenomL20 := maxBidNotionalL20.Add(maxAskNotionalL20)
+	wallPressureL20 := decimal.Zero
+	if wallDenomL20.GreaterThan(decimal.Zero) {
+		wallPressureL20 = maxBidNotionalL20.Sub(maxAskNotionalL20).Div(wallDenomL20)
+	}
+
 	l1DepthNotional := bid1.Price.Mul(bid1.Qty).Add(ask1.Price.Mul(ask1.Qty))
 	return &DepthFeatures{
 		SpreadBPS:          spreadBPS,
@@ -76,5 +106,7 @@ func BuildDepthFeatures(bids, asks []DepthLevel) (*DepthFeatures, bool) {
 		MicropriceShiftBPS: micropriceShiftBPS,
 		WallPressureL5:     wallPressureL5,
 		L1DepthNotional:    l1DepthNotional,
+		DepthImbalanceL20:  depthImbalanceL20,
+		WallPressureL20:    wallPressureL20,
 	}, true
 }

@@ -21,6 +21,8 @@ type Config struct {
 	Market           string
 	EnableDepth      bool
 	DepthUpdateMs    int
+	DepthLevel       int
+	DepthSampleEvery int
 	LogIntervalSec   int
 }
 
@@ -39,6 +41,8 @@ func Load() (Config, error) {
 		Market:           strings.ToLower(getenv("COLLECTOR_MARKET", "swap")),
 		EnableDepth:      getenvBool("COLLECTOR_ENABLE_DEPTH", true),
 		DepthUpdateMs:    getenvInt("COLLECTOR_DEPTH_UPDATE_MS", 100),
+		DepthLevel:       getenvInt("COLLECTOR_DEPTH_LEVEL", 20),
+		DepthSampleEvery: getenvInt("COLLECTOR_DEPTH_SAMPLE_EVERY", 2),
 		LogIntervalSec:   getenvInt("COLLECTOR_LOG_INTERVAL_SEC", 15),
 	}
 
@@ -62,6 +66,12 @@ func Load() (Config, error) {
 	}
 	if cfg.DepthUpdateMs < 100 {
 		cfg.DepthUpdateMs = 100
+	}
+	if cfg.DepthLevel != 5 && cfg.DepthLevel != 10 && cfg.DepthLevel != 20 {
+		cfg.DepthLevel = 20
+	}
+	if cfg.DepthSampleEvery < 1 {
+		cfg.DepthSampleEvery = 1
 	}
 	if cfg.LogIntervalSec < 5 {
 		cfg.LogIntervalSec = 5

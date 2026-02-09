@@ -18,6 +18,8 @@ type OrderbookBucketDelta struct {
 	DepthImbalanceL5Sum   decimal.Decimal
 	MicropriceShiftBPSSum decimal.Decimal
 	WallPressureL5Sum     decimal.Decimal
+	DepthImbalanceL20Sum  decimal.Decimal
+	WallPressureL20Sum    decimal.Decimal
 	SampleCount           int64
 
 	TakerBuyNotional  decimal.Decimal
@@ -36,16 +38,20 @@ func NewOrderbookBucketDelta() *OrderbookBucketDelta {
 		DepthImbalanceL5Sum:   decimal.Zero,
 		MicropriceShiftBPSSum: decimal.Zero,
 		WallPressureL5Sum:     decimal.Zero,
+		DepthImbalanceL20Sum:  decimal.Zero,
+		WallPressureL20Sum:    decimal.Zero,
 		TakerBuyNotional:      decimal.Zero,
 		TakerSellNotional:     decimal.Zero,
 	}
 }
 
-func (d *OrderbookBucketDelta) AddOrderbookSample(spreadBPS, depthImbalanceL5, micropriceShiftBPS, wallPressureL5, l1DepthNotional decimal.Decimal) {
+func (d *OrderbookBucketDelta) AddOrderbookSample(spreadBPS, depthImbalanceL5, micropriceShiftBPS, wallPressureL5, l1DepthNotional, depthImbalanceL20, wallPressureL20 decimal.Decimal) {
 	d.SpreadBPSSum = d.SpreadBPSSum.Add(spreadBPS)
 	d.DepthImbalanceL5Sum = d.DepthImbalanceL5Sum.Add(depthImbalanceL5)
 	d.MicropriceShiftBPSSum = d.MicropriceShiftBPSSum.Add(micropriceShiftBPS)
 	d.WallPressureL5Sum = d.WallPressureL5Sum.Add(wallPressureL5)
+	d.DepthImbalanceL20Sum = d.DepthImbalanceL20Sum.Add(depthImbalanceL20)
+	d.WallPressureL20Sum = d.WallPressureL20Sum.Add(wallPressureL20)
 	d.SampleCount++
 
 	if d.L1DepthBaseline == nil {
@@ -111,7 +117,7 @@ func (a *OrderbookAggregator) ensure(key OrderbookBucketKey) *OrderbookBucketDel
 	return d
 }
 
-func (a *OrderbookAggregator) AddOrderbookSample(market, symbol string, tsMS int64, spreadBPS, depthImbalanceL5, micropriceShiftBPS, wallPressureL5, l1DepthNotional decimal.Decimal) {
+func (a *OrderbookAggregator) AddOrderbookSample(market, symbol string, tsMS int64, spreadBPS, depthImbalanceL5, micropriceShiftBPS, wallPressureL5, l1DepthNotional, depthImbalanceL20, wallPressureL20 decimal.Decimal) {
 	startMS, err := FloorBucketStartMS(tsMS, a.bucket)
 	if err != nil {
 		return
@@ -119,7 +125,7 @@ func (a *OrderbookAggregator) AddOrderbookSample(market, symbol string, tsMS int
 	k := OrderbookBucketKey{Market: market, Symbol: symbol, Bucket: a.bucket, BucketStartMS: startMS}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.ensure(k).AddOrderbookSample(spreadBPS, depthImbalanceL5, micropriceShiftBPS, wallPressureL5, l1DepthNotional)
+	a.ensure(k).AddOrderbookSample(spreadBPS, depthImbalanceL5, micropriceShiftBPS, wallPressureL5, l1DepthNotional, depthImbalanceL20, wallPressureL20)
 }
 
 func (a *OrderbookAggregator) AddTrade(market, symbol string, tsMS int64, takerBuyNotional, takerSellNotional decimal.Decimal) {

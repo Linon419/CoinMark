@@ -25,13 +25,13 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	st, err := store.New(ctx, cfg.DatabaseURL, cfg.IngestClickHouseURL)
+	st, err := store.New(ctx, cfg.IngestClickHouseURL)
 	if err != nil {
 		log.Fatalf("connect db failed: %v", err)
 	}
 	defer st.Close()
 
-	tradeAgg := ingest.NewTradeAggregator([]string{"1m", "15m", "1h", "4h", "1d"})
+	tradeAgg := ingest.NewTradeAggregator([]string{"1m"})
 	obAgg := ingest.NewOrderbookAggregator("1m")
 	stats := &runtime.Stats{}
 
