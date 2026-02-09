@@ -21,13 +21,16 @@ _SIGNAL_EVENT_TYPE = "signal_lab_persistent_buy"
 
 @dataclass(slots=True)
 class SignalLabParams:
-    z_threshold: float = 2.0
+    z_threshold: float = 2.8
     lookback_minutes: int = 1440
     detection_window_minutes: int = 240
-    min_large_count: int = 3
-    buy_ratio_threshold: float = 0.7
+    min_large_count: int = 6
+    buy_ratio_threshold: float = 0.8
+    min_persistent_span_minutes: int = 90
+    min_avg_interval_minutes: int = 8
+    min_distinct_time_buckets: int = 4
     forecast_horizon_minutes: int = 60
-    cooldown_minutes: int = 30
+    cooldown_minutes: int = 180
     symbol_limit: int = 200
 
 
@@ -70,6 +73,17 @@ def _signal_state(score: float) -> str:
     return "NONE"
 
 
+def _signal_state_rank(state: str) -> int:
+    s = (state or "").upper()
+    if s in {"STRONG", "HIGH"}:
+        return 3
+    if s == "CONFIRM":
+        return 2
+    if s == "WATCH":
+        return 1
+    return 0
+
+
 def _score_signal(z_score: float, buy_ratio: float, large_buy_count: int) -> float:
     z_part = _clamp((z_score - 2.0) * 15.0, 0.0, 30.0)
     ratio_part = _clamp((buy_ratio - 0.5) * 100.0, 0.0, 30.0)
@@ -84,6 +98,9 @@ def _scan_symbol_signals(symbol: str, market: Market, rows: list[BucketPoint], p
 
     lookback = max(60, int(params.lookback_minutes))
     detect_window_ms = max(15, int(params.detection_window_minutes)) * 60 * 1000
+    min_persistent_span_ms = max(1, int(params.min_persistent_span_minutes)) * 60 * 1000
+    min_avg_interval_ms = max(1, int(params.min_avg_interval_minutes)) * 60 * 1000
+    distinct_bucket_ms = 10 * 60 * 1000
     cooldown_ms = max(1, int(params.cooldown_minutes)) * 60 * 1000
 
     hist = deque()
@@ -119,12 +136,23 @@ def _scan_symbol_signals(symbol: str, market: Market, rows: list[BucketPoint], p
         total_amt = buy_amt + sell_amt
         buy_ratio = buy_amt / total_amt if total_amt > 0 else 0.0
         large_buy_count = sum(1 for _, side, _ in large_events if side == "buy")
+        buy_event_ts = [ts for ts, side, _ in large_events if side == "buy"]
+        persistent_span_ms = (buy_event_ts[-1] - buy_event_ts[0]) if len(buy_event_ts) >= 2 else 0
+        avg_interval_ms = (
+            sum((buy_event_ts[i] - buy_event_ts[i - 1]) for i in range(1, len(buy_event_ts))) / (len(buy_event_ts) - 1)
+            if len(buy_event_ts) >= 2
+            else 0.0
+        )
+        distinct_time_buckets = len({int(ts // distinct_bucket_ms) for ts in buy_event_ts})
 
         is_trigger = (
             row.net > 0
             and z_score >= float(params.z_threshold)
             and large_buy_count >= int(params.min_large_count)
             and buy_ratio >= float(params.buy_ratio_threshold)
+            and persistent_span_ms >= min_persistent_span_ms
+            and avg_interval_ms >= min_avg_interval_ms
+            and distinct_time_buckets >= int(params.min_distinct_time_buckets)
         )
         if not is_trigger:
             hist.append(x)
@@ -157,6 +185,9 @@ def _scan_symbol_signals(symbol: str, market: Market, rows: list[BucketPoint], p
                 "zScore": round(float(z_score), 4),
                 "largeBuyCount": int(large_buy_count),
                 "buyRatio": round(float(buy_ratio), 4),
+                "persistentSpanMinutes": round(float(persistent_span_ms) / 60000.0, 2),
+                "avgIntervalMinutes": round(float(avg_interval_ms) / 60000.0, 2),
+                "distinctTimeBuckets": int(distinct_time_buckets),
                 "score": score,
                 "signalState": _signal_state(score),
                 "eventType": _SIGNAL_EVENT_TYPE,
@@ -237,6 +268,7 @@ async def get_realtime_signals(
     market_scope: MarketScope,
     params: SignalLabParams,
     limit: int = 100,
+    min_signal_state: str = "CONFIRM",
     sync_to_score_flow: bool = True,
 ) -> dict[str, Any]:
     now_ms = int(time.time() * 1000)
@@ -244,6 +276,7 @@ async def get_realtime_signals(
 
     all_signals: list[dict[str, Any]] = []
     market_stats: dict[str, Any] = {}
+    min_state_rank = _signal_state_rank(min_signal_state)
 
     async with SessionLocal() as session:
         for market in _markets(market_scope):
@@ -256,7 +289,9 @@ async def get_realtime_signals(
                     continue
                 items = _scan_symbol_signals(symbol, market, rows, params)
                 if items:
-                    market_signals.append(items[-1])
+                    latest = items[-1]
+                    if _signal_state_rank(str(latest.get("signalState") or "")) >= min_state_rank:
+                        market_signals.append(latest)
 
             market_signals.sort(key=lambda x: (float(x.get("score") or 0.0), int(x.get("ts") or 0)), reverse=True)
             market_signals = market_signals[: int(limit)]
@@ -277,6 +312,7 @@ async def get_realtime_signals(
     return {
         "market": market_scope,
         "limit": int(limit),
+        "minSignalState": (min_signal_state or "CONFIRM").upper(),
         "signals": out_signals,
         "stats": market_stats,
         "syncedToScoreFlow": bool(sync_to_score_flow),
@@ -319,6 +355,9 @@ async def _sync_anomaly_events(session, signals: list[dict[str, Any]], cooldown_
 
         values: list[dict[str, Any]] = []
         for item in rows:
+            signal_state = str(item.get("signalState") or "").upper()
+            if signal_state not in {"CONFIRM", "STRONG", "HIGH"}:
+                continue
             sym = str(item.get("symbol") or "")
             ts = int(item.get("ts") or 0)
             if not sym or ts <= 0:
@@ -344,6 +383,9 @@ async def _sync_anomaly_events(session, signals: list[dict[str, Any]], cooldown_
                         "zScore": item.get("zScore"),
                         "buyRatio": item.get("buyRatio"),
                         "largeBuyCount": item.get("largeBuyCount"),
+                        "persistentSpanMinutes": item.get("persistentSpanMinutes"),
+                        "avgIntervalMinutes": item.get("avgIntervalMinutes"),
+                        "distinctTimeBuckets": item.get("distinctTimeBuckets"),
                         "netFlow": item.get("netFlow"),
                     },
                 }
@@ -469,6 +511,9 @@ async def run_backtest(
             "detectionWindowMinutes": params.detection_window_minutes,
             "minLargeCount": params.min_large_count,
             "buyRatioThreshold": params.buy_ratio_threshold,
+            "minPersistentSpanMinutes": params.min_persistent_span_minutes,
+            "minAvgIntervalMinutes": params.min_avg_interval_minutes,
+            "minDistinctTimeBuckets": params.min_distinct_time_buckets,
             "forecastHorizonMinutes": params.forecast_horizon_minutes,
             "cooldownMinutes": params.cooldown_minutes,
             "symbolLimit": params.symbol_limit,

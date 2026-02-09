@@ -20,13 +20,16 @@ MarketScope = Literal["spot", "swap", "both"]
 
 
 class SignalLabParamBody(BaseModel):
-    z_threshold: float = Field(default=2.0, ge=1.0, le=6.0)
+    z_threshold: float = Field(default=2.8, ge=1.0, le=6.0)
     lookback_minutes: int = Field(default=1440, ge=60, le=7 * 24 * 60)
     detection_window_minutes: int = Field(default=240, ge=15, le=24 * 60)
-    min_large_count: int = Field(default=3, ge=1, le=20)
-    buy_ratio_threshold: float = Field(default=0.7, ge=0.5, le=1.0)
+    min_large_count: int = Field(default=6, ge=1, le=20)
+    buy_ratio_threshold: float = Field(default=0.8, ge=0.5, le=1.0)
+    min_persistent_span_minutes: int = Field(default=90, ge=10, le=24 * 60)
+    min_avg_interval_minutes: int = Field(default=8, ge=1, le=120)
+    min_distinct_time_buckets: int = Field(default=4, ge=2, le=24)
     forecast_horizon_minutes: int = Field(default=60, ge=5, le=24 * 60)
-    cooldown_minutes: int = Field(default=30, ge=1, le=12 * 60)
+    cooldown_minutes: int = Field(default=180, ge=1, le=12 * 60)
     symbol_limit: int = Field(default=200, ge=20, le=400)
 
     def to_service(self) -> SignalLabParams:
@@ -36,6 +39,9 @@ class SignalLabParamBody(BaseModel):
             detection_window_minutes=int(self.detection_window_minutes),
             min_large_count=int(self.min_large_count),
             buy_ratio_threshold=float(self.buy_ratio_threshold),
+            min_persistent_span_minutes=int(self.min_persistent_span_minutes),
+            min_avg_interval_minutes=int(self.min_avg_interval_minutes),
+            min_distinct_time_buckets=int(self.min_distinct_time_buckets),
             forecast_horizon_minutes=int(self.forecast_horizon_minutes),
             cooldown_minutes=int(self.cooldown_minutes),
             symbol_limit=int(self.symbol_limit),
@@ -70,13 +76,17 @@ async def get_backtest(run_id: str) -> dict:
 async def realtime(
     market: MarketScope = Query("both", pattern="^(spot|swap|both)$"),
     limit: int = Query(100, ge=10, le=300),
+    min_signal_state: str = Query("CONFIRM", alias="minSignalState", pattern="^(WATCH|CONFIRM|STRONG|HIGH)$"),
     sync_score_flow: bool = Query(True, alias="syncScoreFlow"),
-    z_threshold: float = Query(2.0, alias="zThreshold", ge=1.0, le=6.0),
+    z_threshold: float = Query(2.8, alias="zThreshold", ge=1.0, le=6.0),
     lookback_minutes: int = Query(1440, alias="lookbackMinutes", ge=60, le=7 * 24 * 60),
     detection_window_minutes: int = Query(240, alias="detectionWindowMinutes", ge=15, le=24 * 60),
-    min_large_count: int = Query(3, alias="minLargeCount", ge=1, le=20),
-    buy_ratio_threshold: float = Query(0.7, alias="buyRatioThreshold", ge=0.5, le=1.0),
-    cooldown_minutes: int = Query(30, alias="cooldownMinutes", ge=1, le=12 * 60),
+    min_large_count: int = Query(6, alias="minLargeCount", ge=1, le=20),
+    buy_ratio_threshold: float = Query(0.8, alias="buyRatioThreshold", ge=0.5, le=1.0),
+    min_persistent_span_minutes: int = Query(90, alias="minPersistentSpanMinutes", ge=10, le=24 * 60),
+    min_avg_interval_minutes: int = Query(8, alias="minAvgIntervalMinutes", ge=1, le=120),
+    min_distinct_time_buckets: int = Query(4, alias="minDistinctTimeBuckets", ge=2, le=24),
+    cooldown_minutes: int = Query(180, alias="cooldownMinutes", ge=1, le=12 * 60),
     symbol_limit: int = Query(200, alias="symbolLimit", ge=20, le=400),
 ) -> dict:
     params = SignalLabParams(
@@ -85,6 +95,9 @@ async def realtime(
         detection_window_minutes=int(detection_window_minutes),
         min_large_count=int(min_large_count),
         buy_ratio_threshold=float(buy_ratio_threshold),
+        min_persistent_span_minutes=int(min_persistent_span_minutes),
+        min_avg_interval_minutes=int(min_avg_interval_minutes),
+        min_distinct_time_buckets=int(min_distinct_time_buckets),
         cooldown_minutes=int(cooldown_minutes),
         symbol_limit=int(symbol_limit),
     )
@@ -92,6 +105,7 @@ async def realtime(
         market_scope=market,
         params=params,
         limit=int(limit),
+        min_signal_state=min_signal_state,
         sync_to_score_flow=bool(sync_score_flow),
     )
 
