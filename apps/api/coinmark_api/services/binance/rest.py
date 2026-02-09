@@ -205,6 +205,17 @@ async def get_ticker_24h(market: str, symbol: str) -> dict[str, Any]:
     return {}
 
 
+async def get_orderbook_depth(market: str, symbol: str, limit: int = 1000) -> dict[str, Any]:
+    params = {"symbol": symbol, "limit": int(limit)}
+    if market == "spot":
+        data = await _get_json(f"{SPOT_REST}/api/v3/depth", params=params, timeout_sec=10.0)
+    else:
+        data = await _get_json(f"{FUTURES_REST}/fapi/v1/depth", params=params, timeout_sec=10.0)
+    if isinstance(data, dict):
+        return data
+    return {}
+
+
 async def get_klines(market: str, symbol: str, interval: str, limit: int = 200) -> list[list[Any]]:
     params = {"symbol": symbol, "interval": interval, "limit": limit}
     if market == "spot":

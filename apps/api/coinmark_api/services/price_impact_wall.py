@@ -9,6 +9,7 @@ from coinmark_api.db import SessionLocal, write_session
 from coinmark_api.db_upsert import insert
 from coinmark_api.ch import query_trade_flow_agg
 from coinmark_api.models import AnomalyEvent, InstitutionalLevelSnapshot, PriceImpactWallCandidate
+from coinmark_api.services.binance.rest import get_orderbook_depth
 from coinmark_api.services.institutional_levels import refresh_institutional_level_snapshots
 
 Market = Literal["spot", "swap"]
@@ -45,6 +46,46 @@ def _wall_confidence(score: int) -> str:
     if score >= 3:
         return "MEDIUM"
     return "LOW"
+
+
+def _estimate_wall_size_from_depth(
+    *,
+    depth: dict[str, Any] | None,
+    zone_type: str,
+    zone_low: float,
+    zone_high: float,
+) -> dict[str, float | int] | None:
+    if not depth or zone_low <= 0 or zone_high <= 0 or zone_high < zone_low:
+        return None
+
+    side = "bids" if str(zone_type).lower() == "bid" else "asks"
+    levels = depth.get(side)
+    if not isinstance(levels, list):
+        return None
+
+    qty_sum = 0.0
+    notional_sum = 0.0
+    level_count = 0
+    for lv in levels:
+        if not isinstance(lv, (list, tuple)) or len(lv) < 2:
+            continue
+        price = _to_float(lv[0])
+        qty = _to_float(lv[1])
+        if price <= 0 or qty <= 0:
+            continue
+        if zone_low <= price <= zone_high:
+            qty_sum += qty
+            notional_sum += price * qty
+            level_count += 1
+
+    if level_count <= 0:
+        return None
+
+    return {
+        "wallQty": round(qty_sum, 8),
+        "wallNotional": round(notional_sum, 4),
+        "wallLevels": int(level_count),
+    }
 
 
 def _score_wall_candidate(
@@ -194,6 +235,7 @@ async def _sync_wall_anomaly_events(
     }
 
     values: list[dict[str, Any]] = []
+    depth_cache: dict[str, dict[str, Any] | None] = {}
     cooldown_ms = max(1, int(cooldown_minutes)) * 60 * 1000
     for item in rows:
         symbol = str(item.get("symbol") or "")
@@ -211,6 +253,20 @@ async def _sync_wall_anomaly_events(
         survive_count = int(item.get("surviveCount") or 0)
         confidence = str(item.get("confidence") or "MEDIUM")
         real_score = _to_float(item.get("realScore"))
+
+        depth = depth_cache.get(symbol)
+        if symbol not in depth_cache:
+            try:
+                depth = await get_orderbook_depth(market=market, symbol=symbol, limit=1000)
+            except Exception:
+                depth = None
+            depth_cache[symbol] = depth
+        wall_size = _estimate_wall_size_from_depth(
+            depth=depth,
+            zone_type=zone_type,
+            zone_low=_to_float(item.get("zoneLow")),
+            zone_high=_to_float(item.get("zoneHigh")),
+        )
 
         side_text = "买盘" if zone_type == "bid" else "卖盘"
         values.append(
@@ -232,6 +288,9 @@ async def _sync_wall_anomaly_events(
                     "impactRatio": impact_ratio,
                     "surviveCount": survive_count,
                     "cancelRatio": item.get("cancelRatio"),
+                    "wallQty": wall_size.get("wallQty") if wall_size else None,
+                    "wallNotional": wall_size.get("wallNotional") if wall_size else None,
+                    "wallLevels": wall_size.get("wallLevels") if wall_size else None,
                     "signalState": item.get("signalState"),
                     "score": real_score,
                     "reasons": item.get("reasons") or [],
