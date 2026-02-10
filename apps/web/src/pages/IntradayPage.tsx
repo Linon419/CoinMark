@@ -23,18 +23,18 @@ type OrderbookIntradayItem = {
   bucketStartMs: number;
   swap: {
     spreadBps: number | null;
-    depthImbalanceL5: number | null;
+    depthImbalanceL20: number | null;
     micropriceShiftBps: number | null;
-    wallPressureL5: number | null;
+    wallPressureL20: number | null;
     aggrBuyRatio: number | null;
     replenishScore: number | null;
     sampleCount: number;
   };
   spot: {
     spreadBps: number | null;
-    depthImbalanceL5: number | null;
+    depthImbalanceL20: number | null;
     micropriceShiftBps: number | null;
-    wallPressureL5: number | null;
+    wallPressureL20: number | null;
     aggrBuyRatio: number | null;
     replenishScore: number | null;
     sampleCount: number;
@@ -106,9 +106,9 @@ function aggregateOrderbookSide(rows: Array<OrderbookIntradayItem["swap"]>): Ord
 
   return {
     spreadBps: weightedAvg((row) => row.spreadBps),
-    depthImbalanceL5: weightedAvg((row) => row.depthImbalanceL5),
+    depthImbalanceL20: weightedAvg((row) => row.depthImbalanceL20),
     micropriceShiftBps: weightedAvg((row) => row.micropriceShiftBps),
-    wallPressureL5: weightedAvg((row) => row.wallPressureL5),
+    wallPressureL20: weightedAvg((row) => row.wallPressureL20),
     aggrBuyRatio: weightedAvg((row) => row.aggrBuyRatio),
     replenishScore: weightedAvg((row) => row.replenishScore),
     sampleCount: totalSample,
@@ -350,7 +350,7 @@ export default function IntradayPage() {
     const selected = rows.map((item) => (preferSwap ? item.swap : item.spot));
     const xs = rows.map((item) => formatTime(item.bucketStartMs));
     const spread = selected.map((item) => item.spreadBps ?? null);
-    const imbalance = selected.map((item) => item.depthImbalanceL5 ?? null);
+    const imbalance = selected.map((item) => item.depthImbalanceL20 ?? null);
     const aggr = selected.map((item) => (item.aggrBuyRatio == null ? null : item.aggrBuyRatio * 100));
     const replenish = selected.map((item) => item.replenishScore ?? null);
 
@@ -459,7 +459,7 @@ export default function IntradayPage() {
       newestTs: newest.bucketStartMs,
       isFallback: latestValid.bucketStartMs !== newest.bucketStartMs,
       spreadBps: selected.spreadBps,
-      depthImbalancePct: selected.depthImbalanceL5 == null ? null : selected.depthImbalanceL5 * 100,
+      depthImbalancePct: selected.depthImbalanceL20 == null ? null : selected.depthImbalanceL20 * 100,
       aggrBuyPct: selected.aggrBuyRatio == null ? null : selected.aggrBuyRatio * 100,
       replenishScore: selected.replenishScore,
       sampleCount: selected.sampleCount,

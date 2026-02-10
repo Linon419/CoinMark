@@ -12,6 +12,7 @@ from coinmark_api.ch import TradeBucketRow, query_trade_buckets
 from coinmark_api.db import SessionLocal
 from coinmark_api.db_upsert import insert
 from coinmark_api.models import AnomalyEvent, SRLevel
+from coinmark_api.services.symbol_filter import filter_excluded_symbols, is_excluded_symbol
 
 
 def _to_decimal(v: Any) -> Decimal | None:
@@ -278,6 +279,7 @@ async def scan_anomalies(
     扫描并落库异动事件（15m 信号 + 4h 水平位）。
     返回：新增事件数量（最佳努力，遇到冲突会被去重）。
     """
+    symbols = filter_excluded_symbols(symbols)
     if not symbols:
         return 0
 
@@ -322,6 +324,8 @@ async def scan_anomalies(
 
         new_events: list[dict[str, Any]] = []
         for sym, s in series.items():
+            if is_excluded_symbol(sym):
+                continue
             if len(s) < 10:
                 continue
             lvls = levels_by_symbol.get(sym) or []

@@ -5,6 +5,7 @@ import logging
 
 from coinmark_api.config import settings
 from coinmark_api.hub.anomaly_stream import HubAnomalyStream
+from coinmark_api.hub.depth_fullscan import create_depth_fullscan_tasks
 from coinmark_api.hub.manager import HubConnectionManager
 from coinmark_api.hub.publisher import HubPublisher
 from coinmark_api.services.price_impact_wall import refresh_price_impact_walls
@@ -103,6 +104,7 @@ async def start_hub_runtime() -> None:
             _climax_scan_loop(_hub_stop_event, settings.hub_climax_scan_interval_sec)
         ),
     ]
+    _hub_tasks.extend(create_depth_fullscan_tasks(_hub_stop_event))
     logger.info("hub runtime started")
 
 

@@ -12,6 +12,7 @@ from coinmark_api.db import SessionLocal, write_session
 from coinmark_api.db_upsert import insert
 from coinmark_api.models import InstitutionalLevelSnapshot
 from coinmark_api.services.binance.rest import get_ticker_24h_all
+from coinmark_api.services.symbol_filter import filter_excluded_symbols, is_excluded_symbol
 
 
 SignalState = Literal["NONE", "WATCH", "CONFIRM", "STRONG"]
@@ -244,6 +245,24 @@ def _score_zone(
     zone_low = center * (1.0 - half_width_bps / 10000.0)
     zone_high = center * (1.0 + half_width_bps / 10000.0)
 
+    latest_close = next((float(r.get("closePrice")) for r in reversed(recent20) if r.get("closePrice") is not None), None)
+    zone_mid = (zone_low + zone_high) / 2.0
+    distance_pct = (abs(zone_mid - latest_close) / latest_close * 100.0) if latest_close and latest_close > 0 else None
+
+    abs_ret_pct = [abs(float(r.get("ret1m") or 0.0)) * 100.0 for r in recent60]
+    vol_p75 = float(_quantile(abs_ret_pct, 0.75) or 0.0)
+    swing_low = _quantile(lows, 0.10) if lows else None
+    swing_high = _quantile(highs, 0.90) if highs else None
+    swing_range_pct = (
+        (float(swing_high) - float(swing_low)) / latest_close * 100.0
+        if (latest_close and latest_close > 0 and swing_low is not None and swing_high is not None and swing_high > swing_low)
+        else 0.0
+    )
+    spread_pct = float(spread_ref) / 100.0
+    min_distance_pct = _clamp(max(swing_range_pct * 0.35, vol_p75 * 6.0 + spread_pct * 8.0), 5.0, 40.0)
+    max_distance_pct = _clamp(min_distance_pct * 2.2, min_distance_pct + 8.0, 70.0)
+    distance_ok = distance_pct is not None and min_distance_pct <= distance_pct <= max_distance_pct
+
     touches = 0
     defended = 0
     for idx in range(max(0, len(recent120) - 1)):
@@ -265,6 +284,25 @@ def _score_zone(
             if next_ret <= 0.0008:
                 defended += 1
     defend_score = _clamp(((defended / touches) * 100.0) if touches > 0 else 0.0, 0.0, 100.0)
+
+    recent_touch_count = 0
+    recent_reversal_hits = 0
+    touch_scan_start = max(0, len(recent60) - 45)
+    touch_scan_end = max(touch_scan_start, len(recent60) - 5)
+    for idx in range(touch_scan_start, touch_scan_end):
+        cur = recent60[idx]
+        cur_low = cur.get("lowPrice")
+        cur_high = cur.get("highPrice")
+        if cur_low is None or cur_high is None:
+            continue
+        touch = float(cur_low) <= zone_high if zone_type == "bid" else float(cur_high) >= zone_low
+        if not touch:
+            continue
+        recent_touch_count += 1
+        fwd5_pct = side_sign * sum(float(recent60[j].get("ret1m") or 0.0) for j in range(idx + 1, min(len(recent60), idx + 6))) * 100.0
+        if fwd5_pct >= forward_5m_threshold_pct:
+            recent_reversal_hits += 1
+    reversal_hit_ratio = (recent_reversal_hits / recent_touch_count) if recent_touch_count > 0 else 0.0
 
     aligned_notional = 0.0
     total_notional = 0.0
@@ -308,24 +346,30 @@ def _score_zone(
         100.0,
     )
 
-    state: SignalState = "NONE"
-    if real_score >= 75.0:
-        state = "STRONG"
-    elif real_score >= 60.0:
-        state = "CONFIRM"
-    elif real_score >= 52.0:
-        state = "WATCH"
+    reversal_confirmed = (
+        distance_ok
+        and recent_touch_count >= 1
+        and reversal_hit_ratio >= 0.5
+        and defend_score >= 60.0
+        and absorb_score >= 55.0
+        and flow_align_score >= 55.0
+        and size_score >= 55.0
+    )
 
-    continuation_reason: str | None = None
-    if state == "NONE":
-        flow20 = _safe_mean([side_sign * float(r.get("netBuyNotional") or 0.0) for r in recent20]) or 0.0
-        flow120 = _safe_mean([side_sign * float(r.get("netBuyNotional") or 0.0) for r in recent120]) or 0.0
-        if flow20 > 0 and flow120 > 0 and persistence_score >= 40.0 and absorb_score >= 45.0:
-            state = "WATCH"
-            real_score = max(real_score, 52.0)
-            continuation_reason = "FLOW_CONTINUATION_120M"
+    state: SignalState = "NONE"
+    if reversal_confirmed:
+        if real_score >= 75.0:
+            state = "STRONG"
+        else:
+            state = "CONFIRM"
+            real_score = max(real_score, 60.0)
 
     reasons: list[str] = []
+    if distance_pct is not None:
+        if distance_ok:
+            reasons.append(f"DISTANCE_OK_{distance_pct:.1f}%[{min_distance_pct:.1f},{max_distance_pct:.1f}]")
+        else:
+            reasons.append(f"DISTANCE_FILTERED_{distance_pct:.1f}%[{min_distance_pct:.1f},{max_distance_pct:.1f}]")
     if persistence_score >= 60:
         reasons.append("PERSISTENCE_OK")
     if absorb_score >= 60:
@@ -340,8 +384,10 @@ def _score_zone(
         reasons.append("SIZE_CLUSTER_OK")
     if cancel_penalty >= 60:
         reasons.append("HIGH_CANCEL_PENALTY")
-    if continuation_reason:
-        reasons.append(continuation_reason)
+    if recent_touch_count > 0:
+        reasons.append(f"TOUCH_COUNT_{recent_touch_count}")
+    if reversal_hit_ratio >= 0.5 and recent_touch_count > 0:
+        reasons.append(f"REVERSAL_RATIO_{reversal_hit_ratio:.2f}")
     if not reasons:
         reasons.append("NO_CLEAR_INSTITUTIONAL_PATTERN")
 
@@ -381,6 +427,7 @@ async def refresh_institutional_level_snapshots(market: str = "swap", top_n: int
         ranked.append((qv, sym))
     ranked.sort(key=lambda x: x[0], reverse=True)
     symbols = [s for _, s in ranked[: max(20, int(top_n))]]
+    symbols = filter_excluded_symbols(symbols)
     if not symbols:
         return
 
@@ -466,21 +513,19 @@ async def refresh_institutional_level_snapshots(market: str = "swap", top_n: int
 
 
 def _apply_state_filter(state: str):
-    state = (state or "WATCH").upper()
+    state = (state or "CONFIRM").upper()
     if state == "ALL":
         return None
-    if state == "WATCH":
-        return InstitutionalLevelSnapshot.signal_state != "NONE"
-    if state == "CONFIRM":
+    if state in {"WATCH", "CONFIRM"}:
         return InstitutionalLevelSnapshot.signal_state.in_(["CONFIRM", "STRONG"])
     if state == "STRONG":
         return InstitutionalLevelSnapshot.signal_state == "STRONG"
-    return InstitutionalLevelSnapshot.signal_state != "NONE"
+    return InstitutionalLevelSnapshot.signal_state.in_(["CONFIRM", "STRONG"])
 
 
 async def list_latest_institutional_levels(
     market: str = "both",
-    state: str = "WATCH",
+    state: str = "CONFIRM",
     limit: int = 100,
     lookback_minutes: int = 360,
 ) -> list[InstitutionalLevelSnapshot]:
@@ -492,20 +537,18 @@ async def list_latest_institutional_levels(
 
     async with SessionLocal() as session:
         for one_market in markets:
-            where_clauses = [
-                InstitutionalLevelSnapshot.market == one_market,
-                InstitutionalLevelSnapshot.bucket_start_ms >= lookback_start_ms,
-            ]
-            if state_filter is not None:
-                where_clauses.append(state_filter)
-
             latest_bucket_subq = (
                 select(
                     InstitutionalLevelSnapshot.symbol.label("symbol"),
                     InstitutionalLevelSnapshot.zone_type.label("zone_type"),
                     func.max(InstitutionalLevelSnapshot.bucket_start_ms).label("bucket_start_ms"),
                 )
-                .where(and_(*where_clauses))
+                .where(
+                    and_(
+                        InstitutionalLevelSnapshot.market == one_market,
+                        InstitutionalLevelSnapshot.bucket_start_ms >= lookback_start_ms,
+                    )
+                )
                 .group_by(InstitutionalLevelSnapshot.symbol, InstitutionalLevelSnapshot.zone_type)
                 .subquery()
             )
@@ -521,7 +564,71 @@ async def list_latest_institutional_levels(
                     ),
                 )
                 .where(InstitutionalLevelSnapshot.market == one_market)
-                .order_by(desc(InstitutionalLevelSnapshot.bucket_start_ms), desc(InstitutionalLevelSnapshot.real_score))
+            )
+            if state_filter is not None:
+                stmt = stmt.where(state_filter)
+            stmt = stmt.order_by(
+                desc(InstitutionalLevelSnapshot.bucket_start_ms),
+                desc(InstitutionalLevelSnapshot.real_score),
+            ).limit(limit)
+            rows.extend((await session.execute(stmt)).scalars().all())
+
+    rows.sort(
+        key=lambda x: (
+            _signal_rank(str(x.signal_state or "NONE")),
+            float(x.real_score or 0.0),
+            int(x.bucket_start_ms or 0),
+        ),
+        reverse=True,
+    )
+    rows = [r for r in rows if not is_excluded_symbol(getattr(r, "symbol", None))]
+    return rows[: int(limit)]
+
+
+async def list_recent_triggered_institutional_levels(
+    market: str = "both",
+    limit: int = 100,
+    lookback_minutes: int = 24 * 60,
+) -> list[InstitutionalLevelSnapshot]:
+    now_ms = int(time.time() * 1000)
+    lookback_start_ms = now_ms - max(30, int(lookback_minutes)) * 60 * 1000
+    markets = ["spot", "swap"] if market == "both" else [market]
+    rows: list[InstitutionalLevelSnapshot] = []
+
+    async with SessionLocal() as session:
+        for one_market in markets:
+            latest_signal_subq = (
+                select(
+                    InstitutionalLevelSnapshot.symbol.label("symbol"),
+                    InstitutionalLevelSnapshot.zone_type.label("zone_type"),
+                    func.max(InstitutionalLevelSnapshot.bucket_start_ms).label("bucket_start_ms"),
+                )
+                .where(
+                    and_(
+                        InstitutionalLevelSnapshot.market == one_market,
+                        InstitutionalLevelSnapshot.bucket_start_ms >= lookback_start_ms,
+                        InstitutionalLevelSnapshot.signal_state.in_(["CONFIRM", "STRONG"]),
+                    )
+                )
+                .group_by(InstitutionalLevelSnapshot.symbol, InstitutionalLevelSnapshot.zone_type)
+                .subquery()
+            )
+
+            stmt = (
+                select(InstitutionalLevelSnapshot)
+                .join(
+                    latest_signal_subq,
+                    and_(
+                        InstitutionalLevelSnapshot.symbol == latest_signal_subq.c.symbol,
+                        InstitutionalLevelSnapshot.zone_type == latest_signal_subq.c.zone_type,
+                        InstitutionalLevelSnapshot.bucket_start_ms == latest_signal_subq.c.bucket_start_ms,
+                    ),
+                )
+                .where(InstitutionalLevelSnapshot.market == one_market)
+                .order_by(
+                    desc(InstitutionalLevelSnapshot.bucket_start_ms),
+                    desc(InstitutionalLevelSnapshot.real_score),
+                )
                 .limit(limit)
             )
             rows.extend((await session.execute(stmt)).scalars().all())
@@ -534,6 +641,7 @@ async def list_latest_institutional_levels(
         ),
         reverse=True,
     )
+    rows = [r for r in rows if not is_excluded_symbol(getattr(r, "symbol", None))]
     return rows[: int(limit)]
 
 
@@ -544,6 +652,15 @@ async def get_symbol_latest_institutional_levels(
     lookback_minutes: int = 24 * 60,
     top_k: int = 3,
 ) -> dict[str, Any]:
+    if is_excluded_symbol(symbol):
+        return {
+            "topBidZones": [],
+            "topAskZones": [],
+            "continuationState": {"active": False, "state": "NONE"},
+            "riskFlags": ["EXCLUDED_SYMBOL"],
+            "ts": int(time.time() * 1000),
+        }
+
     now_ms = int(time.time() * 1000)
     lookback_start_ms = now_ms - max(30, int(lookback_minutes)) * 60 * 1000
     async with SessionLocal() as session:

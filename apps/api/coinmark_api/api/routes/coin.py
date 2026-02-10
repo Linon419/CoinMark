@@ -1549,9 +1549,9 @@ async def coin_orderbook_intraday(
             if row is None:
                 return {
                     "spreadBps": None,
-                    "depthImbalanceL5": None,
+                    "depthImbalanceL20": None,
                     "micropriceShiftBps": None,
-                    "wallPressureL5": None,
+                    "wallPressureL20": None,
                     "aggrBuyRatio": None,
                     "replenishScore": None,
                     "sampleCount": 0,
@@ -1566,9 +1566,9 @@ async def coin_orderbook_intraday(
             replenish = 50.0 if dep <= 0 else max(0.0, min(100.0, rep / dep * 100.0))
             return {
                 "spreadBps": _avg_or_none(row.spread_bps_sum, sample_count),
-                "depthImbalanceL5": _avg_or_none(row.depth_imbalance_l5_sum, sample_count),
+                "depthImbalanceL20": _avg_or_none(row.depth_imbalance_l20_sum, sample_count),
                 "micropriceShiftBps": _avg_or_none(row.microprice_shift_bps_sum, sample_count),
-                "wallPressureL5": _avg_or_none(row.wall_pressure_l5_sum, sample_count),
+                "wallPressureL20": _avg_or_none(row.wall_pressure_l20_sum, sample_count),
                 "aggrBuyRatio": aggr_buy_ratio,
                 "replenishScore": replenish,
                 "sampleCount": sample_count,
@@ -1646,8 +1646,8 @@ async def coin_orderbook_absorption_signal(
         sample_count = int(ob.sample_count or 0) if ob else 0
         spread_bps = (_to_float(ob.spread_bps_sum) / sample_count) if (ob and sample_count > 0 and _to_float(ob.spread_bps_sum) is not None) else None
         depth_imbalance = (
-            (_to_float(ob.depth_imbalance_l5_sum) / sample_count)
-            if (ob and sample_count > 0 and _to_float(ob.depth_imbalance_l5_sum) is not None)
+            (_to_float(ob.depth_imbalance_l20_sum) / sample_count)
+            if (ob and sample_count > 0 and _to_float(ob.depth_imbalance_l20_sum) is not None)
             else None
         )
 
@@ -1665,7 +1665,7 @@ async def coin_orderbook_absorption_signal(
                 "netBuyNotional": net,
                 "aggrBuyRatio": aggr_buy_ratio,
                 "spreadBps": spread_bps,
-                "depthImbalanceL5": depth_imbalance,
+                "depthImbalanceL20": depth_imbalance,
                 "replenishScore": replenish_score,
                 "closePrice": close_price,
                 "quoteNotional": quote,

@@ -221,9 +221,7 @@ type orderbookBucketKey struct {
 
 type orderbookBucketState struct {
 	SpreadBPSSum          float64
-	DepthImbalanceL5Sum   float64
 	MicropriceShiftBPSSum float64
-	WallPressureL5Sum     float64
 	DepthImbalanceL20Sum  float64
 	WallPressureL20Sum    float64
 	SampleCount           int64
@@ -235,9 +233,7 @@ type orderbookBucketState struct {
 
 func (st *orderbookBucketState) merge(d *ingest.OrderbookBucketDelta) {
 	st.SpreadBPSSum += dec(d.SpreadBPSSum)
-	st.DepthImbalanceL5Sum += dec(d.DepthImbalanceL5Sum)
 	st.MicropriceShiftBPSSum += dec(d.MicropriceShiftBPSSum)
-	st.WallPressureL5Sum += dec(d.WallPressureL5Sum)
 	st.DepthImbalanceL20Sum += dec(d.DepthImbalanceL20Sum)
 	st.WallPressureL20Sum += dec(d.WallPressureL20Sum)
 	st.SampleCount += d.SampleCount
@@ -287,7 +283,7 @@ func (s *Store) UpsertOrderbookBuckets(ctx context.Context, rows []ingest.Orderb
 	for _, part := range chunk(items, batchSize) {
 		batch, err := s.ch.PrepareBatch(ctx, `INSERT INTO orderbook_feature_buckets (
 			market, symbol, bucket, bucket_start_ms,
-			spread_bps_sum, depth_imbalance_l5_sum, microprice_shift_bps_sum, wall_pressure_l5_sum,
+			spread_bps_sum, microprice_shift_bps_sum,
 			depth_imbalance_l20_sum, wall_pressure_l20_sum, sample_count,
 			taker_buy_notional, taker_sell_notional, depletion_events, replenishment_events, version
 		)`)
@@ -297,7 +293,7 @@ func (s *Store) UpsertOrderbookBuckets(ctx context.Context, rows []ingest.Orderb
 		for _, it := range part {
 			if err := batch.Append(
 				it.key.Market, it.key.Symbol, it.key.Bucket, it.key.BucketStartMS,
-				it.state.SpreadBPSSum, it.state.DepthImbalanceL5Sum, it.state.MicropriceShiftBPSSum, it.state.WallPressureL5Sum,
+				it.state.SpreadBPSSum, it.state.MicropriceShiftBPSSum,
 				it.state.DepthImbalanceL20Sum, it.state.WallPressureL20Sum, it.state.SampleCount,
 				it.state.TakerBuyNotional, it.state.TakerSellNotional, it.state.DepletionEvents, it.state.ReplenishmentEvents,
 				version,
@@ -502,9 +498,7 @@ func initClickHouseSchema(ctx context.Context, conn clickhouse.Conn) error {
 			bucket String,
 			bucket_start_ms Int64,
 			spread_bps_sum Float64,
-			depth_imbalance_l5_sum Float64,
 			microprice_shift_bps_sum Float64,
-			wall_pressure_l5_sum Float64,
 			depth_imbalance_l20_sum Float64 DEFAULT 0,
 			wall_pressure_l20_sum Float64 DEFAULT 0,
 			sample_count Int64,
@@ -515,6 +509,8 @@ func initClickHouseSchema(ctx context.Context, conn clickhouse.Conn) error {
 			version UInt64
 		) ENGINE = ReplacingMergeTree(version)
 		ORDER BY (market, symbol, bucket, bucket_start_ms);`,
+		`ALTER TABLE orderbook_feature_buckets DROP COLUMN IF EXISTS depth_imbalance_l5_sum;`,
+		`ALTER TABLE orderbook_feature_buckets DROP COLUMN IF EXISTS wall_pressure_l5_sum;`,
 		`ALTER TABLE orderbook_feature_buckets ADD COLUMN IF NOT EXISTS depth_imbalance_l20_sum Float64 DEFAULT 0;`,
 		`ALTER TABLE orderbook_feature_buckets ADD COLUMN IF NOT EXISTS wall_pressure_l20_sum Float64 DEFAULT 0;`,
 		`CREATE TABLE IF NOT EXISTS asset_market_caps (

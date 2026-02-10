@@ -57,18 +57,18 @@ type OrderbookIntradayResp = {
     bucketStartMs: number;
     swap: {
       spreadBps: number | null;
-      depthImbalanceL5: number | null;
+      depthImbalanceL20: number | null;
       micropriceShiftBps: number | null;
-      wallPressureL5: number | null;
+      wallPressureL20: number | null;
       aggrBuyRatio: number | null;
       replenishScore: number | null;
       sampleCount: number;
     };
     spot: {
       spreadBps: number | null;
-      depthImbalanceL5: number | null;
+      depthImbalanceL20: number | null;
       micropriceShiftBps: number | null;
-      wallPressureL5: number | null;
+      wallPressureL20: number | null;
       aggrBuyRatio: number | null;
       replenishScore: number | null;
       sampleCount: number;
@@ -169,9 +169,9 @@ function aggregateOrderbookSide(
 
   return {
     spreadBps: weightedAvg((row) => row.spreadBps),
-    depthImbalanceL5: weightedAvg((row) => row.depthImbalanceL5),
+    depthImbalanceL20: weightedAvg((row) => row.depthImbalanceL20),
     micropriceShiftBps: weightedAvg((row) => row.micropriceShiftBps),
-    wallPressureL5: weightedAvg((row) => row.wallPressureL5),
+    wallPressureL20: weightedAvg((row) => row.wallPressureL20),
     aggrBuyRatio: weightedAvg((row) => row.aggrBuyRatio),
     replenishScore: weightedAvg((row) => row.replenishScore),
     sampleCount: totalSample,
@@ -1094,7 +1094,7 @@ export default function CoinPage() {
     const xs = rows.map((x) => formatHour(x.bucketStartMs, timeDisplayMode));
     const spread = selected.map((x) => x.spreadBps ?? null);
     const replenish = selected.map((x) => x.replenishScore ?? null);
-    const imbalance = selected.map((x) => (x.depthImbalanceL5 == null ? null : x.depthImbalanceL5 * 100));
+    const imbalance = selected.map((x) => (x.depthImbalanceL20 == null ? null : x.depthImbalanceL20 * 100));
     const aggrBuy = selected.map((x) => (x.aggrBuyRatio == null ? null : x.aggrBuyRatio * 100));
 
     const series: any[] = [
@@ -1146,7 +1146,7 @@ export default function CoinPage() {
 
     if (showSpot) {
       const spotSpread = rows.map((x) => x.spot.spreadBps ?? null);
-      const spotImb = rows.map((x) => (x.spot.depthImbalanceL5 == null ? null : x.spot.depthImbalanceL5 * 100));
+      const spotImb = rows.map((x) => (x.spot.depthImbalanceL20 == null ? null : x.spot.depthImbalanceL20 * 100));
       series.push({
         name: "现货Spread",
         type: "line",
@@ -1230,7 +1230,7 @@ export default function CoinPage() {
       newestTs: newest.bucketStartMs,
       isFallback: latestValid.bucketStartMs !== newest.bucketStartMs,
       spreadBps: selected.spreadBps,
-      depthImbalancePct: selected.depthImbalanceL5 == null ? null : selected.depthImbalanceL5 * 100,
+      depthImbalancePct: selected.depthImbalanceL20 == null ? null : selected.depthImbalanceL20 * 100,
       aggrBuyPct: selected.aggrBuyRatio == null ? null : selected.aggrBuyRatio * 100,
       replenishScore: selected.replenishScore,
       sampleCount: selected.sampleCount,

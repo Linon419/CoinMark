@@ -9,6 +9,7 @@ from coinmark_api.db import SessionLocal
 from coinmark_api.hub.publisher import HubPublisher
 from coinmark_api.hub.schemas import HubEvent, build_event_id
 from coinmark_api.models import AnomalyEvent
+from coinmark_api.services.symbol_filter import is_excluded_symbol
 
 logger = logging.getLogger("coinmark.hub")
 
@@ -78,6 +79,9 @@ class HubAnomalyStream:
             return 0
 
         for row in rows:
+            if is_excluded_symbol(getattr(row, "symbol", None)):
+                self._last_id = max(self._last_id, int(row.id))
+                continue
             await self.publisher.publish(self._to_hub_event(row))
             self._last_id = max(self._last_id, int(row.id))
         return len(rows)

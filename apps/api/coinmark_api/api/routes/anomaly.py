@@ -10,7 +10,8 @@ from sqlalchemy import and_, desc, func, select
 from coinmark_api.db import SessionLocal
 from coinmark_api.models import AnomalyEvent, SRLevel
 from coinmark_api.services.absorption_signal import list_latest_absorption_signals
-from coinmark_api.services.institutional_levels import list_latest_institutional_levels
+from coinmark_api.services.institutional_levels import list_latest_institutional_levels, list_recent_triggered_institutional_levels
+from coinmark_api.services.symbol_filter import is_excluded_symbol
 
 
 router = APIRouter()
@@ -63,10 +64,12 @@ def _signal_rank(state: str) -> int:
 
 
 def _state_filter_label(state: str) -> str:
-    s = (state or "WATCH").upper()
-    if s in ["WATCH", "CONFIRM", "STRONG", "ALL"]:
+    s = (state or "CONFIRM").upper()
+    if s in ["CONFIRM", "STRONG", "ALL"]:
         return s
-    return "WATCH"
+    if s == "WATCH":
+        return "CONFIRM"
+    return "CONFIRM"
 
 
 def _shape_absorption_windows(windows: dict | None) -> dict:
@@ -106,6 +109,7 @@ async def orderbook_absorption_signals(
             "ts": int(r.bucket_start_ms),
         }
         for r in rows
+        if not is_excluded_symbol(r.symbol)
     ]
 
     items.sort(
@@ -129,7 +133,7 @@ async def orderbook_absorption_signals(
 async def orderbook_institutional_levels(
     market: MarketBoth = Query("both", pattern="^(spot|swap|both)$"),
     limit: int = Query(100, ge=10, le=500),
-    state: str = Query("WATCH"),
+    state: str = Query("CONFIRM"),
     lookbackMinutes: int = Query(360, ge=15, le=24 * 60),
 ) -> dict:
     normalized_state = _state_filter_label(state)
@@ -139,6 +143,16 @@ async def orderbook_institutional_levels(
         limit=limit,
         lookback_minutes=lookbackMinutes,
     )
+
+    fallback_applied = False
+    fallback_lookback_minutes = max(lookbackMinutes, 24 * 60)
+    if not rows and normalized_state in {"CONFIRM", "STRONG"}:
+        rows = await list_recent_triggered_institutional_levels(
+            market=market,
+            limit=limit,
+            lookback_minutes=fallback_lookback_minutes,
+        )
+        fallback_applied = len(rows) > 0
 
     items = [
         {
@@ -162,6 +176,7 @@ async def orderbook_institutional_levels(
             "ts": int(r.bucket_start_ms),
         }
         for r in rows
+        if not is_excluded_symbol(r.symbol)
     ]
 
     items.sort(
@@ -177,6 +192,8 @@ async def orderbook_institutional_levels(
         "market": market,
         "state": normalized_state,
         "lookbackMinutes": lookbackMinutes,
+        "fallbackApplied": fallback_applied,
+        "fallbackLookbackMinutes": fallback_lookback_minutes,
         "items": items[: int(limit)],
     }
 
@@ -348,6 +365,8 @@ async def hot_markets(
 
     items: list[dict[str, Any]] = []
     for row in rows:
+        if is_excluded_symbol(row.symbol):
+            continue
         details = row.details if isinstance(row.details, dict) else {}
         severity_score = _event_severity_score(str(row.event_type), details)
         items.append(
@@ -406,6 +425,13 @@ async def sr_levels(
     limit: int = Query(30, ge=1, le=200),
 ) -> dict:
     sym = symbol.strip().upper()
+    if is_excluded_symbol(sym):
+        return {
+            "market": market,
+            "symbol": sym,
+            "timeframe": timeframe,
+            "items": [],
+        }
     async with SessionLocal() as session:
         stmt = (
             select(SRLevel)

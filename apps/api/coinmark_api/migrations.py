@@ -106,9 +106,9 @@ CREATE TABLE IF NOT EXISTS orderbook_feature_buckets (
   bucket_start_ms BIGINT NOT NULL,
 
   spread_bps_sum NUMERIC(38, 18) NOT NULL DEFAULT 0,
-  depth_imbalance_l5_sum NUMERIC(38, 18) NOT NULL DEFAULT 0,
   microprice_shift_bps_sum NUMERIC(38, 18) NOT NULL DEFAULT 0,
-  wall_pressure_l5_sum NUMERIC(38, 18) NOT NULL DEFAULT 0,
+  depth_imbalance_l20_sum NUMERIC(38, 18) NOT NULL DEFAULT 0,
+  wall_pressure_l20_sum NUMERIC(38, 18) NOT NULL DEFAULT 0,
   sample_count INTEGER NOT NULL DEFAULT 0,
 
   taker_buy_notional NUMERIC(38, 18) NOT NULL DEFAULT 0,
@@ -127,6 +127,18 @@ CREATE TABLE IF NOT EXISTS orderbook_feature_buckets (
         )
         await conn.exec_driver_sql(
             "CREATE INDEX IF NOT EXISTS ix_orderbook_feature_query ON orderbook_feature_buckets (market, bucket, bucket_start_ms);"
+        )
+        await conn.exec_driver_sql(
+            "ALTER TABLE orderbook_feature_buckets ADD COLUMN IF NOT EXISTS depth_imbalance_l20_sum NUMERIC(38, 18) NOT NULL DEFAULT 0;"
+        )
+        await conn.exec_driver_sql(
+            "ALTER TABLE orderbook_feature_buckets ADD COLUMN IF NOT EXISTS wall_pressure_l20_sum NUMERIC(38, 18) NOT NULL DEFAULT 0;"
+        )
+        await conn.exec_driver_sql(
+            "ALTER TABLE orderbook_feature_buckets DROP COLUMN IF EXISTS depth_imbalance_l5_sum;"
+        )
+        await conn.exec_driver_sql(
+            "ALTER TABLE orderbook_feature_buckets DROP COLUMN IF EXISTS wall_pressure_l5_sum;"
         )
 
         # absorption_signal_snapshots：盘口吸筹信号快照（全币扫描结果落库）

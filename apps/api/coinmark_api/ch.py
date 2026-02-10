@@ -60,9 +60,7 @@ class OBFeatureRow:
     bucket: str = ""
     bucket_start_ms: int = 0
     spread_bps_sum: float = 0.0
-    depth_imbalance_l5_sum: float = 0.0
     microprice_shift_bps_sum: float = 0.0
-    wall_pressure_l5_sum: float = 0.0
     depth_imbalance_l20_sum: float = 0.0
     wall_pressure_l20_sum: float = 0.0
     sample_count: int = 0
@@ -147,9 +145,7 @@ def _ob_row(r: dict) -> OBFeatureRow:
         bucket=str(r.get("bucket") or ""),
         bucket_start_ms=int(r.get("bucket_start_ms") or 0),
         spread_bps_sum=float(r.get("spread_bps_sum") or 0),
-        depth_imbalance_l5_sum=float(r.get("depth_imbalance_l5_sum") or 0),
         microprice_shift_bps_sum=float(r.get("microprice_shift_bps_sum") or 0),
-        wall_pressure_l5_sum=float(r.get("wall_pressure_l5_sum") or 0),
         depth_imbalance_l20_sum=float(r.get("depth_imbalance_l20_sum") or 0),
         wall_pressure_l20_sum=float(r.get("wall_pressure_l20_sum") or 0),
         sample_count=int(r.get("sample_count") or 0),

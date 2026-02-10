@@ -218,7 +218,7 @@ func (c *Consumer) consumeDepth(ctx context.Context, market string, nc *nats.Con
 				if !ok {
 					return
 				}
-				obAgg.AddOrderbookSample(market, symbol, p.EventTimeMS, f.SpreadBPS, f.DepthImbalanceL5, f.MicropriceShiftBPS, f.WallPressureL5, f.L1DepthNotional, f.DepthImbalanceL20, f.WallPressureL20)
+				obAgg.AddOrderbookSample(market, symbol, p.EventTimeMS, f.SpreadBPS, f.MicropriceShiftBPS, f.L1DepthNotional, f.DepthImbalanceL20, f.WallPressureL20)
 				c.stats.NATSDepthMsg.Add(1)
 			}()
 		}

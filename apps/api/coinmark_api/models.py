@@ -50,9 +50,9 @@ class OrderbookFeatureBucket(Base):
     bucket_start_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)  # UTC ms
 
     spread_bps_sum: Mapped[float] = mapped_column(Numeric(38, 18), nullable=False, default=0)
-    depth_imbalance_l5_sum: Mapped[float] = mapped_column(Numeric(38, 18), nullable=False, default=0)
     microprice_shift_bps_sum: Mapped[float] = mapped_column(Numeric(38, 18), nullable=False, default=0)
-    wall_pressure_l5_sum: Mapped[float] = mapped_column(Numeric(38, 18), nullable=False, default=0)
+    depth_imbalance_l20_sum: Mapped[float] = mapped_column(Numeric(38, 18), nullable=False, default=0)
+    wall_pressure_l20_sum: Mapped[float] = mapped_column(Numeric(38, 18), nullable=False, default=0)
     sample_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     taker_buy_notional: Mapped[float] = mapped_column(Numeric(38, 18), nullable=False, default=0)

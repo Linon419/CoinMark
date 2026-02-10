@@ -11,6 +11,7 @@ from coinmark_api.ch import query_trade_flow_agg
 from coinmark_api.models import AnomalyEvent, InstitutionalLevelSnapshot, PriceImpactWallCandidate
 from coinmark_api.services.binance.rest import get_orderbook_depth
 from coinmark_api.services.institutional_levels import refresh_institutional_level_snapshots
+from coinmark_api.services.symbol_filter import filter_excluded_symbols, is_excluded_symbol
 
 Market = Literal["spot", "swap"]
 MarketScope = Literal["spot", "swap", "both"]
@@ -143,6 +144,9 @@ async def _compute_survive_counts(
     now_ms = int(time.time() * 1000)
     since_ms = now_ms - lookback_ms
     symbols = sorted({s for s, _ in keys})
+    symbols = filter_excluded_symbols(symbols)
+    if not symbols:
+        return {}
     stmt = (
         select(
             InstitutionalLevelSnapshot.symbol,
@@ -209,6 +213,7 @@ async def _sync_wall_anomaly_events(
     cutoff_ms = int(time.time() * 1000) - max(1, int(cooldown_minutes)) * 60 * 1000
 
     symbols = sorted({str(x.get("symbol") or "") for x in rows if x.get("symbol")})
+    symbols = filter_excluded_symbols(symbols)
     if not symbols:
         return 0
 
@@ -239,6 +244,8 @@ async def _sync_wall_anomaly_events(
     cooldown_ms = max(1, int(cooldown_minutes)) * 60 * 1000
     for item in rows:
         symbol = str(item.get("symbol") or "")
+        if is_excluded_symbol(symbol):
+            continue
         zone_type = str(item.get("zoneType") or "")
         event_type = _event_type_for_zone(zone_type)
         ts = int(item.get("ts") or 0)
@@ -344,6 +351,8 @@ async def refresh_price_impact_walls(
             latest_by_key: dict[tuple[str, str], InstitutionalLevelSnapshot] = {}
             for row in snapshots:
                 key = (str(row.symbol), str(row.zone_type))
+                if is_excluded_symbol(key[0]):
+                    continue
                 if key in latest_by_key:
                     continue
                 latest_by_key[key] = row
@@ -356,6 +365,7 @@ async def refresh_price_impact_walls(
             )
 
             symbols = sorted({symbol for symbol, _ in latest_by_key.keys()})
+            symbols = filter_excluded_symbols(symbols)
             flow_map = await _load_symbol_flow_bias(
                 market=market,
                 symbols=symbols,
@@ -365,6 +375,8 @@ async def refresh_price_impact_walls(
             candidates: list[dict[str, Any]] = []
             values: list[dict[str, Any]] = []
             for (sym_key, zone_type), row in latest_by_key.items():
+                if is_excluded_symbol(sym_key):
+                    continue
                 flow = flow_map.get(str(row.symbol), {})
                 buy_ratio = _to_float(flow.get("buyRatio"))
                 net_flow = _to_float(flow.get("net"))
@@ -542,4 +554,5 @@ async def list_latest_price_impact_walls(
         ),
         reverse=True,
     )
+    out = [row for row in out if not is_excluded_symbol(getattr(row, "symbol", None))]
     return out[: max(1, int(limit))]

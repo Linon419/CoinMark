@@ -10,6 +10,7 @@ from coinmark_api.db import SessionLocal
 from coinmark_api.db_upsert import insert
 from coinmark_api.models import AbsorptionSignalSnapshot
 from coinmark_api.services.binance.rest import get_ticker_24h_all
+from coinmark_api.services.symbol_filter import filter_excluded_symbols, is_excluded_symbol
 
 
 def _to_float(v) -> float | None:
@@ -141,6 +142,7 @@ async def refresh_absorption_signal_snapshots(market: str = "swap", top_n: int =
         ranked.append((qv, sym))
     ranked.sort(key=lambda x: x[0], reverse=True)
     symbols = [s for _, s in ranked[: max(20, int(top_n))]]
+    symbols = filter_excluded_symbols(symbols)
     if not symbols:
         return
 
@@ -377,4 +379,4 @@ async def list_latest_absorption_signals(
         ).limit(limit)
 
         rows = (await session.execute(stmt)).scalars().all()
-    return rows
+    return [r for r in rows if not is_excluded_symbol(getattr(r, "symbol", None))]

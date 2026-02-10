@@ -19,6 +19,7 @@ from coinmark_api.ch import (
 
 from coinmark_api.db import SessionLocal, write_session
 from coinmark_api.models import AnomalyEvent
+from coinmark_api.services.symbol_filter import filter_excluded_symbols, is_excluded_symbol
 
 Market = Literal["spot", "swap"]
 MarketScope = Literal["spot", "swap", "both"]
@@ -366,7 +367,8 @@ async def _load_market_caps(symbols: list[str]) -> dict[str, float]:
 async def _top_symbols(market: Market, symbol_limit: int, bucket: str = "1h") -> list[str]:
     since_ms = int(time.time() * 1000) - 24 * 60 * 60 * 1000
     rows = await query_trade_agg_volume(market=market, bucket="1m", start_ms=since_ms, limit=max(20, int(symbol_limit)))
-    return [sym for sym, _ in rows if sym]
+    symbols = [sym for sym, _ in rows if sym]
+    return filter_excluded_symbols(symbols)
 
 
 async def _load_rows(
@@ -437,6 +439,8 @@ async def get_realtime_signals(
         market_signals: list[dict[str, Any]] = []
         min_rows = max(20, 90 // max(1, _bucket_minutes(params.bucket)))
         for symbol, rows in grouped.items():
+            if is_excluded_symbol(symbol):
+                continue
             if len(rows) < min_rows:
                 continue
             items = _scan_symbol_signals(symbol, market, rows, params, mcap_usd=mcap_map.get(symbol, 0.0))
@@ -519,6 +523,8 @@ async def _sync_anomaly_events(session, signals: list[dict[str, Any]], cooldown_
             if signal_state not in {"CONFIRM", "STRONG", "HIGH"}:
                 continue
             sym = str(item.get("symbol") or "")
+            if is_excluded_symbol(sym):
+                continue
             ts = int(item.get("ts") or 0)
             et = str(item.get("eventType") or _SIGNAL_EVENT_TYPE)
             if not sym or ts <= 0:
@@ -604,6 +610,7 @@ async def scan_climax_reversal(
 
     for market in _markets(market_scope):
         symbols = await _top_symbols(market, symbol_limit)
+        symbols = filter_excluded_symbols(symbols)
         if not symbols:
             continue
 
@@ -627,6 +634,8 @@ async def scan_climax_reversal(
             ob_by_sym[str(r.symbol)][int(r.bucket_start_ms)] = r
 
         for sym in symbols:
+            if is_excluded_symbol(sym):
+                continue
             candles = sorted(trade_by_sym.get(sym, []), key=lambda r: r.bucket_start_ms)
             if len(candles) < avg_window + 5:
                 continue
@@ -740,7 +749,7 @@ def _detect_climax_for_symbol(
             # orderbook imbalance
             ob = ob_map.get(int(wc.bucket_start_ms))
             if ob and ob.sample_count > 0:
-                imb = ob.depth_imbalance_l5_sum / ob.sample_count
+                imb = ob.depth_imbalance_l20_sum / ob.sample_count
                 ob_imbalance_vals.append(imb)
 
         if not cascade_found:
@@ -841,6 +850,8 @@ async def _sync_climax_events(session, signals: list[dict[str, Any]], cooldown_m
             if state not in {"CONFIRM", "STRONG", "HIGH"}:
                 continue
             sym = str(item.get("symbol", ""))
+            if is_excluded_symbol(sym):
+                continue
             ts = int(item.get("ts", 0))
             et = str(item.get("eventType", ""))
             if not sym or ts <= 0:

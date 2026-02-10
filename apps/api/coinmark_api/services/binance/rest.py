@@ -6,6 +6,8 @@ from typing import Any
 
 import httpx
 
+from coinmark_api.services.symbol_filter import filter_excluded_symbols
+
 
 SPOT_REST = "https://api.binance.com"
 FUTURES_REST = "https://fapi.binance.com"
@@ -94,6 +96,7 @@ async def get_pairs(market: str) -> list[str]:
             return cached[1]
 
         pairs, status_map = await _fetch_pairs_and_status(market)
+        pairs = filter_excluded_symbols(pairs)
         _pairs_cache[market] = (now, pairs)
         _status_cache[market] = (now, status_map)
         return pairs

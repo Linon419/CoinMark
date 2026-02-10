@@ -30,6 +30,18 @@ class Settings(BaseSettings):
     hub_anomaly_scan_batch_size: int = 200
     hub_wall_refresh_interval_sec: int = 300
     hub_climax_scan_interval_sec: int = 60
+    depth_fullscan_enabled: bool = False
+    depth_fullscan_market: str = "swap"
+    depth_fullscan_limit_swap: int = 1000
+    depth_fullscan_limit_spot: int = 5000
+    depth_fullscan_symbols: str = (
+        "BTC,ETH,BNB,SOL,DOGE,LTC,LDO,CRV,LINK,ADA,UNI,ONDO,AAVE,AVAX,1000PEPE,SUI,SEI,WLD,HYPE,TRUMP,PUMP,ZEC"
+    )
+    depth_fullscan_fast_symbols: str = "BTC,ETH,BNB,SOL"
+    depth_fullscan_fast_interval_sec: int = 300
+    depth_fullscan_slow_interval_sec: int = 900
+    depth_fullscan_concurrency: int = 4
+    depth_fullscan_jitter_sec: int = 45
 
     ingest_enable_spot: bool = True
     ingest_enable_swap: bool = True
