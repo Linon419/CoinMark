@@ -261,6 +261,12 @@ body {
   flex-wrap: wrap;
 }
 
+.cm-homeQuantValue {
+  margin-top: 4px;
+  font-size: 20px;
+  font-weight: 600;
+}
+
 .cm-favList {
   display: flex;
   flex-direction: column;

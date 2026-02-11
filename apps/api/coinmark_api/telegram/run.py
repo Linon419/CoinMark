@@ -16,6 +16,7 @@ from redis.asyncio import Redis
 from redis.asyncio import from_url as redis_from_url
 from sqlalchemy import and_, desc, func, select
 
+from coinmark_api.api.routes.coin import coin_fund_snapshots
 from coinmark_api.ch import (
     TradeBucketRow,
     query_funding_by_symbol,
@@ -1035,78 +1036,22 @@ class QueryService:
         }
 
     @staticmethod
-    async def intraday_net_snapshot(symbol: str, hours: int = 6) -> list[dict[str, Any]]:
-        now_ms = int(time.time() * 1000)
-        hour_ms = 3_600_000
-        day_start_ms = (now_ms // 86_400_000) * 86_400_000
-        curr_hour_start = (now_ms // hour_ms) * hour_ms
-
-        hist_start_ms = max(day_start_ms, curr_hour_start - max(1, int(hours)) * hour_ms)
-        swap_rows_task = query_trade_buckets(
-            market="swap",
+    async def intraday_net_snapshot(symbol: str) -> list[dict[str, Any]]:
+        payload = await coin_fund_snapshots(
             symbol=symbol,
-            bucket="1h",
-            start_ms=hist_start_ms,
-            end_ms=curr_hour_start - hour_ms,
-            order="asc",
-            limit=max(1, int(hours)) + 2,
+            tz_offset_min=0,
+            time_mode="utc",
         )
-        spot_rows_task = query_trade_buckets(
-            market="spot",
-            symbol=symbol,
-            bucket="1h",
-            start_ms=hist_start_ms,
-            end_ms=curr_hour_start - hour_ms,
-            order="asc",
-            limit=max(1, int(hours)) + 2,
-        )
-        swap_curr_task = query_trade_flow_agg(
-            market="swap",
-            symbols=[symbol],
-            bucket="1m",
-            start_ms=curr_hour_start,
-        )
-        spot_curr_task = query_trade_flow_agg(
-            market="spot",
-            symbols=[symbol],
-            bucket="1m",
-            start_ms=curr_hour_start,
-        )
-        swap_rows, spot_rows, swap_curr_rows, spot_curr_rows = await asyncio.gather(
-            swap_rows_task,
-            spot_rows_task,
-            swap_curr_task,
-            spot_curr_task,
-        )
-
-        swap_map = {
-            int(row.bucket_start_ms): (_to_float(row.taker_buy_notional) or 0.0) - (_to_float(row.taker_sell_notional) or 0.0)
-            for row in swap_rows
-        }
-        spot_map = {
-            int(row.bucket_start_ms): (_to_float(row.taker_buy_notional) or 0.0) - (_to_float(row.taker_sell_notional) or 0.0)
-            for row in spot_rows
-        }
-
-        keys = sorted(set(swap_map.keys()) | set(spot_map.keys()))
-        items: list[dict[str, Any]] = []
-        for key in keys:
-            items.append({"ts": key, "swap": swap_map.get(key, 0.0), "spot": spot_map.get(key, 0.0), "isCurrent": False})
-
-        if swap_curr_rows:
-            _, buy_sum, sell_sum = swap_curr_rows[0]
-            swap_curr = float(buy_sum) - float(sell_sum)
-        else:
-            swap_curr = 0.0
-
-        if spot_curr_rows:
-            _, buy_sum, sell_sum = spot_curr_rows[0]
-            spot_curr = float(buy_sum) - float(sell_sum)
-        else:
-            spot_curr = 0.0
-
-        items.append({"ts": now_ms, "swap": swap_curr, "spot": spot_curr, "isCurrent": True})
-        return items
+        raw_items = payload.get("items") if isinstance(payload, dict) else None
+        if not isinstance(raw_items, list) or not raw_items:
+            return []
+        out: list[dict[str, Any]] = []
+        for item in raw_items:
+            ts = int(item.get("labelTsMs") or 0)
+            swap_val = _to_float(item.get("swapValue")) or 0.0
+            spot_val = _to_float(item.get("spotValue")) or 0.0
+            out.append({"ts": ts, "swap": swap_val, "spot": spot_val})
+        return out
 
     @staticmethod
     async def daily_net_series(symbol: str, days: int = 30) -> list[dict[str, Any]]:
@@ -1503,10 +1448,10 @@ def build_query_dispatcher() -> Dispatcher:
             "/bullindex 30 - 多头指数排行(1-120)\n"
             "/openinterest 30 - 持仓增幅排行(1-120)\n"
             "/oicapratio 30 - 持仓/市值排行(1-120)\n"
-            "/nchBTC - 盘间资金快照(按个人时区展示)\n"
-            "/ncdBTC - 每日净资金(按个人时区展示)\n"
-            "/oihBTC - 持仓盘间快照(按个人时区展示)\n"
-            "/oidBTC - 近30天持仓(按个人时区展示)\n"
+            "/nchBTC - 盘间资金快照(UTC口径，本地时区展示)\n"
+            "/ncdBTC - 每日净资金(UTC口径，本地时区展示)\n"
+            "/oihBTC - 持仓盘间快照(UTC口径，本地时区展示)\n"
+            "/oidBTC - 近30天持仓(UTC口径，本地时区展示)\n"
             "/tz - 查看当前时区\n"
             "/tz set Australia/Sydney - 设置时区\n"
             "\n"
@@ -1545,19 +1490,19 @@ def build_query_dispatcher() -> Dispatcher:
 
     @router.message(Command("nch"))
     async def nch_help_cmd(message: Message) -> None:
-        await message.reply("用法：/nchBTC（计算 UTC0，展示按个人时区）")
+        await message.reply("用法：/nchBTC（计算按UTC，展示按个人时区）")
 
     @router.message(Command("ncd"))
     async def ncd_help_cmd(message: Message) -> None:
-        await message.reply("用法：/ncdBTC（计算 UTC0，展示按个人时区）")
+        await message.reply("用法：/ncdBTC（计算按UTC，展示按个人时区）")
 
     @router.message(Command("oih"))
     async def oih_help_cmd(message: Message) -> None:
-        await message.reply("用法：/oihBTC（计算 UTC0，展示按个人时区）")
+        await message.reply("用法：/oihBTC（计算按UTC，展示按个人时区）")
 
     @router.message(Command("oid"))
     async def oid_help_cmd(message: Message) -> None:
-        await message.reply("用法：/oidBTC（计算 UTC0，展示按个人时区）")
+        await message.reply("用法：/oidBTC（计算按UTC，展示按个人时区）")
 
     @router.message(Command("r15m"))
     async def r15m_cmd(message: Message, command: CommandObject) -> None:
@@ -1833,7 +1778,7 @@ def build_query_dispatcher() -> Dispatcher:
         base = _strip_usdt(symbol)
 
         if cmd == "nch":
-            rows = await svc.intraday_net_snapshot(symbol=symbol, hours=6)
+            rows = await svc.intraday_net_snapshot(symbol=symbol)
             if not rows:
                 await message.reply(f"{base} 盘间资金暂无数据")
                 return
@@ -1852,7 +1797,7 @@ def build_query_dispatcher() -> Dispatcher:
                 min_abs=1_000_000.0,
             )
 
-            lines = [f"{base}盘间资金快照 (合约 | 现货)", "* 为阈值异常", ""]
+            lines = [f"{base}累计资金快照 (UTC口径 / 本地显示) (合约 | 现货)", "* 为阈值异常", ""]
             for idx, item in enumerate(rows):
                 ts = int(item.get("ts") or 0)
                 swap_text = _fmt_compact(_to_float(item.get("swap"))) + ("*" if swap_marks[idx] else "")
@@ -1881,7 +1826,7 @@ def build_query_dispatcher() -> Dispatcher:
                 min_abs=5_000_000.0,
             )
 
-            lines = [f"{base}每日净资金 (合约 | 现货)", "* 为阈值异常", ""]
+            lines = [f"{base}每日净资金 (UTC口径 / 本地显示) (合约 | 现货)", "* 为阈值异常", ""]
             for idx, item in enumerate(rows):
                 ts = int(item.get("ts") or 0)
                 swap_text = _fmt_compact(_to_float(item.get("swap"))) + ("*" if swap_marks[idx] else "")
@@ -1903,7 +1848,7 @@ def build_query_dispatcher() -> Dispatcher:
                 min_abs=0.5,
             )
 
-            lines = [f"{base}持仓快照 (较开盘时的变化)", "* 为阈值异常", ""]
+            lines = [f"{base}持仓快照 (UTC口径 / 本地显示) (较开盘时的变化)", "* 为阈值异常", ""]
             for idx, item in enumerate(rows):
                 ts = int(item.get("ts") or 0)
                 oi_qty = _to_float(item.get("oiQty"))
@@ -1928,7 +1873,7 @@ def build_query_dispatcher() -> Dispatcher:
                 min_abs=0.5,
             )
 
-            lines = [f"{base}近30天持仓数据 (较前一天的变化)", "* 为阈值异常", ""]
+            lines = [f"{base}近30天持仓数据 (UTC口径 / 本地显示) (较前一天的变化)", "* 为阈值异常", ""]
             for idx, item in enumerate(rows):
                 ts = int(item.get("ts") or 0)
                 oi_qty = _to_float(item.get("oiQty"))

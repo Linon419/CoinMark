@@ -12,7 +12,7 @@ import asyncio
 
 from coinmark_api.config import settings
 from coinmark_api.db import SessionLocal
-from coinmark_api.models import SRLevel
+from coinmark_api.models import CoinInfo, SRLevel, InstitutionalLevelSnapshot, OrderbookHeatmapSnapshot
 from coinmark_api.ch import (
     TradeBucketRow,
     OBFeatureRow,
@@ -26,6 +26,7 @@ from coinmark_api.services.institutional_levels import get_symbol_latest_institu
 from coinmark_api.services.binance.rest import (
     get_pairs,
     get_global_long_short_account_ratio,
+    get_orderbook_depth,
     get_klines_range,
     get_open_interest_hist,
     get_symbol_status,
@@ -41,6 +42,8 @@ router = APIRouter()
 
 Market = Literal["spot", "swap"]
 TimeMode = Literal["utc", "local"]
+QuantBucket = Literal["1m", "15m", "1h", "4h", "1d"]
+HeatmapBucket = Literal["1m", "5m", "15m"]
 
 _SIGNAL_LEVEL_RANK: dict[str, int] = {
     "NONE": 0,
@@ -55,6 +58,17 @@ _SIGNAL_COOLDOWN_MS: dict[str, int] = {
 }
 _ABSORPTION_SIGNAL_COOLDOWN_STATE: dict[str, dict[str, Any]] = {}
 _FUND_SNAPSHOT_REPAIR_TS_MS: dict[str, int] = {}
+
+WHALE_TIER_MIN_LIMIT: dict[str, float] = {
+    "BTCUSDT": 5_000_000.0,
+    "ETHUSDT": 5_000_000.0,
+    "SOLUSDT": 1_000_000.0,
+    "BNBUSDT": 1_000_000.0,
+    "DOGEUSDT": 1_000_000.0,
+    "XRPUSDT": 1_000_000.0,
+}
+WHALE_DEFAULT_MIN_LIMIT = 200_000.0
+WHALE_SPOOF_MULTIPLIER = 1.5
 
 
 def _base_from_symbol(symbol: str) -> str:
@@ -95,10 +109,23 @@ def _percentile_rank(values: list[float], value: float) -> float | None:
         else:
             break
     return le_count / n
-    try:
-        return float(v)
-    except Exception:
-        return None
+
+
+async def _resolve_whale_min_limit(symbol: str) -> float:
+    sym = symbol.upper()
+    async with SessionLocal() as session:
+        row = (
+            await session.execute(
+                select(CoinInfo).where(CoinInfo.symbol == sym).limit(1)
+            )
+        ).scalar_one_or_none()
+
+    if row is not None:
+        configured = _to_float(getattr(row, "whale_min_val", None))
+        if configured is not None and configured > 0:
+            return configured
+
+    return float(WHALE_TIER_MIN_LIMIT.get(sym, WHALE_DEFAULT_MIN_LIMIT))
 
 
 
@@ -112,9 +139,61 @@ def _bucket_ms(bucket: str) -> int:
         return 15 * 60 * 1000
     if bucket == "1h":
         return 60 * 60 * 1000
+    if bucket == "4h":
+        return 4 * 60 * 60 * 1000
     if bucket == "1d":
         return 24 * 60 * 60 * 1000
     raise ValueError("unsupported bucket")
+
+
+def _resolve_heatmap_interval(interval: str, heatmap_interval: str | None) -> HeatmapBucket:
+    hv = (heatmap_interval or "").strip().lower()
+    if hv in {"1m", "5m", "15m"}:
+        return hv  # type: ignore[return-value]
+    if interval in {"15m", "1h"}:
+        return "1m"
+    if interval == "4h":
+        return "5m"
+    return "15m"
+
+
+def _calc_wall_strength_ratio(depth: dict[str, Any] | None, current_price: float | None, band_pct: float = 0.05) -> tuple[float | None, float, float]:
+    if not depth or current_price is None or current_price <= 0:
+        return None, 0.0, 0.0
+
+    low_px = float(current_price) * (1.0 - float(band_pct))
+    high_px = float(current_price) * (1.0 + float(band_pct))
+
+    buy_wall = 0.0
+    sell_wall = 0.0
+
+    bids = depth.get("bids") or []
+    asks = depth.get("asks") or []
+
+    for level in bids:
+        if not isinstance(level, (list, tuple)) or len(level) < 2:
+            continue
+        p = _to_float(level[0])
+        q = _to_float(level[1])
+        if p is None or q is None or p < low_px:
+            continue
+        buy_wall += p * q
+
+    for level in asks:
+        if not isinstance(level, (list, tuple)) or len(level) < 2:
+            continue
+        p = _to_float(level[0])
+        q = _to_float(level[1])
+        if p is None or q is None or p > high_px:
+            continue
+        sell_wall += p * q
+
+    if sell_wall <= 0:
+        if buy_wall <= 0:
+            return None, buy_wall, sell_wall
+        return 999.0, buy_wall, sell_wall
+
+    return buy_wall / sell_wall, buy_wall, sell_wall
 
 
 def _floor_bucket_start_ms(ts: int, bucket: str) -> int:
@@ -1976,20 +2055,22 @@ async def coin_recent_daily(
 async def coin_quant_dashboard(
     symbol: str = Query(..., min_length=3, max_length=32),
     market: Market = Query("swap", pattern="^(spot|swap)$"),
-    limit: int = Query(120, ge=30, le=1440),
+    bucket: QuantBucket = Query("1m", pattern="^(1m|15m|1h|4h|1d)$"),
+    limit: int = Query(120, ge=24, le=720),
 ) -> dict:
     sym = symbol.strip().upper()
     effective_market, market_fallback = await _resolve_effective_market_for_symbol(market, sym)
     now_ms = int(time.time() * 1000)
-    minute_ms = 60 * 1000
-    last_bucket = (now_ms // minute_ms) * minute_ms
+    bucket_ms = _bucket_ms(bucket)
+    last_bucket = _floor_bucket_start_ms(now_ms, bucket)
 
-    vwap_lookback = 1440
+    bucket_minutes = max(1, bucket_ms // (60 * 1000))
+    vwap_lookback = max(6, min(240, int((24 * 60) // bucket_minutes)))
     total_need = limit + vwap_lookback
-    start_ms = last_bucket - (total_need - 1) * minute_ms
+    start_ms = last_bucket - (total_need - 1) * bucket_ms
 
     rows = await query_trade_buckets(
-        market=effective_market, symbol=sym, bucket="1m",
+        market=effective_market, symbol=sym, bucket=bucket,
         start_ms=start_ms, end_ms=last_bucket,
     )
 
@@ -1998,7 +2079,7 @@ async def coin_quant_dashboard(
         ts = int(r.bucket_start_ms)
         by_ts[ts] = r
 
-    all_ts = list(range(start_ms, last_bucket + 1, minute_ms))
+    all_ts = list(range(start_ms, last_bucket + 1, bucket_ms))
 
     raw: list[dict] = []
     for ts in all_ts:
@@ -2070,5 +2151,475 @@ async def coin_quant_dashboard(
         "market": effective_market,
         "requestedMarket": market,
         "marketFallback": market_fallback,
+        "bucket": bucket,
         "items": items,
+    }
+
+
+@router.get("/coin/detail/orderbook/spot-heatmap")
+async def coin_orderbook_spot_heatmap(
+    symbol: str = Query(..., min_length=3, max_length=32),
+    interval: QuantBucket = Query("1h", pattern="^(1m|15m|1h|4h|1d)$"),
+    heatmap_interval: HeatmapBucket | None = Query(None, pattern="^(1m|5m|15m)$"),
+    limit: int = Query(48, ge=12, le=240),
+) -> dict:
+    sym = symbol.strip().upper()
+    now_ms = int(time.time() * 1000)
+    interval_ms = _bucket_ms(interval)
+    heatmap_interval = _resolve_heatmap_interval(interval, heatmap_interval)
+    heatmap_ms = _bucket_ms(heatmap_interval)
+    last_bucket_start = _floor_bucket_start_ms(now_ms, interval)
+    start_ms = last_bucket_start - (limit - 1) * interval_ms
+    end_ms = last_bucket_start + interval_ms - 1
+
+    async with SessionLocal() as session:
+        stmt = (
+            select(OrderbookHeatmapSnapshot)
+            .where(
+                and_(
+                    OrderbookHeatmapSnapshot.market == "spot",
+                    OrderbookHeatmapSnapshot.symbol == sym,
+                    OrderbookHeatmapSnapshot.bucket_start_ms >= start_ms,
+                    OrderbookHeatmapSnapshot.bucket_start_ms <= end_ms,
+                )
+            )
+            .order_by(OrderbookHeatmapSnapshot.bucket_start_ms.asc(), OrderbookHeatmapSnapshot.price_bin.asc())
+        )
+        rows = (await session.execute(stmt)).scalars().all()
+
+    grouped: dict[tuple[int, float], float] = {}
+    step_values: list[float] = []
+    min_price: float | None = None
+    max_price: float | None = None
+    max_intensity = 0.0
+
+    for row in rows:
+        raw_ts = int(row.bucket_start_ms)
+        ts = _floor_bucket_start_ms(raw_ts, heatmap_interval)
+        if ts < start_ms or ts > end_ms:
+            continue
+
+        price_bin = _to_float(row.price_bin)
+        intensity = _to_float(row.intensity)
+        step = _to_float(row.price_step)
+        if price_bin is None or intensity is None or intensity <= 0:
+            continue
+        if step is not None and step > 0:
+            step_values.append(step)
+
+        if min_price is None or price_bin < min_price:
+            min_price = price_bin
+        if max_price is None or price_bin > max_price:
+            max_price = price_bin
+        if intensity > max_intensity:
+            max_intensity = intensity
+
+        key = (ts, price_bin)
+        grouped[key] = grouped.get(key, 0.0) + intensity
+
+    if min_price is None or max_price is None:
+        return {
+            "symbol": sym,
+            "market": "spot",
+            "interval": interval,
+            "heatmapInterval": heatmap_interval,
+            "limit": limit,
+            "step": None,
+            "minPrice": None,
+            "maxPrice": None,
+            "yCount": 0,
+            "data": [],
+            "maxIntensity": 0,
+            "source": "orderbook_heatmap_1m",
+        }
+
+    step = _safe_mean(step_values) or ((max_price - min_price) / 80 if max_price > min_price else max_price * 0.001)
+    if step <= 0:
+        step = max(0.0001, min_price * 0.001)
+
+    y_count = max(1, int((max_price - min_price) / step) + 1)
+    data: list[list[float]] = []
+    grouped_max = 0.0
+    for (ts, price_bin), value in grouped.items():
+        y_idx = int(round((price_bin - min_price) / step))
+        if y_idx < 0 or y_idx >= y_count:
+            continue
+        data.append([ts, price_bin, round(value, 4)])
+        if value > grouped_max:
+            grouped_max = value
+
+    data.sort(key=lambda item: (item[0], item[1] if len(item) > 1 else 0))
+
+    return {
+        "symbol": sym,
+        "market": "spot",
+        "interval": interval,
+        "heatmapInterval": heatmap_interval,
+        "limit": limit,
+        "step": step,
+        "minPrice": min_price,
+        "maxPrice": max_price,
+        "yCount": y_count,
+        "data": data,
+        "maxIntensity": round(grouped_max if grouped_max > 0 else max_intensity, 4),
+        "source": "orderbook_heatmap_1m",
+    }
+
+
+@router.get("/coin/detail/quant-mlf-compare")
+async def coin_quant_mlf_compare(
+    symbol: str = Query(..., min_length=3, max_length=32),
+    bucket: QuantBucket = Query("1h", pattern="^(1m|15m|1h|4h|1d)$"),
+    lookbackHours: int = Query(24, ge=4, le=168),
+    dominanceThreshold: float = Query(0.0, ge=0.0, le=0.5),
+) -> dict:
+    sym = symbol.strip().upper()
+    now_ms = int(time.time() * 1000)
+    bucket_ms = _bucket_ms(bucket)
+    last_bucket = _floor_bucket_start_ms(now_ms, bucket)
+
+    lookback_buckets = max(2, int((lookbackHours * 60 * 60 * 1000) // bucket_ms))
+    start_ms = last_bucket - (lookback_buckets - 1) * bucket_ms
+
+    spot_pairs, swap_pairs = await asyncio.gather(get_pairs("spot"), get_pairs("swap"))
+    spot_available = sym in set(spot_pairs)
+    swap_available = sym in set(swap_pairs)
+
+    async def _calc_market(market: Market, available: bool) -> dict:
+        if not available:
+            return {
+                "market": market,
+                "available": False,
+                "closePrice": None,
+                "wallStrengthRatio": None,
+                "buyWallUsd": 0.0,
+                "sellWallUsd": 0.0,
+                "cvdDelta": 0.0,
+                "cvdNorm": 0.0,
+                "bucketCount": 0,
+            }
+
+        rows = await query_trade_buckets(
+            market=market,
+            symbol=sym,
+            bucket=bucket,
+            start_ms=start_ms,
+            end_ms=last_bucket,
+        )
+
+        latest_close = None
+        cvd_delta = 0.0
+        vol_sum = 0.0
+        row_count = 0
+
+        for r in rows:
+            row_count += 1
+            latest_close = _to_float(r.close_price) if _to_float(r.close_price) is not None else latest_close
+            buy = float(r.taker_buy_notional or 0)
+            sell = float(r.taker_sell_notional or 0)
+            cvd_delta += buy - sell
+            vol_sum += float(r.quote_notional or 0)
+
+        depth_limit = 5000 if market == "spot" else 1000
+        try:
+            depth = await get_orderbook_depth(market=market, symbol=sym, limit=depth_limit)
+        except Exception:
+            depth = None
+
+        wall_ratio, buy_wall, sell_wall = _calc_wall_strength_ratio(depth, latest_close, band_pct=0.05)
+        cvd_norm = (cvd_delta / vol_sum) if vol_sum > 0 else 0.0
+
+        return {
+            "market": market,
+            "available": True,
+            "closePrice": latest_close,
+            "wallStrengthRatio": wall_ratio,
+            "buyWallUsd": buy_wall,
+            "sellWallUsd": sell_wall,
+            "cvdDelta": cvd_delta,
+            "cvdNorm": cvd_norm,
+            "bucketCount": row_count,
+        }
+
+    spot_metric, swap_metric = await asyncio.gather(
+        _calc_market("spot", spot_available),
+        _calc_market("swap", swap_available),
+    )
+
+    spot_norm = _to_float(spot_metric.get("cvdNorm"))
+    swap_norm = _to_float(swap_metric.get("cvdNorm"))
+    spot_ratio = _to_float(spot_metric.get("wallStrengthRatio"))
+    swap_ratio = _to_float(swap_metric.get("wallStrengthRatio"))
+
+    spot_dominance = (spot_norm - swap_norm) if (spot_norm is not None and swap_norm is not None) else None
+    wall_ratio_diff = (spot_ratio - swap_ratio) if (spot_ratio is not None and swap_ratio is not None) else None
+
+    if spot_dominance is None:
+        dominance_state = "UNKNOWN"
+    elif spot_dominance > dominanceThreshold:
+        dominance_state = "SPOT_DOMINANT"
+    elif spot_dominance < -dominanceThreshold:
+        dominance_state = "SWAP_DOMINANT"
+    else:
+        dominance_state = "NEUTRAL"
+
+    return {
+        "symbol": sym,
+        "bucket": bucket,
+        "lookbackHours": lookbackHours,
+        "dominanceThreshold": dominanceThreshold,
+        "spot": spot_metric,
+        "swap": swap_metric,
+        "spotDominanceFactor": spot_dominance,
+        "wallStrengthRatioDiff": wall_ratio_diff,
+        "dominanceState": dominance_state,
+        "ts": now_ms,
+    }
+
+
+@router.get("/coin/detail/orderbook/whale-radar")
+async def coin_orderbook_whale_radar(
+    symbol: str = Query(..., min_length=3, max_length=32),
+    lookbackMinutes: int = Query(240, ge=30, le=1440),
+    topK: int = Query(20, ge=5, le=100),
+) -> dict:
+    sym = symbol.strip().upper()
+    now_ms = int(time.time() * 1000)
+    end_ms = _floor_bucket_start_ms(now_ms, "1m")
+    start_ms = end_ms - (lookbackMinutes - 1) * 60_000
+
+    min_limit = await _resolve_whale_min_limit(sym)
+    spoof_limit = min_limit * WHALE_SPOOF_MULTIPLIER
+
+    async with SessionLocal() as session:
+        stmt = (
+            select(OrderbookHeatmapSnapshot)
+            .where(
+                and_(
+                    OrderbookHeatmapSnapshot.market.in_(["spot", "swap"]),
+                    OrderbookHeatmapSnapshot.symbol == sym,
+                    OrderbookHeatmapSnapshot.bucket_start_ms >= start_ms,
+                    OrderbookHeatmapSnapshot.bucket_start_ms <= end_ms,
+                )
+            )
+            .order_by(OrderbookHeatmapSnapshot.bucket_start_ms.asc())
+        )
+        rows = (await session.execute(stmt)).scalars().all()
+
+    available_markets: set[str] = set()
+    by_ts: dict[int, dict[tuple[float, str], float]] = {}
+    for row in rows:
+        ts = int(row.bucket_start_ms)
+        price = _to_float(row.price_bin)
+        intensity = _to_float(row.intensity)
+        if price is None or intensity is None or intensity <= 0:
+            continue
+
+        available_markets.add(str(row.market).lower())
+        side = str(getattr(row, "side", "unknown") or "unknown").lower()
+        if side not in {"bid", "ask"}:
+            side = "unknown"
+        price_key = round(float(price), 8)
+        ts_map = by_ts.setdefault(ts, {})
+        key = (price_key, side)
+        ts_map[key] = float(ts_map.get(key, 0.0)) + float(intensity)
+
+    def _calc_live_step(mid_price: float) -> float:
+        raw_step = max(mid_price * 0.0008, 0.0001)
+        abs_mid = abs(mid_price)
+        if abs_mid >= 10000:
+            tick = 10.0
+        elif abs_mid >= 1000:
+            tick = 1.0
+        elif abs_mid >= 100:
+            tick = 0.1
+        elif abs_mid >= 10:
+            tick = 0.01
+        elif abs_mid >= 1:
+            tick = 0.001
+        else:
+            tick = 0.0001
+        snapped = max(tick, round(raw_step / tick) * tick)
+        return float(snapped)
+
+    async def _merge_live_market_depth(market_name: str, ts_key: int) -> None:
+        try:
+            depth_limit = int(settings.depth_fullscan_limit_spot if market_name == "spot" else settings.depth_fullscan_limit_swap)
+            depth = await get_orderbook_depth(market=market_name, symbol=sym, limit=max(100, depth_limit))
+        except Exception:
+            return
+
+        bids = depth.get("bids") if isinstance(depth, dict) else None
+        asks = depth.get("asks") if isinstance(depth, dict) else None
+        if not isinstance(bids, list) or not isinstance(asks, list) or not bids or not asks:
+            return
+
+        best_bid = _to_float(bids[0][0]) if isinstance(bids[0], (list, tuple)) and len(bids[0]) >= 1 else None
+        best_ask = _to_float(asks[0][0]) if isinstance(asks[0], (list, tuple)) and len(asks[0]) >= 1 else None
+        if best_bid is None or best_ask is None or best_bid <= 0 or best_ask <= 0:
+            return
+
+        mid = (best_bid + best_ask) / 2.0
+        step = _calc_live_step(mid)
+        if step <= 0:
+            return
+
+        ts_map = by_ts.setdefault(ts_key, {})
+        for side, levels in (("bid", bids), ("ask", asks)):
+            for lv in levels:
+                if not isinstance(lv, (list, tuple)) or len(lv) < 2:
+                    continue
+                price = _to_float(lv[0])
+                qty = _to_float(lv[1])
+                if price is None or qty is None or price <= 0 or qty <= 0:
+                    continue
+                bin_idx = int(price // step)
+                price_key = round(bin_idx * step, 8)
+                key = (price_key, side)
+                ts_map[key] = float(ts_map.get(key, 0.0)) + float(price * qty)
+
+        available_markets.add(market_name)
+
+    missing_markets = [m for m in ("spot", "swap") if m not in available_markets]
+    if missing_markets:
+        await asyncio.gather(*[_merge_live_market_depth(market_name, end_ms) for market_name in missing_markets])
+
+    if not by_ts:
+        return {
+            "symbol": sym,
+            "market": "spot+swap",
+            "sourceMarkets": sorted(available_markets),
+            "lookbackMinutes": lookbackMinutes,
+            "minLimit": min_limit,
+            "spoofLimit": spoof_limit,
+            "items": [],
+            "ts": now_ms,
+        }
+
+    buckets: dict[float, dict[str, Any]] = {}
+    ordered_ts = sorted(by_ts.keys())
+    for ts in ordered_ts:
+        for key, intensity in by_ts[ts].items():
+            price, side = key
+            state = buckets.get(key)
+            active = intensity >= min_limit
+            if state is None:
+                buckets[key] = {
+                    "price": float(price),
+                    "side": side,
+                    "latestValue": float(intensity),
+                    "lastSeenTs": ts,
+                    "currentDurationMin": 1 if active else 0,
+                    "active": active,
+                }
+                continue
+
+            gap = int((ts - int(state["lastSeenTs"])) // 60_000)
+            prev_active = bool(state.get("active"))
+            prev_duration = int(state.get("currentDurationMin") or 0)
+
+            if active:
+                if gap == 1 and prev_active:
+                    next_duration = prev_duration + 1
+                else:
+                    next_duration = 1
+            else:
+                next_duration = 0
+
+            state["currentDurationMin"] = next_duration
+            state["active"] = active
+            state["latestValue"] = float(intensity)
+            state["lastSeenTs"] = ts
+
+    latest_price: float | None = None
+    try:
+        ticker = await get_ticker_24h("spot", sym)
+        latest_price = _to_float(ticker.get("lastPrice")) if isinstance(ticker, dict) else None
+    except Exception:
+        latest_price = None
+
+    snapshot_ts = max(by_ts.keys())
+    end_rows = list((by_ts.get(snapshot_ts) or {}).items())
+    if latest_price is None and end_rows:
+        end_rows_sorted = sorted(end_rows, key=lambda x: x[0][0])
+        latest_price = float(end_rows_sorted[len(end_rows_sorted) // 2][0][0])
+    if latest_price is None and buckets:
+        keys = sorted(buckets.keys())
+        latest_price = keys[len(keys) // 2]
+
+    def _classify(value: float, duration_min: int) -> str:
+        if value >= spoof_limit and duration_min <= 1:
+            return "SPOOF"
+        if value >= min_limit and duration_min >= 60:
+            return "REAL"
+        if value >= min_limit:
+            return "WATCH"
+        return "NORMAL"
+
+    out: list[dict[str, Any]] = []
+    for key, intensity in end_rows:
+        price, side = key
+        item = buckets.get(key)
+        if item is None:
+            continue
+
+        value = float(intensity)
+        duration_min = int(item.get("currentDurationMin") or 0)
+        nature = _classify(value, duration_min)
+        if nature == "NORMAL":
+            continue
+        distance_pct = ((float(item["price"]) - float(latest_price)) / float(latest_price)) * 100 if latest_price else None
+        out.append(
+            {
+                "price": float(item["price"]),
+                "distancePct": distance_pct,
+                "value": value,
+                "durationMin": duration_min,
+                "side": "BUY" if side == "bid" else ("SELL" if side == "ask" else "UNKNOWN"),
+                "nature": nature,
+                "label": "🛡 铁底/铁顶" if nature == "REAL" else ("👻 疑似骗线" if nature == "SPOOF" else "🐋 大户关注"),
+                "lastSeenTs": int(item["lastSeenTs"]),
+            }
+        )
+
+    if not out and end_rows:
+        fallback_rows = sorted(end_rows, key=lambda x: -float(x[1]))[: int(topK)]
+        for key, intensity in fallback_rows:
+            price, side = key
+            item = buckets.get(key)
+            duration_min = int(item.get("currentDurationMin") or 0) if item else 0
+            distance_pct = ((float(price) - float(latest_price)) / float(latest_price)) * 100 if latest_price else None
+            out.append(
+                {
+                    "price": float(price),
+                    "distancePct": distance_pct,
+                    "value": float(intensity),
+                    "durationMin": duration_min,
+                    "side": "BUY" if side == "bid" else ("SELL" if side == "ask" else "UNKNOWN"),
+                    "nature": "WATCH",
+                    "label": "🐋 大户关注",
+                    "lastSeenTs": int(item.get("lastSeenTs") or snapshot_ts) if item else snapshot_ts,
+                }
+            )
+    else:
+        out.sort(
+            key=lambda x: (
+                0 if x["nature"] == "REAL" else (1 if x["nature"] == "SPOOF" else 2),
+                -float(x["value"]),
+                -int(x["durationMin"]),
+            )
+        )
+        out = out[: int(topK)]
+
+    return {
+        "symbol": sym,
+        "market": "spot+swap",
+        "sourceMarkets": sorted(available_markets),
+        "lookbackMinutes": lookbackMinutes,
+        "minLimit": min_limit,
+        "spoofLimit": spoof_limit,
+        "latestPrice": latest_price,
+        "snapshotTs": snapshot_ts,
+        "items": out,
+        "ts": now_ms,
     }

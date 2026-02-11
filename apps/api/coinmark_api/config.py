@@ -42,6 +42,12 @@ class Settings(BaseSettings):
     depth_fullscan_slow_interval_sec: int = 900
     depth_fullscan_concurrency: int = 4
     depth_fullscan_jitter_sec: int = 45
+    depth_heatmap_enabled: bool = True
+    depth_heatmap_force_spot: bool = True
+    depth_heatmap_band_pct: float = 0.05
+    depth_heatmap_step_bps: float = 8.0
+    depth_heatmap_min_intensity_usd: float = 10000.0
+    depth_heatmap_step_overrides: str = ""
 
     ingest_enable_spot: bool = True
     ingest_enable_swap: bool = True

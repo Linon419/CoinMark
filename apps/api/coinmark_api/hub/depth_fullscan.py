@@ -4,13 +4,171 @@ import asyncio
 import logging
 import random
 import time
+import math
 from typing import Any
 
 from coinmark_api.config import settings
+from coinmark_api.db import write_session
+from coinmark_api.db_upsert import insert
+from coinmark_api.models import OrderbookHeatmapSnapshot
 from coinmark_api.services.binance.rest import get_orderbook_depth
 from coinmark_api.services.symbol_filter import filter_excluded_symbols
 
 logger = logging.getLogger("coinmark.hub")
+
+
+def _to_float(v: Any) -> float | None:
+    try:
+        value = float(v)
+        if math.isfinite(value):
+            return value
+        return None
+    except Exception:
+        return None
+
+
+def _bucket_start_1m(ts_ms: int) -> int:
+    return (int(ts_ms) // 60_000) * 60_000
+
+
+def _parse_step_overrides(raw: str) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for part in (raw or "").split(","):
+        item = part.strip()
+        if not item:
+            continue
+        if ":" not in item:
+            continue
+        symbol, step = item.split(":", 1)
+        symbol_key = symbol.strip().upper()
+        step_value = _to_float(step)
+        if not symbol_key or step_value is None or step_value <= 0:
+            continue
+        if not symbol_key.endswith("USDT"):
+            symbol_key = f"{symbol_key}USDT"
+        out[symbol_key] = step_value
+    return out
+
+
+def _calc_price_step(symbol: str, mid_price: float) -> float:
+    overrides = _parse_step_overrides(settings.depth_heatmap_step_overrides)
+    forced = overrides.get(symbol.upper())
+    if forced and forced > 0:
+        return forced
+
+    bps = max(1.0, float(settings.depth_heatmap_step_bps or 8.0))
+    raw_step = mid_price * (bps / 10_000.0)
+    if raw_step <= 0:
+        raw_step = mid_price * 0.0008
+
+    abs_mid = abs(mid_price)
+    if abs_mid >= 10000:
+        tick = 10.0
+    elif abs_mid >= 1000:
+        tick = 1.0
+    elif abs_mid >= 100:
+        tick = 0.1
+    elif abs_mid >= 10:
+        tick = 0.01
+    elif abs_mid >= 1:
+        tick = 0.001
+    else:
+        tick = 0.0001
+
+    snapped = max(tick, round(raw_step / tick) * tick)
+    return snapped
+
+
+def _build_heatmap_rows(
+    *,
+    market: str,
+    symbol: str,
+    depth: dict[str, Any],
+    ts_ms: int,
+) -> tuple[list[dict[str, Any]], float | None, float | None]:
+    bids = depth.get("bids") if isinstance(depth, dict) else None
+    asks = depth.get("asks") if isinstance(depth, dict) else None
+    if not isinstance(bids, list) or not isinstance(asks, list) or not bids or not asks:
+        return [], None, None
+
+    best_bid = _to_float(bids[0][0]) if isinstance(bids[0], (list, tuple)) and len(bids[0]) >= 1 else None
+    best_ask = _to_float(asks[0][0]) if isinstance(asks[0], (list, tuple)) and len(asks[0]) >= 1 else None
+    if best_bid is None or best_ask is None or best_bid <= 0 or best_ask <= 0:
+        return [], None, None
+
+    mid = (best_bid + best_ask) / 2.0
+    if mid <= 0:
+        return [], None, None
+
+    step = _calc_price_step(symbol, mid)
+    if step <= 0:
+        return [], None, None
+
+    bins: dict[tuple[float, str], dict[str, float]] = {}
+
+    def _append_levels(levels: list[Any], side: str) -> None:
+        for lv in levels:
+            if not isinstance(lv, (list, tuple)) or len(lv) < 2:
+                continue
+            price = _to_float(lv[0])
+            qty = _to_float(lv[1])
+            if price is None or qty is None or price <= 0 or qty <= 0:
+                continue
+            bin_idx = math.floor(price / step)
+            price_bin = round(bin_idx * step, 10)
+            notional = price * qty
+            key = (price_bin, side)
+            item = bins.get(key)
+            if item is None:
+                bins[key] = {"intensity": notional, "count": 1.0}
+            else:
+                item["intensity"] += notional
+                item["count"] += 1.0
+
+    _append_levels(bids, "bid")
+    _append_levels(asks, "ask")
+
+    min_intensity = max(0.0, float(settings.depth_heatmap_min_intensity_usd or 10000.0))
+    bucket_start_ms = _bucket_start_1m(ts_ms)
+
+    rows: list[dict[str, Any]] = []
+    for key, agg in bins.items():
+        price_bin, side = key
+        intensity = float(agg.get("intensity") or 0.0)
+        if intensity < min_intensity:
+            continue
+        rows.append(
+            {
+                "market": market,
+                "symbol": symbol,
+                "bucket_start_ms": bucket_start_ms,
+                "side": side,
+                "price_bin": price_bin,
+                "price_step": step,
+                "intensity": intensity,
+                "level_count": int(agg.get("count") or 0),
+            }
+        )
+
+    return rows, mid, step
+
+
+async def _write_heatmap_rows(rows: list[dict[str, Any]]) -> int:
+    if not rows:
+        return 0
+    stmt = insert(OrderbookHeatmapSnapshot).values(rows)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["market", "symbol", "bucket_start_ms", "side", "price_bin"],
+        set_={
+            "price_step": stmt.excluded.price_step,
+            "intensity": stmt.excluded.intensity,
+            "level_count": stmt.excluded.level_count,
+        },
+    )
+    async with write_session() as session:
+        await session.execute(stmt)
+        await session.commit()
+    return len(rows)
 
 
 def _parse_symbols(raw: str) -> list[str]:
@@ -47,6 +205,28 @@ async def _fetch_one(market: str, symbol: str, limit: int, sem: asyncio.Semaphor
             asks = depth.get("asks") if isinstance(depth, dict) else None
             bid_count = len(bids) if isinstance(bids, list) else 0
             ask_count = len(asks) if isinstance(asks, list) else 0
+
+            if settings.depth_heatmap_enabled:
+                target_market = "spot" if settings.depth_heatmap_force_spot else market
+                heat_depth = depth
+                if target_market != market:
+                    try:
+                        heat_depth = await get_orderbook_depth(market=target_market, symbol=symbol, limit=limit)
+                    except Exception:
+                        heat_depth = None
+                if isinstance(heat_depth, dict):
+                    rows, _, _ = _build_heatmap_rows(
+                        market=target_market,
+                        symbol=symbol,
+                        depth=heat_depth,
+                        ts_ms=int(time.time() * 1000),
+                    )
+                    if rows:
+                        try:
+                            await _write_heatmap_rows(rows)
+                        except Exception:
+                            logger.exception("depth heatmap write failed market=%s symbol=%s", target_market, symbol)
+
             cost_ms = (time.perf_counter() - started) * 1000
             return symbol, True, bid_count, ask_count, cost_ms
         except Exception:

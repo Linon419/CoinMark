@@ -11,8 +11,60 @@ async def migrate(engine: AsyncEngine) -> None:
     - 目标：在不引入 Alembic 的情况下，让 docker volume 中的 Postgres 表结构可演进。
     - 原则：只做“加字段/建表”这类向前兼容迁移；不做危险的删字段/改类型。
     """
+    if dialect_name() == "sqlite":
+        # SQLite：仅做必要的兼容迁移（避免旧库缺 side 字段导致运行时报错）
+        async with engine.begin() as conn:
+            table_exists = (
+                await conn.exec_driver_sql(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='orderbook_heatmap_1m';"
+                )
+            ).first()
+            if not table_exists:
+                return
+
+            col_rows = (await conn.exec_driver_sql("PRAGMA table_info(orderbook_heatmap_1m);"))
+            cols = [str(row[1]).lower() for row in col_rows.fetchall()]
+            if "side" in cols:
+                return
+
+            await conn.exec_driver_sql(
+                """
+CREATE TABLE IF NOT EXISTS orderbook_heatmap_1m_new (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  market VARCHAR(8) NOT NULL,
+  symbol VARCHAR(32) NOT NULL,
+  bucket_start_ms BIGINT NOT NULL,
+  side VARCHAR(8) NOT NULL DEFAULT 'unknown',
+  price_bin NUMERIC(38, 18) NOT NULL,
+  price_step NUMERIC(38, 18) NOT NULL,
+  intensity NUMERIC(38, 18) NOT NULL DEFAULT 0,
+  level_count INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE (market, symbol, bucket_start_ms, side, price_bin)
+);
+"""
+            )
+            await conn.exec_driver_sql(
+                """
+INSERT INTO orderbook_heatmap_1m_new
+  (id, market, symbol, bucket_start_ms, side, price_bin, price_step, intensity, level_count, created_at, updated_at)
+SELECT
+  id, market, symbol, bucket_start_ms, 'unknown', price_bin, price_step, intensity, level_count, created_at, updated_at
+FROM orderbook_heatmap_1m;
+"""
+            )
+            await conn.exec_driver_sql("DROP TABLE orderbook_heatmap_1m;")
+            await conn.exec_driver_sql("ALTER TABLE orderbook_heatmap_1m_new RENAME TO orderbook_heatmap_1m;")
+            await conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_orderbook_heatmap_market_time ON orderbook_heatmap_1m (market, bucket_start_ms);"
+            )
+            await conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_orderbook_heatmap_market_symbol ON orderbook_heatmap_1m (market, symbol, bucket_start_ms);"
+            )
+        return
+
     if dialect_name() != "postgresql":
-        # SQLite 开发模式不做迁移，直接 create_all 即可
         return
 
     async with engine.begin() as conn:
@@ -254,6 +306,52 @@ ALTER TABLE absorption_signal_snapshots
             "CREATE INDEX IF NOT EXISTS ix_absorption_signal_market_symbol ON absorption_signal_snapshots (market, symbol, bucket_start_ms);"
         )
 
+        # orderbook_heatmap_1m：盘口热力图分钟分桶快照（时间 x 价格桶）
+        await conn.exec_driver_sql(
+            """
+CREATE TABLE IF NOT EXISTS orderbook_heatmap_1m (
+  id SERIAL PRIMARY KEY,
+  market VARCHAR(8) NOT NULL,
+  symbol VARCHAR(32) NOT NULL,
+  bucket_start_ms BIGINT NOT NULL,
+  side VARCHAR(8) NOT NULL DEFAULT 'unknown',
+  price_bin NUMERIC(38, 18) NOT NULL,
+  price_step NUMERIC(38, 18) NOT NULL,
+  intensity NUMERIC(38, 18) NOT NULL DEFAULT 0,
+  level_count INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE (market, symbol, bucket_start_ms, side, price_bin)
+);
+"""
+        )
+        await conn.exec_driver_sql(
+            "ALTER TABLE orderbook_heatmap_1m ADD COLUMN IF NOT EXISTS side VARCHAR(8) NOT NULL DEFAULT 'unknown';"
+        )
+        await conn.exec_driver_sql(
+            "ALTER TABLE orderbook_heatmap_1m DROP CONSTRAINT IF EXISTS uq_orderbook_heatmap_1m;"
+        )
+        await conn.exec_driver_sql(
+            """
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'uq_orderbook_heatmap_1m_side'
+  ) THEN
+    ALTER TABLE orderbook_heatmap_1m
+      ADD CONSTRAINT uq_orderbook_heatmap_1m_side UNIQUE (market, symbol, bucket_start_ms, side, price_bin);
+  END IF;
+END
+$$;
+"""
+        )
+        await conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_orderbook_heatmap_market_time ON orderbook_heatmap_1m (market, bucket_start_ms);"
+        )
+        await conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_orderbook_heatmap_market_symbol ON orderbook_heatmap_1m (market, symbol, bucket_start_ms);"
+        )
+
         # orderbook_real_levels_1m：机构/大户真实挂单位置（1m 快照）
         await conn.exec_driver_sql(
             """
@@ -334,4 +432,17 @@ CREATE TABLE IF NOT EXISTS price_impact_wall_candidates (
         )
         await conn.exec_driver_sql(
             "CREATE INDEX IF NOT EXISTS ix_price_impact_wall_state ON price_impact_wall_candidates (market, confidence, bucket_start_ms);"
+        )
+
+        # coin_info：币种扩展配置（包含 whale_min_val）
+        await conn.exec_driver_sql(
+            """
+CREATE TABLE IF NOT EXISTS coin_info (
+  id SERIAL PRIMARY KEY,
+  symbol VARCHAR(32) NOT NULL UNIQUE,
+  whale_min_val NUMERIC(38, 18) NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+"""
         )

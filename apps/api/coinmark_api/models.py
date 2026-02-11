@@ -127,6 +127,16 @@ class Favorite(Base):
     )
 
 
+class CoinInfo(Base):
+    __tablename__ = "coin_info"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False, unique=True)
+    whale_min_val: Mapped[float | None] = mapped_column(Numeric(38, 18), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 class SRLevel(Base):
     __tablename__ = "sr_levels"
 
@@ -223,6 +233,29 @@ class AbsorptionSignalSnapshot(Base):
         UniqueConstraint("market", "symbol", "bucket_start_ms", "direction", name="uq_absorption_signal_snapshot"),
         Index("ix_absorption_signal_market_time", "market", "bucket_start_ms"),
         Index("ix_absorption_signal_market_symbol", "market", "symbol", "bucket_start_ms"),
+    )
+
+
+class OrderbookHeatmapSnapshot(Base):
+    __tablename__ = "orderbook_heatmap_1m"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    market: Mapped[str] = mapped_column(String(8), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    bucket_start_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    side: Mapped[str] = mapped_column(String(8), nullable=False, default="unknown")
+    price_bin: Mapped[float] = mapped_column(Numeric(38, 18), nullable=False)
+    price_step: Mapped[float] = mapped_column(Numeric(38, 18), nullable=False)
+    intensity: Mapped[float] = mapped_column(Numeric(38, 18), nullable=False, default=0)
+    level_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("market", "symbol", "bucket_start_ms", "side", "price_bin", name="uq_orderbook_heatmap_1m_side"),
+        Index("ix_orderbook_heatmap_market_time", "market", "bucket_start_ms"),
+        Index("ix_orderbook_heatmap_market_symbol", "market", "symbol", "bucket_start_ms"),
     )
 
 

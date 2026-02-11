@@ -1,4 +1,4 @@
-import { useEffect, useRef, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   createChart,
   CandlestickSeries,
@@ -29,10 +29,109 @@ export type QuantItem = {
   count: number;
 };
 
+export type CvdMode = "visible" | "rolling24h" | "session";
+type QuantMarket = "spot" | "swap";
+type QuantBucket = "15m" | "1h" | "4h" | "1d";
+
 type Props = {
   items: QuantItem[];
   height?: number;
+  symbol?: string;
+  market?: QuantMarket;
+  bucket?: QuantBucket;
+  cvdMode?: CvdMode;
+  visibleAnchorTs?: number | null;
+  onVisibleAnchorChange?: (ts: number | null) => void;
 };
+
+const MAX_POINTS = 240;
+
+function bucketMs(bucket: QuantBucket): number {
+  if (bucket === "15m") return 15 * 60 * 1000;
+  if (bucket === "1h") return 60 * 60 * 1000;
+  if (bucket === "4h") return 4 * 60 * 60 * 1000;
+  return 24 * 60 * 60 * 1000;
+}
+
+function getVwapLookback(bucket: QuantBucket): number {
+  const minutes = Math.max(1, Math.floor(bucketMs(bucket) / 60_000));
+  return Math.max(6, Math.min(240, Math.floor((24 * 60) / minutes)));
+}
+
+function normalizeSymbol(symbol: string) {
+  return symbol.trim().toLowerCase();
+}
+
+function getBinanceWsUrl(market: QuantMarket, symbol: string, bucket: QuantBucket) {
+  const stream = `${normalizeSymbol(symbol)}@kline_${bucket}`;
+  if (market === "spot") {
+    return `wss://stream.binance.com:9443/ws/${stream}`;
+  }
+  return `wss://fstream.binance.com/ws/${stream}`;
+}
+
+function rebuildDerived(items: QuantItem[], bucket: QuantBucket): QuantItem[] {
+  if (!items.length) return [];
+  const lookback = getVwapLookback(bucket);
+  let cvdAcc = 0;
+
+  return items.map((item, idx) => {
+    const startIdx = Math.max(0, idx - lookback + 1);
+    let sumCv = 0;
+    let sumV = 0;
+    for (let i = startIdx; i <= idx; i += 1) {
+      const c = items[i].c;
+      const v = items[i].vol_total;
+      if (Number.isFinite(c) && Number.isFinite(v) && v > 0) {
+        sumCv += c * v;
+        sumV += v;
+      }
+    }
+
+    cvdAcc += item.delta;
+    return {
+      ...item,
+      vwap: sumV > 0 ? sumCv / sumV : null,
+      cvd: cvdAcc,
+    };
+  });
+}
+
+function buildItemFromKline(kline: any): QuantItem | null {
+  if (!kline || typeof kline !== "object") return null;
+
+  const ts = Number(kline.t);
+  const o = Number(kline.o);
+  const h = Number(kline.h);
+  const l = Number(kline.l);
+  const c = Number(kline.c);
+  const count = Number(kline.n || 0);
+  if (![ts, o, h, l, c].every((n) => Number.isFinite(n))) return null;
+
+  const baseVolRaw = Number(kline.v);
+  const quoteVolRaw = Number(kline.q);
+  const takerBuyQuoteRaw = Number(kline.Q);
+
+  const baseVol = Number.isFinite(baseVolRaw) ? Math.max(0, baseVolRaw) : 0;
+  const volTotal = Number.isFinite(quoteVolRaw) && quoteVolRaw > 0 ? quoteVolRaw : baseVol * c;
+  const volBuy = Number.isFinite(takerBuyQuoteRaw) && takerBuyQuoteRaw >= 0 ? takerBuyQuoteRaw : 0;
+  const volSell = Math.max(0, volTotal - volBuy);
+
+  return {
+    ts,
+    o,
+    h,
+    l,
+    c,
+    vol_buy: volBuy,
+    vol_sell: volSell,
+    vol_total: volTotal,
+    delta: volBuy - volSell,
+    cvd: 0,
+    vwap: null,
+    count: Number.isFinite(count) ? count : 0,
+  };
+}
 
 function tsToLwTime(ms: number) {
   return (ms / 1000) as import("lightweight-charts").UTCTimestamp;
@@ -164,7 +263,16 @@ function fmtVol(v: number): string {
   return v.toFixed(2);
 }
 
-export default function QuantChart({ items, height = 620 }: Props) {
+export default function QuantChart({
+  items,
+  height = 620,
+  symbol = "BTCUSDT",
+  market = "swap",
+  bucket = "1h",
+  cvdMode = "visible",
+  visibleAnchorTs = null,
+  onVisibleAnchorChange,
+}: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<{
@@ -173,6 +281,106 @@ export default function QuantChart({ items, height = 620 }: Props) {
     delta: ISeriesApi<"Histogram"> | null;
     cvd: ISeriesApi<"Line"> | null;
   }>({ candle: null, vwap: null, delta: null, cvd: null });
+  const [liveItems, setLiveItems] = useState<QuantItem[]>(() => rebuildDerived(items, bucket));
+  const liveItemsRef = useRef<QuantItem[]>(liveItems);
+  const needFitContentRef = useRef(true);
+
+  useEffect(() => {
+    const next = rebuildDerived(items, bucket);
+    liveItemsRef.current = next;
+    setLiveItems(next);
+    needFitContentRef.current = true;
+  }, [items, bucket, symbol, market]);
+
+  const mergeRealtimeKline = useCallback(
+    (kline: any) => {
+      const patch = buildItemFromKline(kline);
+      if (!patch) return;
+
+      setLiveItems((prev) => {
+        const base = prev.length ? prev : liveItemsRef.current;
+        if (!base.length) return prev;
+
+        const last = base[base.length - 1];
+        if (patch.ts < last.ts) return prev;
+
+        let next: QuantItem[];
+        if (patch.ts === last.ts) {
+          next = [...base.slice(0, -1), { ...last, ...patch }];
+        } else {
+          next = [...base, patch];
+          if (next.length > MAX_POINTS) {
+            next = next.slice(next.length - MAX_POINTS);
+          }
+        }
+
+        const derived = rebuildDerived(next, bucket);
+        liveItemsRef.current = derived;
+        return derived;
+      });
+    },
+    [bucket]
+  );
+
+  useEffect(() => {
+    const sym = (symbol || "").trim().toUpperCase();
+    if (!sym) return;
+
+    let ws: WebSocket | null = null;
+    let reconnectTimer: number | null = null;
+    let attempt = 0;
+    let stopped = false;
+
+    const connect = () => {
+      if (stopped) return;
+      const url = getBinanceWsUrl(market, sym, bucket);
+      ws = new WebSocket(url);
+
+      ws.onopen = () => {
+        attempt = 0;
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(String(event.data || "{}"));
+          const kline = payload?.k || payload?.data?.k;
+          if (!kline) return;
+          mergeRealtimeKline(kline);
+        } catch {
+          // ignore malformed payload
+        }
+      };
+
+      ws.onclose = () => {
+        if (stopped) return;
+        attempt += 1;
+        const delay = Math.min(10_000, 1000 * 2 ** Math.min(attempt, 4)) + Math.floor(Math.random() * 300);
+        reconnectTimer = window.setTimeout(connect, delay);
+      };
+
+      ws.onerror = () => {
+        try {
+          ws?.close();
+        } catch {
+          // no-op
+        }
+      };
+    };
+
+    connect();
+
+    return () => {
+      stopped = true;
+      if (reconnectTimer != null) {
+        window.clearTimeout(reconnectTimer);
+      }
+      try {
+        ws?.close();
+      } catch {
+        // no-op
+      }
+    };
+  }, [symbol, market, bucket, mergeRealtimeKline]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -235,6 +443,15 @@ export default function QuantChart({ items, height = 620 }: Props) {
       cvd: cvdSeries,
     };
 
+    const visibleHandler = (range: any) => {
+      if (!range || !onVisibleAnchorChange) return;
+      const from = Number(range.from);
+      if (!Number.isFinite(from)) return;
+      const ts = Math.floor(from * 1000);
+      onVisibleAnchorChange(ts);
+    };
+    chart.timeScale().subscribeVisibleTimeRangeChange(visibleHandler);
+
     const onResize = () => {
       if (containerRef.current) {
         chart.applyOptions({ width: containerRef.current.clientWidth });
@@ -244,16 +461,17 @@ export default function QuantChart({ items, height = 620 }: Props) {
 
     return () => {
       window.removeEventListener("resize", onResize);
+      chart.timeScale().unsubscribeVisibleTimeRangeChange(visibleHandler);
       chart.remove();
       chartRef.current = null;
     };
-  }, [height]);
+  }, [height, onVisibleAnchorChange]);
 
   useEffect(() => {
     const { candle, vwap, delta, cvd } = seriesRef.current;
-    if (!candle || !items.length) return;
+    if (!candle || !liveItems.length) return;
 
-    const candleData: CandlestickData[] = items.map((x) => ({
+    const candleData: CandlestickData[] = liveItems.map((x) => ({
       time: tsToLwTime(x.ts),
       open: x.o,
       high: x.h,
@@ -261,33 +479,62 @@ export default function QuantChart({ items, height = 620 }: Props) {
       close: x.c,
     }));
 
-    const vwapData: SingleValueData[] = items
+    const vwapData: SingleValueData[] = liveItems
       .filter((x) => x.vwap != null)
       .map((x) => ({
         time: tsToLwTime(x.ts),
         value: x.vwap!,
       }));
 
-    const deltaData: HistogramData[] = items.map((x) => ({
+    const deltaData: HistogramData[] = liveItems.map((x) => ({
       time: tsToLwTime(x.ts),
       value: x.delta,
       color: x.delta >= 0 ? "rgba(34,197,94,0.7)" : "rgba(239,68,68,0.7)",
     }));
 
-    const cvdData: SingleValueData[] = items.map((x) => ({
-      time: tsToLwTime(x.ts),
-      value: x.cvd,
-    }));
+    const getSessionAnchorUtc = (ts: number) => {
+      const d = new Date(ts);
+      const day = d.getUTCDay();
+      const diff = (day + 6) % 7;
+      d.setUTCHours(0, 0, 0, 0);
+      d.setUTCDate(d.getUTCDate() - diff);
+      return d.getTime();
+    };
+
+    const mode: CvdMode = cvdMode;
+    const lastTs = liveItems[liveItems.length - 1]?.ts ?? 0;
+    const defaultVisibleTs = liveItems[Math.max(0, Math.floor((liveItems.length - 1) * 0.4))]?.ts ?? liveItems[0]?.ts ?? 0;
+    const anchorTs =
+      mode === "rolling24h"
+        ? lastTs - 24 * 60 * 60 * 1000
+        : mode === "session"
+          ? getSessionAnchorUtc(lastTs)
+          : (visibleAnchorTs ?? defaultVisibleTs);
+
+    let cumulative = 0;
+    const cvdData: Array<SingleValueData | { time: import("lightweight-charts").UTCTimestamp }> = [];
+    for (const x of liveItems) {
+      const time = tsToLwTime(x.ts);
+      if (x.ts < anchorTs) {
+        cvdData.push({ time });
+        continue;
+      }
+      cumulative += x.delta;
+      cvdData.push({ time, value: cumulative });
+    }
 
     candle.setData(candleData);
     vwap?.setData(vwapData);
     delta?.setData(deltaData);
-    cvd?.setData(cvdData);
+    cvd?.setData(cvdData as any);
 
-    chartRef.current?.timeScale().fitContent();
-  }, [items]);
+    if (needFitContentRef.current) {
+      chartRef.current?.timeScale().fitContent();
+      needFitContentRef.current = false;
+    }
+  }, [liveItems, cvdMode, visibleAnchorTs]);
 
-  const vpvrOption = useMemo(() => buildVpvrOption(items), [items]);
+  const vpvrOption = useMemo(() => buildVpvrOption(liveItems), [liveItems]);
 
   return (
     <div style={{ display: "flex", gap: 8 }}>

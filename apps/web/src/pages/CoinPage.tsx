@@ -3,7 +3,8 @@ import { Link, useParams } from "react-router-dom";
 import { Button, Select, Space, Tag, Typography } from "@arco-design/web-react";
 import { IconClose, IconRefresh } from "@arco-design/web-react/icon";
 import EChart from "../components/EChart";
-import QuantChart, { type QuantItem } from "../components/QuantChart";
+import QuantChart, { type CvdMode, type QuantItem } from "../components/QuantChart";
+import QuantHelp from "../components/QuantHelp";
 
 type Market = "spot" | "swap";
 type TimeDisplayMode = "local" | "utc";
@@ -77,61 +78,47 @@ type OrderbookIntradayResp = {
   }>;
 };
 
-type AbsorptionSignalResp = {
-  symbol: string;
-  signalState: "NONE" | "WATCH" | "CONFIRM" | "STRONG";
-  direction: "LONG_BIAS";
-  score: number;
-  cooldown: {
-    active: boolean;
-    secondsRemaining: number;
-  };
-  windows: Record<string, { passed: boolean; score: number }>;
-  reasons: string[];
-  ts: number;
-};
-
-type InstitutionalZone = {
-  zoneType: "bid" | "ask";
-  zoneLow: number | null;
-  zoneHigh: number | null;
-  realScore: number;
-  state: "NONE" | "WATCH" | "CONFIRM" | "STRONG";
-  reasons: string[];
-  scores: {
-    persistence: number;
-    absorb: number;
-    replenish: number;
-    defend: number;
-    flowAlign: number;
-    size: number;
-    cancelPenalty: number;
-  };
-  ts: number;
-};
-
-type InstitutionalLevelsResp = {
-  symbol: string;
-  requestedMarket: Market;
-  effectiveMarket: Market;
-  marketFallback: boolean;
-  topBidZones: InstitutionalZone[];
-  topAskZones: InstitutionalZone[];
-  continuationState: {
-    active: boolean;
-    state: "NONE" | "WATCH" | "CONFIRM" | "STRONG";
-  };
-  riskFlags: string[];
-  ts: number;
-};
-
 type QuantDashboardResp = {
   symbol: string;
   market: Market;
   requestedMarket: Market;
   marketFallback: boolean;
+  bucket?: string;
   items: QuantItem[];
 };
+
+type WhaleRadarItem = {
+  price: number;
+  distancePct: number | null;
+  value: number;
+  durationMin: number;
+  side?: "BUY" | "SELL" | "UNKNOWN";
+  nature: "REAL" | "SPOOF" | "WATCH";
+  label: string;
+  lastSeenTs: number;
+};
+
+type WhaleRadarResp = {
+  symbol: string;
+  market: "spot" | "swap" | "spot+swap";
+  sourceMarkets?: Array<"spot" | "swap">;
+  lookbackMinutes: number;
+  minLimit: number | null;
+  spoofLimit: number | null;
+  latestPrice?: number | null;
+  snapshotTs?: number;
+  items: WhaleRadarItem[];
+  ts: number;
+};
+
+type QuantBucket = "15m" | "1h" | "4h" | "1d";
+
+const QUANT_BUCKET_OPTIONS: Array<{ value: QuantBucket; label: string }> = [
+  { value: "15m", label: "15m" },
+  { value: "1h", label: "1h" },
+  { value: "4h", label: "4h" },
+  { value: "1d", label: "1D" },
+];
 
 type OrderbookWindow = "1m" | "3m" | "5m" | "15m" | "1h";
 
@@ -343,6 +330,15 @@ function formatSignedPct(v: number | null, digits = 1) {
   return `${v >= 0 ? "+" : ""}${s}%`;
 }
 
+function formatDurationMin(mins: number | null | undefined) {
+  if (mins == null || !Number.isFinite(mins)) return "-";
+  const total = Math.max(0, Math.floor(mins));
+  const h = Math.floor(total / 60);
+  const m = total % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
 function formatBps(v: number | null, digits = 2) {
   if (v == null || !Number.isFinite(v)) return "-";
   return `${v >= 0 ? "+" : ""}${v.toFixed(digits)}bps`;
@@ -355,6 +351,17 @@ function formatCnCompact(v: number | null, digits = 2) {
   if (abs >= 1e4) return `${(v / 1e4).toFixed(digits)}万`;
   if (abs >= 1) return v.toFixed(2);
   return v.toFixed(4);
+}
+
+function formatWhaleSource(markets?: Array<"spot" | "swap">) {
+  if (!markets || markets.length === 0) return "数据源未知";
+  const uniq = Array.from(new Set(markets));
+  const hasSpot = uniq.includes("spot");
+  const hasSwap = uniq.includes("swap");
+  if (hasSpot && hasSwap) return "双源 spot+swap";
+  if (hasSpot) return "spot";
+  if (hasSwap) return "swap";
+  return "数据源未知";
 }
 
 function formatRatio(v: number | null, digits = 2) {
@@ -443,13 +450,16 @@ export default function CoinPage() {
   const [srShort, setSrShort] = useState<SrResp | null>(null);
   const [srShort15, setSrShort15] = useState<SrResp | null>(null);
   const [orderbook, setOrderbook] = useState<OrderbookIntradayResp | null>(null);
-  const [absorptionSignal, setAbsorptionSignal] = useState<AbsorptionSignalResp | null>(null);
-  const [institutionalLevels, setInstitutionalLevels] = useState<InstitutionalLevelsResp | null>(null);
   const [orderbookWindow, setOrderbookWindow] = useState<OrderbookWindow>("5m");
+  const [quantBucket, setQuantBucket] = useState<QuantBucket>("1h");
+  const [quantCvdMode, setQuantCvdMode] = useState<CvdMode>("visible");
+  const [quantVisibleAnchorTs, setQuantVisibleAnchorTs] = useState<number | null>(null);
   const [quantData, setQuantData] = useState<QuantDashboardResp | null>(null);
+  const [whaleRadar, setWhaleRadar] = useState<WhaleRadarResp | null>(null);
   const [loading, setLoading] = useState(false);
   const [nowTick, setNowTick] = useState(Date.now());
   const hideSpotSeries = market === "spot" && !!basic?.marketFallback;
+  const whaleSourceText = formatWhaleSource(whaleRadar?.sourceMarkets);
 
   const load = async () => {
     if (!sym) return;
@@ -463,7 +473,7 @@ export default function CoinPage() {
     };
     try {
       const tzOffsetMin = new Date().getTimezoneOffset();
-      const [b, h, hh, hf, d, dr, r, oi, oid, lsr, sr, sr15, ob, sig, inst, qd] = await Promise.all([
+      const [b, h, hh, hf, d, dr, r, oi, oid, lsr, sr, sr15, ob, qd, wr] = await Promise.all([
         safeGet<BasicResp>(
           `/api/coin/detail/basic?market=${market}&symbol=${sym}&timeMode=${timeDisplayMode}&tzOffsetMin=${tzOffsetMin}`
         ),
@@ -483,12 +493,11 @@ export default function CoinPage() {
         safeGet<SrResp>(`/api/coin/detail/sr/short?market=${market}&symbol=${sym}&days=5&limit=5&timeframe=1h`),
         safeGet<SrResp>(`/api/coin/detail/sr/short?market=${market}&symbol=${sym}&days=5&limit=5&timeframe=15m`),
         safeGet<OrderbookIntradayResp>(`/api/coin/detail/orderbook/intraday?symbol=${sym}&bucket=1m&limit=240`),
-        safeGet<AbsorptionSignalResp>(`/api/coin/detail/orderbook/absorption-signal?symbol=${sym}&market=swap`),
-        safeGet<InstitutionalLevelsResp>(
-          `/api/coin/detail/orderbook/institutional-levels?symbol=${sym}&market=${market}&lookbackMinutes=1440&topK=3`
-        ),
         safeGet<QuantDashboardResp>(
-          `/api/coin/detail/quant-dashboard?symbol=${sym}&market=${market}&limit=240`
+          `/api/coin/detail/quant-dashboard?symbol=${sym}&market=${market}&bucket=${quantBucket}&limit=240`
+        ),
+        safeGet<WhaleRadarResp>(
+          `/api/coin/detail/orderbook/whale-radar?symbol=${sym}&lookbackMinutes=240&topK=20`
         ),
       ]);
       setBasic(b);
@@ -504,9 +513,8 @@ export default function CoinPage() {
       setSrShort(sr);
       setSrShort15(sr15);
       setOrderbook(ob);
-      setAbsorptionSignal(sig);
-      setInstitutionalLevels(inst);
       setQuantData(qd);
+      setWhaleRadar(wr);
     } finally {
       setLoading(false);
     }
@@ -514,7 +522,7 @@ export default function CoinPage() {
 
   useEffect(() => {
     load();
-  }, [sym, market, timeDisplayMode]);
+  }, [sym, market, timeDisplayMode, quantBucket]);
 
   useEffect(() => {
     const id = setInterval(() => {
@@ -524,7 +532,7 @@ export default function CoinPage() {
       }
     }, 60 * 1000);
     return () => clearInterval(id);
-  }, [sym, market, timeDisplayMode]);
+  }, [sym, market, timeDisplayMode, quantBucket]);
 
   const hourlyOption = useMemo(() => {
     const items = hourly?.items || [];
@@ -1251,44 +1259,6 @@ export default function CoinPage() {
     };
   }, [orderbook, orderbookWindow]);
 
-  const signalClassName = useMemo(() => {
-    const state = absorptionSignal?.signalState;
-    if (state === "STRONG" || state === "CONFIRM") return "cm-number--pos";
-    if (state === "WATCH") return "cm-number--mono";
-    return "cm-muted";
-  }, [absorptionSignal]);
-
-  const institutionalStateClassName = useMemo(() => {
-    const state = institutionalLevels?.continuationState?.state;
-    if (state === "STRONG" || state === "CONFIRM") return "cm-number--pos";
-    if (state === "WATCH") return "cm-number--mono";
-    return "cm-muted";
-  }, [institutionalLevels]);
-
-  const institutionalTopBid = useMemo(() => {
-    const rows = institutionalLevels?.topBidZones || [];
-    if (!rows.length) return null;
-    return rows[0];
-  }, [institutionalLevels]);
-
-  const institutionalTopAsk = useMemo(() => {
-    const rows = institutionalLevels?.topAskZones || [];
-    if (!rows.length) return null;
-    return rows[0];
-  }, [institutionalLevels]);
-
-  const institutionalAllZones = useMemo(() => {
-    return [...(institutionalLevels?.topBidZones || []), ...(institutionalLevels?.topAskZones || [])]
-      .sort((a, b) => b.realScore - a.realScore)
-      .slice(0, 4);
-  }, [institutionalLevels]);
-
-  const institutionalTsLabel = useMemo(() => {
-    const ts = institutionalLevels?.ts;
-    if (!ts) return "--:--";
-    return formatMonthDayTime(ts, timeDisplayMode);
-  }, [institutionalLevels, timeDisplayMode]);
-
   const oiChanges = useMemo(() => {
     const items = oiHourly?.items || [];
     if (items.length < 2) return [] as number[];
@@ -1604,41 +1574,6 @@ export default function CoinPage() {
             <>
               <div className="cm-section">
                 <div className="cm-card" style={{ padding: 12 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                    <div>
-                      <Title heading={6} style={{ margin: 0 }}>
-                        吸筹信号
-                      </Title>
-                      <Text className="cm-muted">4h 预警 / 1d 确认 / 3d 强确认（仅信号，不下单）</Text>
-                    </div>
-                    <div className={signalClassName} style={{ fontWeight: 700 }}>
-                      {absorptionSignal?.signalState || "NONE"} · {absorptionSignal?.score ?? 0}
-                    </div>
-                  </div>
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 8, marginBottom: 8 }}>
-                    <div className="cm-card" style={{ padding: 8 }}>
-                      <Text className="cm-muted">4h</Text>
-                      <div className="cm-number--mono">{absorptionSignal?.windows?.["4h"]?.passed ? "通过" : "未通过"}</div>
-                    </div>
-                    <div className="cm-card" style={{ padding: 8 }}>
-                      <Text className="cm-muted">1d</Text>
-                      <div className="cm-number--mono">{absorptionSignal?.windows?.["1d"]?.passed ? "通过" : "未通过"}</div>
-                    </div>
-                    <div className="cm-card" style={{ padding: 8 }}>
-                      <Text className="cm-muted">3d</Text>
-                      <div className="cm-number--mono">{absorptionSignal?.windows?.["3d"]?.passed ? "通过" : "未通过"}</div>
-                    </div>
-                  </div>
-                  <div className="cm-muted" style={{ marginBottom: 4 }}>
-                    冷却：
-                    {absorptionSignal?.cooldown?.active
-                      ? `开启（剩余 ${Math.max(0, Math.floor((absorptionSignal.cooldown.secondsRemaining || 0) / 60))} 分钟）`
-                      : "未开启"}
-                  </div>
-                  <div className="cm-muted" style={{ marginBottom: 8 }}>
-                    触发依据：{(absorptionSignal?.reasons || []).join("；") || "-"}
-                  </div>
-
                   <div className="cm-snapshotHeader">
                     <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
                       <Title heading={6} style={{ margin: 0 }}>
@@ -1702,75 +1637,6 @@ export default function CoinPage() {
                       <span key={`${i}-${v}`} className={v >= 0 ? "cm-number--pos" : "cm-number--neg"}>
                         {formatSignedPct(v, 1)}
                       </span>
-                    ))}
-                  </div>
-                </div>
-              </div>
-
-              <div className="cm-section">
-                <div className="cm-card" style={{ padding: 12 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                    <div>
-                      <Title heading={6} style={{ margin: 0 }}>
-                        真实挂单区（机构/大户）
-                      </Title>
-                      <Text className="cm-muted">基于 1m 盘口与成交特征推断可执行价格区，不作为自动下单指令</Text>
-                    </div>
-                    <div className={institutionalStateClassName} style={{ fontWeight: 700 }}>
-                      {institutionalLevels?.continuationState?.state || "NONE"} · {institutionalTopBid?.realScore ?? institutionalTopAsk?.realScore ?? 0}
-                    </div>
-                  </div>
-
-                  <div className="cm-institutionalGrid">
-                    <div className="cm-card cm-institutionalZone cm-institutionalZone--bid">
-                      <Text className="cm-muted">主买盘区（Bid）</Text>
-                      <div className="cm-number--mono" style={{ fontSize: 15, fontWeight: 600 }}>
-                        {institutionalTopBid?.zoneLow != null && institutionalTopBid?.zoneHigh != null
-                          ? `${formatPriceFixed(institutionalTopBid.zoneLow, 6)} - ${formatPriceFixed(institutionalTopBid.zoneHigh, 6)}`
-                          : "暂无"}
-                      </div>
-                      <div className="cm-muted">状态：{institutionalTopBid?.state || "NONE"} · 分数：{Math.round(institutionalTopBid?.realScore || 0)}</div>
-                    </div>
-
-                    <div className="cm-card cm-institutionalZone cm-institutionalZone--ask">
-                      <Text className="cm-muted">主卖盘区（Ask）</Text>
-                      <div className="cm-number--mono" style={{ fontSize: 15, fontWeight: 600 }}>
-                        {institutionalTopAsk?.zoneLow != null && institutionalTopAsk?.zoneHigh != null
-                          ? `${formatPriceFixed(institutionalTopAsk.zoneLow, 6)} - ${formatPriceFixed(institutionalTopAsk.zoneHigh, 6)}`
-                          : "暂无"}
-                      </div>
-                      <div className="cm-muted">状态：{institutionalTopAsk?.state || "NONE"} · 分数：{Math.round(institutionalTopAsk?.realScore || 0)}</div>
-                    </div>
-                  </div>
-
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8, marginBottom: 8 }}>
-                    <Tag color={institutionalLevels?.continuationState?.active ? "green" : "gray"}>
-                      延续状态：{institutionalLevels?.continuationState?.state || "NONE"}
-                    </Tag>
-                    {(institutionalLevels?.riskFlags || []).length === 0 ? (
-                      <Tag color="arcoblue">风险标记：无</Tag>
-                    ) : (
-                      (institutionalLevels?.riskFlags || []).map((flag) => (
-                        <Tag key={flag} color="red">
-                          风险：{flag}
-                        </Tag>
-                      ))
-                    )}
-                    <Tag color="purple">快照：{institutionalTsLabel}</Tag>
-                  </div>
-
-                  <div className="cm-institutionalReasonList">
-                    {institutionalAllZones.length === 0 && <Text className="cm-muted">暂无真实挂单区数据，请等待下一轮扫描。</Text>}
-                    {institutionalAllZones.map((zone, idx) => (
-                      <div key={`${zone.zoneType}-${idx}-${zone.ts}`} className="cm-institutionalReasonItem">
-                        <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                          <span className="cm-number--mono">
-                            {zone.zoneType.toUpperCase()} [{zone.zoneLow != null ? formatPriceFixed(zone.zoneLow, 6) : "-"}, {zone.zoneHigh != null ? formatPriceFixed(zone.zoneHigh, 6) : "-"}]
-                          </span>
-                          <span className="cm-muted">{zone.state} · {Math.round(zone.realScore)}</span>
-                        </div>
-                        <div className="cm-muted">依据：{(zone.reasons || []).join("；") || "-"}</div>
-                      </div>
                     ))}
                   </div>
                 </div>
@@ -1940,7 +1806,85 @@ export default function CoinPage() {
       {activeTab === "quant" && (
         <div className="cm-section">
           <div className="cm-card" style={{ padding: 12 }}>
-            <QuantChart items={quantData?.items ?? []} height={620} />
+            <div className="cm-snapshotHeader" style={{ marginBottom: 10 }}>
+              <Title heading={6} style={{ margin: 0 }}>
+                量化 K 线
+              </Title>
+              <Space>
+                <QuantHelp title="量化指标说明" />
+                <span className="cm-muted">周期</span>
+                <Select value={quantBucket} onChange={(v) => setQuantBucket(v as QuantBucket)} style={{ width: 100 }}>
+                  {QUANT_BUCKET_OPTIONS.map((option) => (
+                    <Select.Option key={option.value} value={option.value}>
+                      {option.label}
+                    </Select.Option>
+                  ))}
+                </Select>
+                <Select value={quantCvdMode} onChange={(v) => setQuantCvdMode(v as CvdMode)} style={{ width: 130 }}>
+                  <Select.Option value="visible">Visible</Select.Option>
+                  <Select.Option value="rolling24h">Rolling 24H</Select.Option>
+                  <Select.Option value="session">Session</Select.Option>
+                </Select>
+              </Space>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 360px", gap: 12, alignItems: "start" }}>
+              <QuantChart
+                items={quantData?.items ?? []}
+                height={620}
+                symbol={sym}
+                market={market}
+                bucket={quantBucket}
+                cvdMode={quantCvdMode}
+                visibleAnchorTs={quantVisibleAnchorTs}
+                onVisibleAnchorChange={setQuantVisibleAnchorTs}
+              />
+              <div className="cm-card" style={{ padding: 10 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                  <Text style={{ fontWeight: 600 }}>Whale Radar · {whaleSourceText}</Text>
+                  <Text className="cm-muted">全档位 · 近4小时</Text>
+                </div>
+                <div className="cm-muted" style={{ marginBottom: 8 }}>
+                  阈值：{formatCnCompact(whaleRadar?.minLimit ?? null)} · Spoof：{formatCnCompact(whaleRadar?.spoofLimit ?? null)}
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "0.8fr 1.2fr 0.9fr 1fr 0.8fr 1fr", gap: 6, marginBottom: 6 }}>
+                  <Text className="cm-muted">方向</Text>
+                  <Text className="cm-muted">价格</Text>
+                  <Text className="cm-muted">距离</Text>
+                  <Text className="cm-muted">强度</Text>
+                  <Text className="cm-muted">持续</Text>
+                  <Text className="cm-muted">性质</Text>
+                </div>
+                <div style={{ display: "grid", gap: 6, maxHeight: 560, overflowY: "auto" }}>
+                  {(whaleRadar?.items || []).map((row, idx) => (
+                    <div
+                      key={`${row.price}-${row.lastSeenTs}-${idx}`}
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "0.8fr 1.2fr 0.9fr 1fr 0.8fr 1fr",
+                        gap: 6,
+                        padding: "6px 4px",
+                        borderRadius: 6,
+                        background: idx % 2 === 0 ? "rgba(148,163,184,0.08)" : "transparent",
+                      }}
+                    >
+                      <span className={row.side === "BUY" ? "cm-number--pos" : row.side === "SELL" ? "cm-number--neg" : "cm-number--mono"}>
+                        {row.side === "BUY" ? "买" : row.side === "SELL" ? "卖" : "-"}
+                      </span>
+                      <span className="cm-number--mono">{formatPriceFixed(row.price, 2)}</span>
+                      <span className={row.distancePct != null && row.distancePct >= 0 ? "cm-number--neg" : "cm-number--pos"}>
+                        {formatSignedPct(row.distancePct ?? null, 2)}
+                      </span>
+                      <span className="cm-number--mono">{formatCnCompact(row.value, 2)}</span>
+                      <span className="cm-number--mono">{formatDurationMin(row.durationMin)}</span>
+                      <span className={row.nature === "REAL" ? "cm-number--pos" : row.nature === "SPOOF" ? "cm-number--neg" : "cm-number--mono"}>
+                        {row.label}
+                      </span>
+                    </div>
+                  ))}
+                  {(whaleRadar?.items || []).length === 0 && <Text className="cm-muted">暂无大户挂单异动</Text>}
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       )}
