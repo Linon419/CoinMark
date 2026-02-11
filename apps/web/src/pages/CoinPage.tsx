@@ -3,11 +3,12 @@ import { Link, useParams } from "react-router-dom";
 import { Button, Select, Space, Tag, Typography } from "@arco-design/web-react";
 import { IconClose, IconRefresh } from "@arco-design/web-react/icon";
 import EChart from "../components/EChart";
+import QuantChart, { type QuantItem } from "../components/QuantChart";
 
 type Market = "spot" | "swap";
 type TimeDisplayMode = "local" | "utc";
 
-type TabKey = "basic" | "hourly" | "daily" | "recent";
+type TabKey = "basic" | "hourly" | "daily" | "recent" | "quant";
 type HourlySubTab = "snapshot" | "netflow";
 
 type BasicResp = {
@@ -122,6 +123,14 @@ type InstitutionalLevelsResp = {
   };
   riskFlags: string[];
   ts: number;
+};
+
+type QuantDashboardResp = {
+  symbol: string;
+  market: Market;
+  requestedMarket: Market;
+  marketFallback: boolean;
+  items: QuantItem[];
 };
 
 type OrderbookWindow = "1m" | "3m" | "5m" | "15m" | "1h";
@@ -437,6 +446,7 @@ export default function CoinPage() {
   const [absorptionSignal, setAbsorptionSignal] = useState<AbsorptionSignalResp | null>(null);
   const [institutionalLevels, setInstitutionalLevels] = useState<InstitutionalLevelsResp | null>(null);
   const [orderbookWindow, setOrderbookWindow] = useState<OrderbookWindow>("5m");
+  const [quantData, setQuantData] = useState<QuantDashboardResp | null>(null);
   const [loading, setLoading] = useState(false);
   const [nowTick, setNowTick] = useState(Date.now());
   const hideSpotSeries = market === "spot" && !!basic?.marketFallback;
@@ -453,7 +463,7 @@ export default function CoinPage() {
     };
     try {
       const tzOffsetMin = new Date().getTimezoneOffset();
-      const [b, h, hh, hf, d, dr, r, oi, oid, lsr, sr, sr15, ob, sig, inst] = await Promise.all([
+      const [b, h, hh, hf, d, dr, r, oi, oid, lsr, sr, sr15, ob, sig, inst, qd] = await Promise.all([
         safeGet<BasicResp>(
           `/api/coin/detail/basic?market=${market}&symbol=${sym}&timeMode=${timeDisplayMode}&tzOffsetMin=${tzOffsetMin}`
         ),
@@ -477,6 +487,9 @@ export default function CoinPage() {
         safeGet<InstitutionalLevelsResp>(
           `/api/coin/detail/orderbook/institutional-levels?symbol=${sym}&market=${market}&lookbackMinutes=1440&topK=3`
         ),
+        safeGet<QuantDashboardResp>(
+          `/api/coin/detail/quant-dashboard?symbol=${sym}&market=${market}&limit=240`
+        ),
       ]);
       setBasic(b);
       setHourly(h);
@@ -493,6 +506,7 @@ export default function CoinPage() {
       setOrderbook(ob);
       setAbsorptionSignal(sig);
       setInstitutionalLevels(inst);
+      setQuantData(qd);
     } finally {
       setLoading(false);
     }
@@ -1351,6 +1365,7 @@ export default function CoinPage() {
               { key: "hourly", label: "小时快照" },
               { key: "daily", label: "每日快照" },
               { key: "recent", label: "近日数据" },
+              { key: "quant", label: "量化仪表盘" },
             ] as Array<{ key: TabKey; label: string }>
           ).map((t) => (
             <button
@@ -1918,6 +1933,14 @@ export default function CoinPage() {
               </Title>
             </div>
             <EChart option={recentHighLowOption} height={260} />
+          </div>
+        </div>
+      )}
+
+      {activeTab === "quant" && (
+        <div className="cm-section">
+          <div className="cm-card" style={{ padding: 12 }}>
+            <QuantChart items={quantData?.items ?? []} height={620} />
           </div>
         </div>
       )}

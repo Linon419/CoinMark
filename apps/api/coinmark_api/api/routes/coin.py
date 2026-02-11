@@ -1970,3 +1970,105 @@ async def coin_recent_daily(
         "symbol": sym,
         "items": items,
     }
+
+
+@router.get("/coin/detail/quant-dashboard")
+async def coin_quant_dashboard(
+    symbol: str = Query(..., min_length=3, max_length=32),
+    market: Market = Query("swap", pattern="^(spot|swap)$"),
+    limit: int = Query(120, ge=30, le=1440),
+) -> dict:
+    sym = symbol.strip().upper()
+    effective_market, market_fallback = await _resolve_effective_market_for_symbol(market, sym)
+    now_ms = int(time.time() * 1000)
+    minute_ms = 60 * 1000
+    last_bucket = (now_ms // minute_ms) * minute_ms
+
+    vwap_lookback = 1440
+    total_need = limit + vwap_lookback
+    start_ms = last_bucket - (total_need - 1) * minute_ms
+
+    rows = await query_trade_buckets(
+        market=effective_market, symbol=sym, bucket="1m",
+        start_ms=start_ms, end_ms=last_bucket,
+    )
+
+    by_ts: dict[int, TradeBucketRow] = {}
+    for r in rows:
+        ts = int(r.bucket_start_ms)
+        by_ts[ts] = r
+
+    all_ts = list(range(start_ms, last_bucket + 1, minute_ms))
+
+    raw: list[dict] = []
+    for ts in all_ts:
+        r = by_ts.get(ts)
+        if r is None:
+            raw.append({
+                "ts": ts, "o": None, "h": None, "l": None, "c": None,
+                "vol_buy": 0.0, "vol_sell": 0.0, "vol_total": 0.0,
+                "delta": 0.0, "count": 0,
+            })
+            continue
+        buy = float(r.taker_buy_notional or 0)
+        sell = float(r.taker_sell_notional or 0)
+        raw.append({
+            "ts": ts,
+            "o": _to_float(r.open_price),
+            "h": _to_float(r.high_price),
+            "l": _to_float(r.low_price),
+            "c": _to_float(r.close_price),
+            "vol_buy": buy,
+            "vol_sell": sell,
+            "vol_total": float(r.quote_notional or 0),
+            "delta": buy - sell,
+            "count": int(r.trade_count or 0),
+        })
+
+    window = vwap_lookback
+    for i in range(len(raw)):
+        start_idx = max(0, i - window + 1)
+        seg = raw[start_idx:i + 1]
+        sum_cv = 0.0
+        sum_v = 0.0
+        for item in seg:
+            c = item.get("c")
+            v = item.get("vol_total", 0.0)
+            if c is not None and v > 0:
+                sum_cv += c * v
+                sum_v += v
+        raw[i]["vwap"] = (sum_cv / sum_v) if sum_v > 0 else None
+
+    output = raw[-limit:]
+
+    cvd = 0.0
+    for item in output:
+        cvd += item["delta"]
+        item["cvd"] = cvd
+
+    items = []
+    for item in output:
+        if item["o"] is None:
+            continue
+        items.append({
+            "ts": item["ts"],
+            "o": item["o"],
+            "h": item["h"],
+            "l": item["l"],
+            "c": item["c"],
+            "vol_buy": item["vol_buy"],
+            "vol_sell": item["vol_sell"],
+            "vol_total": item["vol_total"],
+            "delta": item["delta"],
+            "cvd": item["cvd"],
+            "vwap": item["vwap"],
+            "count": item["count"],
+        })
+
+    return {
+        "symbol": sym,
+        "market": effective_market,
+        "requestedMarket": market,
+        "marketFallback": market_fallback,
+        "items": items,
+    }
