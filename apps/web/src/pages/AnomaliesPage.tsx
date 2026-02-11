@@ -14,18 +14,6 @@ type AbsorptionSignalItem = {
   ts: number;
 };
 
-type InstitutionalLevelItem = {
-  symbol: string;
-  market: "spot" | "swap";
-  zoneType: "bid" | "ask";
-  zoneLow: number | null;
-  zoneHigh: number | null;
-  realScore: number;
-  state: "NONE" | "WATCH" | "CONFIRM" | "STRONG";
-  reasons: string[];
-  ts: number;
-};
-
 const API_BASE = (import.meta as any).env?.VITE_API_BASE || "";
 
 async function getJson<T>(path: string): Promise<T> {
@@ -46,7 +34,6 @@ export default function AnomaliesPage() {
   const [market, setMarket] = useState<Market>("swap");
   const [sinceMinutes, setSinceMinutes] = useState<number>(360);
   const [absorptionItems, setAbsorptionItems] = useState<AbsorptionSignalItem[]>([]);
-  const [institutionalItems, setInstitutionalItems] = useState<InstitutionalLevelItem[]>([]);
   const [includeShortBias, setIncludeShortBias] = useState(false);
   const [loading, setLoading] = useState(false);
 
@@ -62,18 +49,11 @@ export default function AnomaliesPage() {
     try {
       const direction = includeShortBias ? "all" : "long";
       const absorptionLookbackMinutes = Math.max(sinceMinutes, 3 * 24 * 60);
-      const [absorption, institutional] = await Promise.all([
-        safeGet<{ items: AbsorptionSignalItem[] }>(
-          `/api/aggregate/orderbookAbsorptionSignals?market=${market}&limit=100&onlySignals=1&signalLookbackMinutes=${absorptionLookbackMinutes}&direction=${direction}`,
-          { items: [] }
-        ),
-        safeGet<{ items: InstitutionalLevelItem[] }>(
-          `/api/aggregate/orderbookInstitutionalLevels?market=both&limit=100&state=CONFIRM&lookbackMinutes=360`,
-          { items: [] }
-        ),
-      ]);
+      const absorption = await safeGet<{ items: AbsorptionSignalItem[] }>(
+        `/api/aggregate/orderbookAbsorptionSignals?market=${market}&limit=100&onlySignals=1&signalLookbackMinutes=${absorptionLookbackMinutes}&direction=${direction}`,
+        { items: [] }
+      );
       setAbsorptionItems(absorption.items || []);
-      setInstitutionalItems(institutional.items || []);
     } finally {
       setLoading(false);
     }
@@ -142,51 +122,6 @@ export default function AnomaliesPage() {
     []
   );
 
-  const institutionalColumns = useMemo(
-    () => [
-      {
-        title: "时间",
-        render: (_: any, r: InstitutionalLevelItem) => new Date(r.ts).toLocaleString(),
-      },
-      {
-        title: "Symbol",
-        render: (_: any, r: InstitutionalLevelItem) => <Link to={`/coin/${r.symbol}`}>{r.symbol}</Link>,
-      },
-      {
-        title: "市场",
-        render: (_: any, r: InstitutionalLevelItem) => <Tag color={r.market === "swap" ? "purple" : "green"}>{r.market}</Tag>,
-      },
-      {
-        title: "状态",
-        render: (_: any, r: InstitutionalLevelItem) => {
-          const color = r.state === "STRONG" ? "red" : r.state === "CONFIRM" ? "orange" : r.state === "WATCH" ? "blue" : "gray";
-          return <Tag color={color}>{r.state}</Tag>;
-        },
-      },
-      {
-        title: "分数",
-        render: (_: any, r: InstitutionalLevelItem) => <span style={{ fontWeight: 700 }}>{Math.round(r.realScore)}</span>,
-      },
-      {
-        title: "区间",
-        render: (_: any, r: InstitutionalLevelItem) => {
-          const left = typeof r.zoneLow === "number" ? r.zoneLow.toFixed(6) : "-";
-          const right = typeof r.zoneHigh === "number" ? r.zoneHigh.toFixed(6) : "-";
-          return (
-            <span className="cm-muted">
-              {r.zoneType.toUpperCase()} [{left}, {right}]
-            </span>
-          );
-        },
-      },
-      {
-        title: "依据",
-        render: (_: any, r: InstitutionalLevelItem) => <span className="cm-muted">{(r.reasons || []).join("，")}</span>,
-      },
-    ],
-    []
-  );
-
   return (
     <div className="cm-page">
       <div className="cm-section">
@@ -234,23 +169,6 @@ export default function AnomaliesPage() {
               size="small"
               columns={absorptionColumns as any}
               data={absorptionItems}
-            />
-          </div>
-
-          <div className="cm-sectionHeader">
-            <Title heading={6} style={{ margin: 0 }}>
-              真实挂单位置扫描（全币）
-            </Title>
-            <Text className="cm-muted">市场固定 both；仅显示 CONFIRM/STRONG（已告警）</Text>
-          </div>
-          <div className="cm-table" style={{ marginBottom: 12 }}>
-            <Table
-              rowKey={(r) => `${(r as InstitutionalLevelItem).market}-${(r as InstitutionalLevelItem).symbol}-${(r as InstitutionalLevelItem).zoneType}-${(r as InstitutionalLevelItem).ts}`}
-              loading={loading}
-              pagination={false}
-              size="small"
-              columns={institutionalColumns as any}
-              data={institutionalItems}
             />
           </div>
 

@@ -28,9 +28,8 @@ class Settings(BaseSettings):
     hub_broadcast_max_events_per_sec: int = 200
     hub_anomaly_scan_interval_sec: int = 2
     hub_anomaly_scan_batch_size: int = 200
-    hub_wall_refresh_interval_sec: int = 300
     hub_climax_scan_interval_sec: int = 60
-    depth_fullscan_enabled: bool = False
+    depth_fullscan_enabled: bool = True
     depth_fullscan_market: str = "swap"
     depth_fullscan_limit_swap: int = 1000
     depth_fullscan_limit_spot: int = 5000

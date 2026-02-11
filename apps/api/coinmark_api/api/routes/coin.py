@@ -12,7 +12,7 @@ import asyncio
 
 from coinmark_api.config import settings
 from coinmark_api.db import SessionLocal
-from coinmark_api.models import CoinInfo, SRLevel, InstitutionalLevelSnapshot, OrderbookHeatmapSnapshot
+from coinmark_api.models import CoinInfo, SRLevel, OrderbookHeatmapSnapshot
 from coinmark_api.ch import (
     TradeBucketRow,
     OBFeatureRow,
@@ -22,7 +22,6 @@ from coinmark_api.ch import (
     query_oi_by_symbol,
     query_market_cap_by_asset,
 )
-from coinmark_api.services.institutional_levels import get_symbol_latest_institutional_levels
 from coinmark_api.services.binance.rest import (
     get_pairs,
     get_global_long_short_account_ratio,
@@ -1933,34 +1932,6 @@ async def coin_orderbook_absorption_signal(
         "source": "orderbook_feature_buckets_1m+trade_buckets_1m",
     }
 
-
-@router.get("/coin/detail/orderbook/institutional-levels")
-async def coin_orderbook_institutional_levels(
-    symbol: str = Query(..., min_length=3, max_length=32),
-    market: Market = Query("swap", pattern="^(spot|swap)$"),
-    lookbackMinutes: int = Query(24 * 60, ge=30, le=7 * 24 * 60),
-    topK: int = Query(3, ge=1, le=10),
-) -> dict:
-    sym = symbol.strip().upper()
-    effective_market, market_fallback = await _resolve_effective_market_for_symbol(market, sym)
-
-    payload = await get_symbol_latest_institutional_levels(
-        market=effective_market,
-        symbol=sym,
-        lookback_minutes=lookbackMinutes,
-        top_k=topK,
-    )
-
-    payload.update(
-        {
-            "symbol": sym,
-            "requestedMarket": market,
-            "effectiveMarket": effective_market,
-            "marketFallback": market_fallback,
-            "source": "orderbook_real_levels_1m",
-        }
-    )
-    return payload
 
 @router.get("/coin/detail/recent")
 async def coin_recent(

@@ -10,14 +10,12 @@ from sqlalchemy import and_, desc, func, select
 from coinmark_api.db import SessionLocal
 from coinmark_api.models import AnomalyEvent, SRLevel
 from coinmark_api.services.absorption_signal import list_latest_absorption_signals
-from coinmark_api.services.institutional_levels import list_latest_institutional_levels, list_recent_triggered_institutional_levels
 from coinmark_api.services.symbol_filter import is_excluded_symbol
 
 
 router = APIRouter()
 
 Market = Literal["spot", "swap"]
-MarketBoth = Literal["spot", "swap", "both"]
 
 
 def _to_float(v) -> float | None:
@@ -61,15 +59,6 @@ def _signal_rank(state: str) -> int:
     if state == "WATCH":
         return 1
     return 0
-
-
-def _state_filter_label(state: str) -> str:
-    s = (state or "CONFIRM").upper()
-    if s in ["CONFIRM", "STRONG", "ALL"]:
-        return s
-    if s == "WATCH":
-        return "CONFIRM"
-    return "CONFIRM"
 
 
 def _shape_absorption_windows(windows: dict | None) -> dict:
@@ -125,75 +114,6 @@ async def orderbook_absorption_signals(
         "onlySignals": onlySignals,
         "signalLookbackMinutes": signalLookbackMinutes,
         "direction": direction,
-        "items": items[: int(limit)],
-    }
-
-
-@router.get("/aggregate/orderbookInstitutionalLevels")
-async def orderbook_institutional_levels(
-    market: MarketBoth = Query("both", pattern="^(spot|swap|both)$"),
-    limit: int = Query(100, ge=10, le=500),
-    state: str = Query("CONFIRM"),
-    lookbackMinutes: int = Query(360, ge=15, le=24 * 60),
-) -> dict:
-    normalized_state = _state_filter_label(state)
-    rows = await list_latest_institutional_levels(
-        market=market,
-        state=normalized_state,
-        limit=limit,
-        lookback_minutes=lookbackMinutes,
-    )
-
-    fallback_applied = False
-    fallback_lookback_minutes = max(lookbackMinutes, 24 * 60)
-    if not rows and normalized_state in {"CONFIRM", "STRONG"}:
-        rows = await list_recent_triggered_institutional_levels(
-            market=market,
-            limit=limit,
-            lookback_minutes=fallback_lookback_minutes,
-        )
-        fallback_applied = len(rows) > 0
-
-    items = [
-        {
-            "symbol": r.symbol,
-            "market": r.market,
-            "zoneType": r.zone_type,
-            "zoneLow": _to_float(r.zone_low),
-            "zoneHigh": _to_float(r.zone_high),
-            "realScore": round(float(r.real_score or 0.0), 1),
-            "state": r.signal_state,
-            "reasons": r.reasons or [],
-            "scores": {
-                "persistence": round(float(r.persistence_score or 0.0), 1),
-                "absorb": round(float(r.absorb_score or 0.0), 1),
-                "replenish": round(float(r.replenish_score or 0.0), 1),
-                "defend": round(float(r.defend_score or 0.0), 1),
-                "flowAlign": round(float(r.flow_align_score or 0.0), 1),
-                "size": round(float(r.size_score or 0.0), 1),
-                "cancelPenalty": round(float(r.cancel_penalty or 0.0), 1),
-            },
-            "ts": int(r.bucket_start_ms),
-        }
-        for r in rows
-        if not is_excluded_symbol(r.symbol)
-    ]
-
-    items.sort(
-        key=lambda x: (
-            _signal_rank(str(x.get("state") or "NONE")),
-            float(x.get("realScore") or 0.0),
-            int(x.get("ts") or 0),
-        ),
-        reverse=True,
-    )
-
-    return {
-        "market": market,
-        "state": normalized_state,
-        "lookbackMinutes": lookbackMinutes,
-        "fallbackApplied": fallback_applied,
-        "fallbackLookbackMinutes": fallback_lookback_minutes,
         "items": items[: int(limit)],
     }
 

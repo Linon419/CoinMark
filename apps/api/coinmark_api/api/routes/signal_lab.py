@@ -11,7 +11,6 @@ from coinmark_api.services.signal_lab import (
     get_realtime_signals,
     start_backtest_run,
 )
-from coinmark_api.services.price_impact_wall import list_latest_price_impact_walls, refresh_price_impact_walls
 
 
 router = APIRouter()
@@ -132,70 +131,3 @@ async def realtime(
         min_signal_state=min_signal_state,
         sync_to_score_flow=bool(sync_score_flow),
     )
-
-
-@router.get("/signal-lab/walls/realtime")
-async def realtime_walls(
-    market: MarketScope = Query("both", pattern="^(spot|swap|both)$"),
-    symbol_limit: int = Query(200, alias="symbolLimit", ge=20, le=400),
-    lookback_minutes: int = Query(120, alias="lookbackMinutes", ge=15, le=24 * 60),
-    flow_window_minutes: int = Query(240, alias="flowWindowMinutes", ge=30, le=24 * 60),
-    cooldown_minutes: int = Query(30, alias="cooldownMinutes", ge=1, le=12 * 60),
-    min_survive_count: int = Query(5, alias="minSurviveCount", ge=1, le=120),
-    min_impact_ratio: float = Query(1.5, alias="minImpactRatio", ge=0.5, le=8.0),
-    sync_score_flow: bool = Query(True, alias="syncScoreFlow"),
-) -> dict:
-    return await refresh_price_impact_walls(
-        market_scope=market,
-        symbol_limit=int(symbol_limit),
-        lookback_minutes=int(lookback_minutes),
-        flow_window_minutes=int(flow_window_minutes),
-        cooldown_minutes=int(cooldown_minutes),
-        min_survive_count=int(min_survive_count),
-        min_impact_ratio=float(min_impact_ratio),
-        sync_to_score_flow=bool(sync_score_flow),
-    )
-
-
-@router.get("/signal-lab/walls")
-async def list_walls(
-    market: Literal["spot", "swap"] = Query("swap", pattern="^(spot|swap)$"),
-    limit: int = Query(100, ge=10, le=300),
-    lookback_minutes: int = Query(360, alias="lookbackMinutes", ge=15, le=24 * 60),
-    zone_type: str = Query("all", alias="zoneType", pattern="^(all|bid|ask)$"),
-    min_confidence: str = Query("MEDIUM", alias="minConfidence", pattern="^(LOW|MEDIUM|HIGH)$"),
-) -> dict:
-    rows = await list_latest_price_impact_walls(
-        market=market,
-        limit=int(limit),
-        lookback_minutes=int(lookback_minutes),
-        zone_type=zone_type,
-        min_confidence=min_confidence,
-    )
-    items = [
-        {
-            "market": r.market,
-            "symbol": r.symbol,
-            "zoneType": r.zone_type,
-            "zoneLow": float(r.zone_low),
-            "zoneHigh": float(r.zone_high),
-            "signalState": r.signal_state,
-            "confidence": r.confidence,
-            "realScore": float(r.real_score),
-            "impactRatio": float(r.impact_ratio),
-            "surviveCount": int(r.survive_count),
-            "cancelRatio": float(r.cancel_ratio),
-            "reasons": r.reasons or [],
-            "details": r.details or {},
-            "ts": int(r.bucket_start_ms),
-        }
-        for r in rows
-    ]
-    return {
-        "market": market,
-        "limit": int(limit),
-        "lookbackMinutes": int(lookback_minutes),
-        "zoneType": zone_type,
-        "minConfidence": min_confidence,
-        "items": items,
-    }

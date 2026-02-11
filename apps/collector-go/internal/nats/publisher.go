@@ -3,6 +3,7 @@ package nats
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
@@ -35,23 +36,27 @@ func NewPublisher(url, clientName, streamName, subject string) (*Publisher, erro
 		return nil, fmt.Errorf("connect nats: %w", err)
 	}
 
-	js, err := nc.JetStream()
+	js, err := nc.JetStream(natsgo.MaxWait(120 * time.Second))
 	if err != nil {
 		nc.Close()
 		return nil, fmt.Errorf("new jetstream context: %w", err)
 	}
 
+	desiredCfg := &natsgo.StreamConfig{
+		Name:      streamName,
+		Subjects:  []string{"coinmark.raw.*"},
+		Retention: natsgo.LimitsPolicy,
+		Storage:   natsgo.FileStorage,
+		Replicas:  1,
+		MaxAge:    2 * time.Hour,
+	}
 	if _, err := js.StreamInfo(streamName); err != nil {
-		if _, addErr := js.AddStream(&natsgo.StreamConfig{
-			Name:      streamName,
-			Subjects:  []string{"coinmark.raw.*"},
-			Retention: natsgo.LimitsPolicy,
-			Storage:   natsgo.FileStorage,
-			Replicas:  1,
-		}); addErr != nil {
+		if _, addErr := js.AddStream(desiredCfg); addErr != nil {
 			nc.Close()
 			return nil, fmt.Errorf("add stream %s: %w", streamName, addErr)
 		}
+	} else if _, updErr := js.UpdateStream(desiredCfg); updErr != nil {
+		log.Printf("warn: update stream %s MaxAge: %v (non-fatal, will retry next restart)", streamName, updErr)
 	}
 
 	return &Publisher{

@@ -658,47 +658,6 @@ body {
   gap: 2px;
 }
 
-.cm-institutionalGrid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-}
-
-@media (max-width: 900px) {
-  .cm-institutionalGrid {
-    grid-template-columns: 1fr;
-  }
-}
-
-.cm-institutionalZone {
-  padding: 10px;
-}
-
-.cm-institutionalZone--bid {
-  border-left: 3px solid #16a34a;
-}
-
-.cm-institutionalZone--ask {
-  border-left: 3px solid #dc2626;
-}
-
-.cm-institutionalReasonList {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.cm-institutionalReasonItem {
-  border: 1px dashed var(--cm-border);
-  border-radius: 10px;
-  padding: 8px 10px;
-  background: rgba(148, 163, 184, 0.05);
-}
-
-:root[data-theme="dark"] .cm-institutionalReasonItem {
-  background: rgba(2, 6, 23, 0.45);
-}
-
 .cm-notifyToolbar {
   display: flex;
   align-items: center;

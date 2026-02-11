@@ -176,39 +176,6 @@ Index("ix_anomaly_events_time", AnomalyEvent.event_time_ms.desc())
 Index("ix_anomaly_events_symbol", AnomalyEvent.market, AnomalyEvent.symbol, AnomalyEvent.event_time_ms.desc())
 
 
-class PriceImpactWallCandidate(Base):
-    __tablename__ = "price_impact_wall_candidates"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    market: Mapped[str] = mapped_column(String(8), nullable=False)
-    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
-    bucket_start_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    zone_type: Mapped[str] = mapped_column(String(8), nullable=False)  # bid|ask
-
-    zone_low: Mapped[float] = mapped_column(Numeric(38, 18), nullable=False)
-    zone_high: Mapped[float] = mapped_column(Numeric(38, 18), nullable=False)
-
-    signal_state: Mapped[str] = mapped_column(String(16), nullable=False)  # WATCH|CONFIRM|STRONG
-    confidence: Mapped[str] = mapped_column(String(8), nullable=False)  # LOW|MEDIUM|HIGH
-
-    real_score: Mapped[float] = mapped_column(Numeric(10, 4), nullable=False, default=0)
-    impact_ratio: Mapped[float] = mapped_column(Numeric(10, 4), nullable=False, default=0)
-    survive_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    cancel_ratio: Mapped[float] = mapped_column(Numeric(10, 4), nullable=False, default=0)
-
-    reasons: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
-    details: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
-    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-
-    __table_args__ = (
-        UniqueConstraint("market", "symbol", "bucket_start_ms", "zone_type", name="uq_price_impact_wall_candidate"),
-        Index("ix_price_impact_wall_time", "market", "bucket_start_ms"),
-        Index("ix_price_impact_wall_symbol", "market", "symbol", "bucket_start_ms"),
-        Index("ix_price_impact_wall_state", "market", "confidence", "bucket_start_ms"),
-    )
-
-
 class AbsorptionSignalSnapshot(Base):
     __tablename__ = "absorption_signal_snapshots"
 
@@ -256,39 +223,4 @@ class OrderbookHeatmapSnapshot(Base):
         UniqueConstraint("market", "symbol", "bucket_start_ms", "side", "price_bin", name="uq_orderbook_heatmap_1m_side"),
         Index("ix_orderbook_heatmap_market_time", "market", "bucket_start_ms"),
         Index("ix_orderbook_heatmap_market_symbol", "market", "symbol", "bucket_start_ms"),
-    )
-
-
-class InstitutionalLevelSnapshot(Base):
-    __tablename__ = "orderbook_real_levels_1m"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    market: Mapped[str] = mapped_column(String(8), nullable=False)
-    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
-    bucket_start_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    zone_type: Mapped[str] = mapped_column(String(8), nullable=False)  # bid|ask
-
-    zone_low: Mapped[float] = mapped_column(Numeric(38, 18), nullable=False)
-    zone_high: Mapped[float] = mapped_column(Numeric(38, 18), nullable=False)
-
-    real_score: Mapped[float] = mapped_column(Numeric(10, 4), nullable=False, default=0)
-    signal_state: Mapped[str] = mapped_column(String(16), nullable=False, default="NONE")  # NONE|WATCH|CONFIRM|STRONG
-
-    persistence_score: Mapped[float] = mapped_column(Numeric(10, 4), nullable=False, default=0)
-    absorb_score: Mapped[float] = mapped_column(Numeric(10, 4), nullable=False, default=0)
-    replenish_score: Mapped[float] = mapped_column(Numeric(10, 4), nullable=False, default=0)
-    defend_score: Mapped[float] = mapped_column(Numeric(10, 4), nullable=False, default=0)
-    flow_align_score: Mapped[float] = mapped_column(Numeric(10, 4), nullable=False, default=0)
-    size_score: Mapped[float] = mapped_column(Numeric(10, 4), nullable=False, default=0)
-    cancel_penalty: Mapped[float] = mapped_column(Numeric(10, 4), nullable=False, default=0)
-
-    reasons: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
-    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-
-    __table_args__ = (
-        UniqueConstraint("market", "symbol", "bucket_start_ms", "zone_type", name="uq_orderbook_real_level_1m"),
-        Index("ix_orderbook_real_level_market_time", "market", "bucket_start_ms"),
-        Index("ix_orderbook_real_level_market_symbol", "market", "symbol", "bucket_start_ms"),
-        Index("ix_orderbook_real_level_market_state", "market", "signal_state", "bucket_start_ms"),
     )
