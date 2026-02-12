@@ -30,6 +30,13 @@ type Config struct {
 	BackfillConcurrency int
 	Backfill1mLimit     int
 
+	BucketWatchdogEnable           bool
+	BucketWatchdogIntervalSec      int
+	BucketWatchdogTopN             int
+	BucketWatchdogWindowMin        int
+	BucketWatchdogMaxRepairMinutes int
+	BucketWatchdogCooldownSec      int
+
 	OIRefreshTopN        int
 	OIRefreshIntervalSec int
 
@@ -93,6 +100,13 @@ func Load() (*Config, error) {
 		BackfillConcurrency: mustInt("BACKFILL_CONCURRENCY", 8),
 		Backfill1mLimit:     mustInt("BACKFILL_1M_LIMIT", 1500),
 
+		BucketWatchdogEnable:           mustBool("BUCKET_WATCHDOG_ENABLE", true),
+		BucketWatchdogIntervalSec:      mustInt("BUCKET_WATCHDOG_INTERVAL_SEC", 30),
+		BucketWatchdogTopN:             mustInt("BUCKET_WATCHDOG_TOP_N", 120),
+		BucketWatchdogWindowMin:        mustInt("BUCKET_WATCHDOG_WINDOW_MIN", 10),
+		BucketWatchdogMaxRepairMinutes: mustInt("BUCKET_WATCHDOG_MAX_REPAIR_MIN", 180),
+		BucketWatchdogCooldownSec:      mustInt("BUCKET_WATCHDOG_COOLDOWN_SEC", 90),
+
 		OIRefreshTopN:        mustInt("OI_REFRESH_TOP_N", 300),
 		OIRefreshIntervalSec: mustInt("OI_REFRESH_INTERVAL_SEC", 300),
 
@@ -107,7 +121,6 @@ func Load() (*Config, error) {
 	return c, nil
 }
 
-
 func (c *Config) FlushInterval() time.Duration {
 	return time.Duration(max(1, c.IngestFlushIntervalSec)) * time.Second
 }
@@ -118,6 +131,10 @@ func (c *Config) RuntimeReportInterval() time.Duration {
 
 func (c *Config) OIRefreshInterval() time.Duration {
 	return time.Duration(max(30, c.OIRefreshIntervalSec)) * time.Second
+}
+
+func (c *Config) BucketWatchdogInterval() time.Duration {
+	return time.Duration(max(5, c.BucketWatchdogIntervalSec)) * time.Second
 }
 
 func max(a, b int) int {

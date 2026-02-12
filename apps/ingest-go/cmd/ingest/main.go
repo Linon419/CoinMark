@@ -62,6 +62,7 @@ func main() {
 	g.Go(func() error { return svc.FundingLoop(gctx) })
 	g.Go(func() error { return svc.MarketCapLoop(gctx) })
 	g.Go(func() error { return svc.OILoop(gctx) })
+	g.Go(func() error { return svc.TradeBucketWatchdogLoop(gctx) })
 	g.Go(func() error { return svc.RuntimeReportLoop(gctx) })
 	g.Go(func() error { return svc.BackfillOnce(gctx) })
 

@@ -1,2 +1,0 @@
-"""CoinMark API 包。"""
-

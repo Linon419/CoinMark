@@ -16,6 +16,9 @@ func registerBotRoutes(g *gin.RouterGroup, d *Deps) {
 
 func handleFundingRateTop(d *Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if !requireClickHouse(c, d.CH) {
+			return
+		}
 		limit := queryInt(c, "limit", 15, 1, 200)
 		order := c.DefaultQuery("order", "abs")
 		items, err := service.GetFundingRateTop(c.Request.Context(), d.CH, limit, order)
@@ -46,6 +49,9 @@ func handleLSVolumeRank(d *Deps) gin.HandlerFunc {
 
 func handleOIMcapRank(d *Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if !requireClickHouse(c, d.CH) {
+			return
+		}
 		limit := queryInt(c, "limit", 15, 1, 200)
 		items, err := service.GetOIMarketCapRank(c.Request.Context(), d.CH, limit)
 		if err != nil {

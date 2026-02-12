@@ -16,6 +16,9 @@ func registerSignalLabRoutes(g *gin.RouterGroup, d *Deps) {
 
 func handleSignalLabRealtime(d *Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if !requireClickHouse(c, d.CH) {
+			return
+		}
 		marketScope := c.DefaultQuery("market", "both")
 		if marketScope != "spot" && marketScope != "swap" && marketScope != "both" {
 			marketScope = "both"
@@ -53,11 +56,14 @@ func handleSignalLabRealtime(d *Deps) gin.HandlerFunc {
 
 func handleSignalLabBacktest(d *Deps) gin.HandlerFunc {
 	type body struct {
-		Market string                  `json:"market"`
-		Days   int                     `json:"days"`
+		Market string                   `json:"market"`
+		Days   int                      `json:"days"`
 		Params *service.SignalLabParams `json:"params"`
 	}
 	return func(c *gin.Context) {
+		if !requireClickHouse(c, d.CH) {
+			return
+		}
 		var b body
 		if err := c.ShouldBindJSON(&b); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})

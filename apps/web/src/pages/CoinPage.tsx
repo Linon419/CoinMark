@@ -36,6 +36,8 @@ type BasicResp = {
   openInterest: { openInterest: number; markPrice: number; oiNotionalUsd: number; timeMs: number } | null;
   marketCap: { priceUsd: number; circulatingSupply: number; marketCapUsd: number; source: string; timeMs: number } | null;
   srLevels: Array<{ levelPrice: number; touches: number; strengthScore: number; lastTouchMs: number }>;
+  degraded?: boolean;
+  warnings?: string[];
 };
 
 type FlowResp = {
@@ -297,6 +299,16 @@ async function getJson<T>(path: string): Promise<T> {
   return (await r.json()) as T;
 }
 
+function keepLastIfSameSymbol<T>(next: T | null, prev: T | null, symbol: string): T | null {
+  if (next != null) return next;
+  if (prev == null || typeof prev !== "object") return null;
+  const prevSymbol = (prev as any).symbol || (prev as any).basic?.symbol;
+  if (typeof prevSymbol === "string" && prevSymbol.toUpperCase() !== symbol.toUpperCase()) {
+    return null;
+  }
+  return prev;
+}
+
 const usdCompact = new Intl.NumberFormat("en-US", {
   notation: "compact",
   maximumFractionDigits: 2,
@@ -500,21 +512,21 @@ export default function CoinPage() {
           `/api/coin/detail/orderbook/whale-radar?symbol=${sym}&lookbackMinutes=240&topK=20`
         ),
       ]);
-      setBasic(b);
-      setHourly(h);
-      setHourlyHealth(hh);
-      setHourlyFlow(hf);
-      setDaily(d);
-      setDailyRecent(dr);
-      setRecentDaily(r);
-      setOiHourly(oi);
-      setOiDaily(oid);
-      setLsrHourly(lsr);
-      setSrShort(sr);
-      setSrShort15(sr15);
-      setOrderbook(ob);
-      setQuantData(qd);
-      setWhaleRadar(wr);
+      setBasic((prev) => keepLastIfSameSymbol(b, prev, sym));
+      setHourly((prev) => keepLastIfSameSymbol(h, prev, sym));
+      setHourlyHealth((prev) => keepLastIfSameSymbol(hh, prev, sym));
+      setHourlyFlow((prev) => keepLastIfSameSymbol(hf, prev, sym));
+      setDaily((prev) => keepLastIfSameSymbol(d, prev, sym));
+      setDailyRecent((prev) => keepLastIfSameSymbol(dr, prev, sym));
+      setRecentDaily((prev) => keepLastIfSameSymbol(r, prev, sym));
+      setOiHourly((prev) => keepLastIfSameSymbol(oi, prev, sym));
+      setOiDaily((prev) => keepLastIfSameSymbol(oid, prev, sym));
+      setLsrHourly((prev) => keepLastIfSameSymbol(lsr, prev, sym));
+      setSrShort((prev) => keepLastIfSameSymbol(sr, prev, sym));
+      setSrShort15((prev) => keepLastIfSameSymbol(sr15, prev, sym));
+      setOrderbook((prev) => keepLastIfSameSymbol(ob, prev, sym));
+      setQuantData((prev) => keepLastIfSameSymbol(qd, prev, sym));
+      setWhaleRadar((prev) => keepLastIfSameSymbol(wr, prev, sym));
     } finally {
       setLoading(false);
     }
@@ -1305,6 +1317,16 @@ export default function CoinPage() {
     return [...supports, ...resistances];
   }, [basic]);
 
+  const coverageHint = useMemo(() => {
+    if (hourlyHealth?.reason === "no_1m_rows") {
+      return "该币种暂未进入深度扫描覆盖，盘口/资金快照可能为空。";
+    }
+    if (orderbook && !orderbook.swapAvailable && !orderbook.spotAvailable) {
+      return "当前无可用盘口样本，请稍后刷新或切换币种。";
+    }
+    return "";
+  }, [hourlyHealth, orderbook]);
+
   if (!sym) {
     return (
       <div className="cm-page">
@@ -1386,6 +1408,25 @@ export default function CoinPage() {
         <div className="cm-section">
           <div className="cm-card" style={{ padding: 12 }}>
             <Text style={{ color: "#166534" }}>现货无该交易对，已自动回退为合约数据；页面已隐藏现货曲线。</Text>
+          </div>
+        </div>
+      )}
+
+      {(basic?.degraded || (basic?.warnings?.length || 0) > 0) && (
+        <div className="cm-section">
+          <div className="cm-card" style={{ padding: 12 }}>
+            <Text style={{ color: "#b45309" }}>
+              行情源本次请求不稳定，已自动降级返回可用数据。
+              {basic?.warnings?.length ? `（${basic.warnings.join(" / ")}）` : ""}
+            </Text>
+          </div>
+        </div>
+      )}
+
+      {coverageHint && (
+        <div className="cm-section">
+          <div className="cm-card" style={{ padding: 12 }}>
+            <Text style={{ color: "#92400e" }}>{coverageHint}</Text>
           </div>
         </div>
       )}

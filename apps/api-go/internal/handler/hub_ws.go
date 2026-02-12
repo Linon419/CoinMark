@@ -45,7 +45,9 @@ func handleHubWS(d *Deps) gin.HandlerFunc {
 		defer d.Hub.Manager.Disconnect(connID)
 
 		// send connected
-		ws.WriteJSON(hub.ConnectedMsg{Kind: "connected", ConnectionID: connID, Ts: time.Now().UnixMilli()})
+		if err := d.Hub.Manager.SendJSON(connID, hub.ConnectedMsg{Kind: "connected", ConnectionID: connID, Ts: time.Now().UnixMilli()}); err != nil {
+			return
+		}
 
 		for {
 			_, msg, err := ws.ReadMessage()
@@ -56,24 +58,32 @@ func handleHubWS(d *Deps) gin.HandlerFunc {
 
 			op, err := hub.ParseClientOp(msg)
 			if err != nil {
-				ws.WriteJSON(hub.ErrorMsg{Kind: "error", Message: "invalid json"})
+				if err := d.Hub.Manager.SendJSON(connID, hub.ErrorMsg{Kind: "error", Message: "invalid json"}); err != nil {
+					break
+				}
 				continue
 			}
 
 			switch op.Op {
 			case "ping":
-				ws.WriteJSON(hub.PingMsg{Kind: "pong", Ts: time.Now().UnixMilli()})
+				if err := d.Hub.Manager.SendJSON(connID, hub.PingMsg{Kind: "pong", Ts: time.Now().UnixMilli()}); err != nil {
+					break
+				}
 
 			case "subscribe":
 				d.Hub.Manager.UpdateSubscription(connID, op.Markets, op.Symbols, op.Types)
 				markets, symbols, types := d.Hub.Manager.GetSubscription(connID)
-				ws.WriteJSON(hub.SubscribedMsg{
+				if err := d.Hub.Manager.SendJSON(connID, hub.SubscribedMsg{
 					Kind: "subscribed", Markets: markets, Symbols: symbols, Types: types,
 					Ts: time.Now().UnixMilli(),
-				})
+				}); err != nil {
+					break
+				}
 
 			default:
-				ws.WriteJSON(hub.ErrorMsg{Kind: "error", Message: "unknown op: " + op.Op})
+				if err := d.Hub.Manager.SendJSON(connID, hub.ErrorMsg{Kind: "error", Message: "unknown op: " + op.Op}); err != nil {
+					break
+				}
 			}
 		}
 	}

@@ -89,6 +89,14 @@ func queryBool(c *gin.Context, key string, def bool) bool {
 	return s == "true" || s == "1"
 }
 
+func requireClickHouse(c *gin.Context, ch *chrepo.Client) bool {
+	if ch != nil {
+		return true
+	}
+	c.JSON(http.StatusServiceUnavailable, gin.H{"error": "clickhouse not configured"})
+	return false
+}
+
 var wsUpgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }

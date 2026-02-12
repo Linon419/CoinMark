@@ -20,11 +20,19 @@ import (
 
 func handleFundSnapshotHealth(d *Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if !requireClickHouse(c, d.CH) {
+			return
+		}
 		symbol := requireSymbol(c)
 		if symbol == "" {
 			return
 		}
 		ctx := c.Request.Context()
+		timeMode := c.DefaultQuery("timeMode", "utc")
+		if timeMode != "local" {
+			timeMode = "utc"
+		}
+		tzOffsetMin := queryInt(c, "tzOffsetMin", 0, -720, 720)
 		nowMs := time.Now().UnixMilli()
 		freshWindowSec := 600
 		checkWindowHours := 2
@@ -64,13 +72,29 @@ func handleFundSnapshotHealth(d *Deps) gin.HandlerFunc {
 			reason = "no_1m_rows"
 		}
 
+		timezone := "UTC"
+		if timeMode == "local" {
+			timezone = "LOCAL"
+		}
+
 		c.JSON(http.StatusOK, gin.H{
+			"timezone":         timezone,
+			"timeMode":         timeMode,
+			"tzOffsetMin":      tzOffsetMin,
 			"symbol":           symbol,
 			"healthy":          healthy,
 			"reason":           reason,
 			"latest1mByMarket": latest1m,
 			"freshWindowSec":   freshWindowSec,
 			"checkWindowHours": checkWindowHours,
+			"h1m1Consistency": gin.H{
+				"compared": 0,
+				"mismatch": 0,
+			},
+			"lastRepairAtMs":            nil,
+			"repairCooldownMs":          90 * 1000,
+			"repairCooldownRemainingMs": 0,
+			"canTriggerRepair":          true,
 		})
 	}
 }
@@ -83,6 +107,9 @@ var bucketMinutesMap = map[string]int{"1m": 1, "15m": 15, "1h": 60, "4h": 240, "
 
 func handleQuantDashboard(d *Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if !requireClickHouse(c, d.CH) {
+			return
+		}
 		symbol := requireSymbol(c)
 		if symbol == "" {
 			return
@@ -218,6 +245,9 @@ func handleQuantDashboard(d *Deps) gin.HandlerFunc {
 
 func handleQuantMLFCompare(d *Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if !requireClickHouse(c, d.CH) {
+			return
+		}
 		symbol := requireSymbol(c)
 		if symbol == "" {
 			return

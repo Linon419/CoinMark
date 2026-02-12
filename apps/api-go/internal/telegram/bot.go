@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"strconv"
+	"time"
 
 	tele "gopkg.in/telebot.v3"
 
@@ -34,7 +35,7 @@ func Start(ctx context.Context, cfg *config.Config, store *sqlite.Store, ch *chr
 func startNotifyBot(ctx context.Context, cfg *config.Config, store *sqlite.Store, redis *redisrepo.Store, stopCh <-chan struct{}) {
 	pref := tele.Settings{
 		Token:  cfg.TGNotifyBotToken,
-		Poller: &tele.LongPoller{Timeout: 10},
+		Poller: &tele.LongPoller{Timeout: 10 * time.Second},
 	}
 	b, err := tele.NewBot(pref)
 	if err != nil {

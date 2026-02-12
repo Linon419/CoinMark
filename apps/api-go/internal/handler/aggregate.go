@@ -64,6 +64,9 @@ func handleBasicInfo(d *Deps) gin.HandlerFunc {
 
 func handleReturns(d *Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if !requireClickHouse(c, d.CH) {
+			return
+		}
 		market := queryMarket(c)
 		bucket := c.DefaultQuery("bucket", "1h")
 		if bucket != "15m" && bucket != "1h" && bucket != "4h" && bucket != "1d" {
@@ -83,9 +86,9 @@ func handleReturns(d *Deps) gin.HandlerFunc {
 		}
 
 		type retItem struct {
-			Symbol  string  `json:"symbol"`
-			RetPct  float64 `json:"retPct"`
-			QV      float64 `json:"quoteNotional"`
+			Symbol string  `json:"symbol"`
+			RetPct float64 `json:"retPct"`
+			QV     float64 `json:"quoteNotional"`
 		}
 		var items []retItem
 		for _, r := range rows {

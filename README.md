@@ -23,24 +23,11 @@
 3. 健康检查：
    - `http://localhost:8000/healthz`
 
-### 无 Docker（SQLite 开发模式）
-
-在 `CoinMark/apps/api` 下创建虚拟环境并安装依赖后，设置环境变量运行：
-- `DATABASE_URL=sqlite+aiosqlite:///./coinmark.db`
-- `REDIS_URL=redis://localhost:6379/0`（当前版本未强依赖 Redis，可先填占位）
-
-然后启动 API（示例）：
-- `python -m uvicorn coinmark_api.main:app --host 127.0.0.1 --port 8000`
-
-已提供脚本（Windows）：
-- 启动 API（SQLite）：`powershell -ExecutionPolicy Bypass -File scripts\\dev-sqlite.ps1`
-- Smoke（单测 + WS 落库）：`powershell -ExecutionPolicy Bypass -File scripts\\smoke.ps1`
-
-> 注意：SQLite 模式主要用于你本机开发验证；真实跑全量订阅与高并发，请使用 PostgreSQL（compose 或云上）。
-
 ## 目录结构
 
-- `apps/api`：FastAPI + WS Ingest Worker
+- `apps/api-go`：Go API 服务（HTTP + Hub + Telegram）
+- `apps/collector-go`：Go 行情采集（Spot/Swap WebSocket -> NATS）
+- `apps/ingest-go`：Go 消费入库（NATS -> SQLite/ClickHouse）
 - `apps/web`：前端（Vite + React，最小可视化页面）
 - `infra`：docker-compose、Nginx 等
 - `docs`：设计文档与部署文档

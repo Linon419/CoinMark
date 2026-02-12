@@ -2,6 +2,7 @@ package hub
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"sync"
 	"time"
@@ -17,14 +18,15 @@ type Connection struct {
 	Markets    map[string]struct{}
 	Symbols    map[string]struct{}
 	Types      map[string]struct{}
+	writeMu    sync.Mutex
 }
 
 type Manager struct {
-	mu             sync.RWMutex
-	conns          map[string]*Connection
-	maxConns       int
-	heartbeatSec   int
-	timeoutSec     int
+	mu           sync.RWMutex
+	conns        map[string]*Connection
+	maxConns     int
+	heartbeatSec int
+	timeoutSec   int
 }
 
 func NewManager(maxConns, heartbeatSec, timeoutSec int) *Manager {
@@ -69,7 +71,7 @@ func (m *Manager) Disconnect(id string) {
 	}
 	m.mu.Unlock()
 	if ok && c.Conn != nil {
-		c.Conn.Close()
+		_ = c.safeClose()
 	}
 }
 
@@ -126,8 +128,7 @@ func (m *Manager) BroadcastEvent(evt HubEvent) int {
 	var stale []string
 	sent := 0
 	for _, c := range targets {
-		c.Conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-		if err := c.Conn.WriteMessage(websocket.TextMessage, data); err != nil {
+		if err := c.safeWriteMessage(websocket.TextMessage, data); err != nil {
 			stale = append(stale, c.ID)
 		} else {
 			sent++
@@ -177,8 +178,7 @@ func (m *Manager) heartbeat() {
 	}
 
 	for _, c := range active {
-		c.Conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-		c.Conn.WriteMessage(websocket.TextMessage, ping)
+		_ = c.safeWriteMessage(websocket.TextMessage, ping)
 	}
 }
 
@@ -226,4 +226,43 @@ func setToSlice(s map[string]struct{}) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+func (m *Manager) SendJSON(id string, payload interface{}) error {
+	m.mu.RLock()
+	c, ok := m.conns[id]
+	m.mu.RUnlock()
+	if !ok || c == nil || c.Conn == nil {
+		return errors.New("hub: connection not found")
+	}
+	return c.safeWriteJSON(payload)
+}
+
+func (c *Connection) safeWriteMessage(messageType int, data []byte) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	if c.Conn == nil {
+		return errors.New("hub: nil websocket connection")
+	}
+	c.Conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	return c.Conn.WriteMessage(messageType, data)
+}
+
+func (c *Connection) safeWriteJSON(payload interface{}) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	if c.Conn == nil {
+		return errors.New("hub: nil websocket connection")
+	}
+	c.Conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	return c.Conn.WriteJSON(payload)
+}
+
+func (c *Connection) safeClose() error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	if c.Conn == nil {
+		return nil
+	}
+	return c.Conn.Close()
 }

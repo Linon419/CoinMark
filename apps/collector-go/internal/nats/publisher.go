@@ -48,7 +48,7 @@ func NewPublisher(url, clientName, streamName, subject string) (*Publisher, erro
 		Retention: natsgo.LimitsPolicy,
 		Storage:   natsgo.FileStorage,
 		Replicas:  1,
-		MaxAge:    2 * time.Hour,
+		MaxAge:    1 * time.Hour,
 	}
 	if _, err := js.StreamInfo(streamName); err != nil {
 		if _, addErr := js.AddStream(desiredCfg); addErr != nil {

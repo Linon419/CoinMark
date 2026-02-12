@@ -13,20 +13,12 @@ func fmtCompact(v float64) string {
 	}
 	abs := math.Abs(v)
 	switch {
-	case abs >= 1e12:
-		return fmt.Sprintf("%.2fe12", v/1e12)
 	case abs >= 1e8:
-		return fmt.Sprintf("%.2fe8", v/1e8)
+		return fmt.Sprintf("%.2f亿", v/1e8)
 	case abs >= 1e4:
-		return fmt.Sprintf("%.2fw", v/1e4)
-	case abs >= 1:
-		return fmt.Sprintf("%.2f", v)
-	case abs >= 0.01:
-		return fmt.Sprintf("%.4f", v)
-	case abs > 0:
-		return fmt.Sprintf("%.6f", v)
+		return fmt.Sprintf("%.2f万", v/1e4)
 	default:
-		return "-"
+		return fmt.Sprintf("%.2f", v)
 	}
 }
 
@@ -48,14 +40,17 @@ func fmtSignedPct(v float64) string {
 }
 
 func fmtBigUSD(v float64) string {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return "-"
+	}
 	abs := math.Abs(v)
 	switch {
 	case abs >= 1e12:
 		return fmt.Sprintf("%.2f万亿", v/1e12)
 	case abs >= 1e8:
-		return fmt.Sprintf("%.2fe8", v/1e8)
+		return fmt.Sprintf("%.2f亿", v/1e8)
 	case abs >= 1e4:
-		return fmt.Sprintf("%.2fw", v/1e4)
+		return fmt.Sprintf("%.2f万", v/1e4)
 	default:
 		return fmt.Sprintf("%.2f", v)
 	}
@@ -129,24 +124,52 @@ func eventSeverityScore(et string, details map[string]interface{}) float64 {
 	switch et {
 	case "breakout_up", "breakout_down":
 		base = 60
-		if touches, ok := details["touches"].(float64); ok && touches >= 5 {
+		if touches, ok := detailFloat(details, "touches"); ok && touches >= 5 {
 			base += 10
 		}
-		if vf, ok := details["volumeFactor"].(*float64); ok && vf != nil && *vf >= 2 {
+		if vf, ok := detailFloat(details, "volumeFactor"); ok && vf >= 2 {
 			base += 10
 		}
 	case "volume_spike":
-		if vf, ok := details["volumeFactor"].(*float64); ok && vf != nil {
-			base += math.Min(30, *vf*5)
+		if vf, ok := detailFloat(details, "volumeFactor"); ok {
+			base += math.Min(30, vf*5)
 		}
 	case "amplitude_spike":
-		if af, ok := details["amplitudeFactor"].(*float64); ok && af != nil {
-			base += math.Min(20, *af*5)
+		if af, ok := detailFloat(details, "amplitudeFactor"); ok {
+			base += math.Min(20, af*5)
 		}
 	case "climax_reversal":
 		base = 70
 	}
 	return math.Min(100, base)
+}
+
+func detailFloat(details map[string]interface{}, key string) (float64, bool) {
+	if details == nil {
+		return 0, false
+	}
+	raw, ok := details[key]
+	if !ok || raw == nil {
+		return 0, false
+	}
+	switch v := raw.(type) {
+	case float64:
+		return v, true
+	case float32:
+		return float64(v), true
+	case int:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	case int32:
+		return float64(v), true
+	case string:
+		var out float64
+		if _, err := fmt.Sscanf(v, "%f", &out); err == nil {
+			return out, true
+		}
+	}
+	return 0, false
 }
 
 func eventLevel(score float64) string {

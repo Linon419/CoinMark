@@ -22,6 +22,9 @@ type Service struct {
 	stats    *Stats
 	tradeAgg *ingest.TradeAggregator
 	obAgg    *ingest.OrderbookAggregator
+
+	watchdogMu         sync.Mutex
+	watchdogLastRepair map[string]int64
 }
 
 func NewService(cfg *config.Config, st *store.Store, bc *binance.Client, stats *Stats, tradeAgg *ingest.TradeAggregator, obAgg *ingest.OrderbookAggregator) *Service {
@@ -32,6 +35,8 @@ func NewService(cfg *config.Config, st *store.Store, bc *binance.Client, stats *
 		stats:    stats,
 		tradeAgg: tradeAgg,
 		obAgg:    obAgg,
+
+		watchdogLastRepair: make(map[string]int64),
 	}
 }
 
@@ -257,6 +262,229 @@ func (s *Service) OILoop(ctx context.Context) error {
 		case <-ticker.C:
 		}
 	}
+}
+
+func (s *Service) TradeBucketWatchdogLoop(ctx context.Context) error {
+	if !s.cfg.BucketWatchdogEnable {
+		log.Printf("Trade bucket watchdog disabled")
+		return nil
+	}
+	ticker := time.NewTicker(s.cfg.BucketWatchdogInterval())
+	defer ticker.Stop()
+	for {
+		if err := s.runTradeBucketWatchdog(ctx); err != nil {
+			log.Printf("Trade bucket watchdog failed: %v", err)
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+		}
+	}
+}
+
+func (s *Service) runTradeBucketWatchdog(ctx context.Context) error {
+	markets := make([]string, 0, 2)
+	if s.cfg.IngestEnableSpot {
+		markets = append(markets, "spot")
+	}
+	if s.cfg.IngestEnableSwap {
+		markets = append(markets, "swap")
+	}
+
+	for _, market := range markets {
+		if err := s.runTradeBucketWatchdogMarket(ctx, market); err != nil {
+			log.Printf("trade bucket watchdog market=%s failed: %v", market, err)
+		}
+	}
+	return nil
+}
+
+func (s *Service) runTradeBucketWatchdogMarket(ctx context.Context, market string) error {
+	topN := max(1, s.cfg.BucketWatchdogTopN)
+	symbols, err := s.binance.TopSymbolsByVolume(ctx, market, topN)
+	if err != nil {
+		return err
+	}
+	if len(symbols) == 0 {
+		return nil
+	}
+
+	const minuteMS int64 = 60 * 1000
+	nowMS := ingest.UtcNowMS()
+	lastClosedStart := (nowMS/minuteMS)*minuteMS - minuteMS
+	windowMin := max(3, s.cfg.BucketWatchdogWindowMin)
+	startMS := lastClosedStart - int64(windowMin-1)*minuteMS
+	if startMS < 0 {
+		startMS = 0
+	}
+
+	rows, err := s.store.QueryTradeBucketHealthRows(ctx, market, symbols, startMS, lastClosedStart)
+	if err != nil {
+		return err
+	}
+
+	bySymbol := make(map[string]map[int64]store.TradeBucketHealthRow, len(symbols))
+	for _, r := range rows {
+		byTs := bySymbol[r.Symbol]
+		if byTs == nil {
+			byTs = make(map[int64]store.TradeBucketHealthRow, windowMin)
+			bySymbol[r.Symbol] = byTs
+		}
+		byTs[r.BucketStartMS] = r
+	}
+
+	cooldownMS := int64(max(1, s.cfg.BucketWatchdogCooldownSec)) * 1000
+	repairLimit := max(windowMin+2, s.cfg.BucketWatchdogMaxRepairMinutes)
+
+	missing := 0
+	abnormal := 0
+	repairedSymbols := 0
+	repairedBuckets := 0
+	failed := 0
+
+	for _, sym := range symbols {
+		byTs := bySymbol[sym]
+		issues := make([]int64, 0, windowMin)
+		for ts := startMS; ts <= lastClosedStart; ts += minuteMS {
+			row, ok := byTs[ts]
+			if !ok {
+				missing++
+				issues = append(issues, ts)
+				continue
+			}
+			if badTradeBucketRow(row) {
+				abnormal++
+				issues = append(issues, ts)
+			}
+		}
+		if len(issues) == 0 {
+			continue
+		}
+
+		if !s.claimWatchdogRepair(market, sym, nowMS, cooldownMS) {
+			continue
+		}
+
+		n, repairErr := s.repairTradeBucketsFromREST(ctx, market, sym, issues[0], issues[len(issues)-1], lastClosedStart, repairLimit)
+		if repairErr != nil {
+			failed++
+			log.Printf("trade bucket watchdog repair failed market=%s symbol=%s err=%v", market, sym, repairErr)
+			continue
+		}
+		if n > 0 {
+			repairedSymbols++
+			repairedBuckets += n
+		}
+	}
+
+	if missing > 0 || abnormal > 0 || repairedSymbols > 0 || failed > 0 {
+		log.Printf("trade bucket watchdog market=%s checked=%d missing=%d abnormal=%d repaired_symbols=%d repaired_buckets=%d failed=%d",
+			market, len(symbols), missing, abnormal, repairedSymbols, repairedBuckets, failed)
+	}
+	return nil
+}
+
+func (s *Service) claimWatchdogRepair(market, symbol string, nowMS, cooldownMS int64) bool {
+	key := market + ":" + symbol
+	s.watchdogMu.Lock()
+	defer s.watchdogMu.Unlock()
+	last := s.watchdogLastRepair[key]
+	if nowMS-last < cooldownMS {
+		return false
+	}
+	s.watchdogLastRepair[key] = nowMS
+	return true
+}
+
+func badTradeBucketRow(r store.TradeBucketHealthRow) bool {
+	if r.OpenPrice == nil || r.ClosePrice == nil || r.HighPrice == nil || r.LowPrice == nil {
+		return true
+	}
+	if r.TradeCount <= 0 {
+		return true
+	}
+	if r.QuoteNotional <= 0 {
+		return true
+	}
+	return false
+}
+
+func (s *Service) repairTradeBucketsFromREST(ctx context.Context, market, symbol string, issueStartMS, issueEndMS, lastClosedStart int64, limitMinutes int) (int, error) {
+	if issueStartMS > issueEndMS || issueEndMS < 0 {
+		return 0, nil
+	}
+	limit := max(10, limitMinutes)
+	klines, err := s.binance.GetKlines(ctx, market, symbol, "1m", limit)
+	if err != nil {
+		return 0, err
+	}
+
+	rows := make([]store.TradeBucketSnapshotRow, 0, len(klines))
+	for _, row := range klines {
+		if len(row) < 11 {
+			continue
+		}
+		openTime, ok := toInt64(row[0])
+		if !ok {
+			continue
+		}
+		if openTime < issueStartMS || openTime > issueEndMS || openTime > lastClosedStart {
+			continue
+		}
+		closeTime, _ := toInt64(row[6])
+		o := toDecimal(row[1])
+		h := toDecimal(row[2])
+		l := toDecimal(row[3])
+		c := toDecimal(row[4])
+		quoteNotional := toDecimal(row[7])
+		trades, _ := toInt64(row[8])
+		takerBuyQuote := toDecimal(row[10])
+		takerSellQuote := quoteNotional.Sub(takerBuyQuote)
+		if takerSellQuote.IsNegative() {
+			takerSellQuote = decimal.Zero
+		}
+		if !quoteNotional.GreaterThan(decimal.Zero) || trades <= 0 {
+			continue
+		}
+
+		openF, _ := o.Float64()
+		highF, _ := h.Float64()
+		lowF, _ := l.Float64()
+		closeF, _ := c.Float64()
+		qvF, _ := quoteNotional.Float64()
+		tbqF, _ := takerBuyQuote.Float64()
+		tsqF, _ := takerSellQuote.Float64()
+
+		openTimeCopy := openTime
+		closeTimeCopy := closeTime
+		openPriceCopy := openF
+		highPriceCopy := highF
+		lowPriceCopy := lowF
+		closePriceCopy := closeF
+
+		rows = append(rows, store.TradeBucketSnapshotRow{
+			Market:            market,
+			Symbol:            symbol,
+			Bucket:            "1m",
+			BucketStartMS:     openTime,
+			TakerBuyNotional:  tbqF,
+			TakerSellNotional: tsqF,
+			QuoteNotional:     qvF,
+			TradeCount:        trades,
+			FirstTradeMS:      &openTimeCopy,
+			LastTradeMS:       &closeTimeCopy,
+			OpenPrice:         &openPriceCopy,
+			ClosePrice:        &closePriceCopy,
+			HighPrice:         &highPriceCopy,
+			LowPrice:          &lowPriceCopy,
+		})
+	}
+
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	return s.store.UpsertTradeBucketSnapshots(ctx, rows, s.cfg.IngestDBBatchSize)
 }
 
 func (s *Service) refreshOI(ctx context.Context) error {

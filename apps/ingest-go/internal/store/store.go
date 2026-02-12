@@ -393,6 +393,114 @@ func (s *Store) UpsertOISnapshots(ctx context.Context, rows []OISnapshotRow) err
 	return batch.Send()
 }
 
+type TradeBucketSnapshotRow struct {
+	Market            string
+	Symbol            string
+	Bucket            string
+	BucketStartMS     int64
+	TakerBuyNotional  float64
+	TakerSellNotional float64
+	QuoteNotional     float64
+	TradeCount        int64
+	FirstTradeMS      *int64
+	LastTradeMS       *int64
+	OpenPrice         *float64
+	ClosePrice        *float64
+	HighPrice         *float64
+	LowPrice          *float64
+}
+
+func (s *Store) UpsertTradeBucketSnapshots(ctx context.Context, rows []TradeBucketSnapshotRow, batchSize int) (int, error) {
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	version := uint64(time.Now().UTC().UnixMilli())
+	for _, part := range chunk(rows, batchSize) {
+		batch, err := s.ch.PrepareBatch(ctx, `INSERT INTO trade_buckets (
+			market, symbol, bucket, bucket_start_ms,
+			taker_buy_notional, taker_sell_notional, quote_notional, trade_count,
+			first_trade_ms, last_trade_ms, open_price, close_price, high_price, low_price, version
+		)`)
+		if err != nil {
+			return 0, err
+		}
+		for _, r := range part {
+			if err := batch.Append(
+				r.Market, r.Symbol, r.Bucket, r.BucketStartMS,
+				r.TakerBuyNotional, r.TakerSellNotional, r.QuoteNotional, r.TradeCount,
+				ptrToAny(r.FirstTradeMS), ptrToAny(r.LastTradeMS),
+				ptrToAny(r.OpenPrice), ptrToAny(r.ClosePrice), ptrToAny(r.HighPrice), ptrToAny(r.LowPrice),
+				version,
+			); err != nil {
+				return 0, err
+			}
+		}
+		if err := batch.Send(); err != nil {
+			return 0, err
+		}
+	}
+	return len(rows), nil
+}
+
+type TradeBucketHealthRow struct {
+	Symbol        string
+	BucketStartMS int64
+	TradeCount    int64
+	QuoteNotional float64
+	OpenPrice     *float64
+	ClosePrice    *float64
+	HighPrice     *float64
+	LowPrice      *float64
+}
+
+func (s *Store) QueryTradeBucketHealthRows(ctx context.Context, market string, symbols []string, startMS, endMS int64) ([]TradeBucketHealthRow, error) {
+	if len(symbols) == 0 || startMS > endMS {
+		return []TradeBucketHealthRow{}, nil
+	}
+
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(symbols)), ",")
+	sql := fmt.Sprintf(`SELECT
+		symbol, bucket_start_ms, trade_count, quote_notional, open_price, close_price, high_price, low_price
+	FROM trade_buckets FINAL
+	WHERE market = ? AND bucket = '1m'
+	  AND symbol IN (%s)
+	  AND bucket_start_ms >= ?
+	  AND bucket_start_ms <= ?
+	ORDER BY symbol ASC, bucket_start_ms ASC`, placeholders)
+
+	args := make([]any, 0, len(symbols)+3)
+	args = append(args, market)
+	for _, sym := range symbols {
+		args = append(args, sym)
+	}
+	args = append(args, startMS, endMS)
+
+	rows, err := s.ch.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]TradeBucketHealthRow, 0, len(symbols)*8)
+	for rows.Next() {
+		var r TradeBucketHealthRow
+		if err := rows.Scan(
+			&r.Symbol,
+			&r.BucketStartMS,
+			&r.TradeCount,
+			&r.QuoteNotional,
+			&r.OpenPrice,
+			&r.ClosePrice,
+			&r.HighPrice,
+			&r.LowPrice,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // ---------------------------------------------------------------------------
 // ClickHouse connection & schema
 // ---------------------------------------------------------------------------
