@@ -42,19 +42,21 @@
 
   api:
     build:
-      context: ../apps/api
+      context: ../apps/api-go
       dockerfile: Dockerfile
-    mem_limit: 768m
+    mem_limit: 512m
+    restart: unless-stopped
     env_file:
       - ../.env
     volumes:
       - coinmark_appdata:/data
     depends_on:
+      clickhouse:
+        condition: service_healthy
       redis:
         condition: service_healthy
     ports:
       - "8000:8000"
-    command: ["python", "-m", "coinmark_api.main"]
 
   ingest:
     build:
