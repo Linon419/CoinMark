@@ -48,6 +48,8 @@
     restart: unless-stopped
     env_file:
       - ../.env
+    environment:
+      TG_ENABLED: "true"
     volumes:
       - coinmark_appdata:/data
     depends_on:
@@ -57,6 +59,20 @@
         condition: service_healthy
     ports:
       - "8000:8000"
+
+  tg-query-py:
+    build:
+      context: ../apps/tg-query-py
+      dockerfile: Dockerfile
+    mem_limit: 256m
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      TG_API_BASE: http://api:8000
+    depends_on:
+      api:
+        condition: service_started
 
   ingest:
     build:

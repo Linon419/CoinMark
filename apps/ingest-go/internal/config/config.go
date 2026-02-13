@@ -36,13 +36,17 @@ type Config struct {
 	BucketWatchdogWindowMin        int
 	BucketWatchdogMaxRepairMinutes int
 	BucketWatchdogCooldownSec      int
+	BucketWatchdogDiffCheckTopN    int
+	BucketWatchdogDiffCheckBatch   int
+	BucketWatchdogHotSymbols       []string
 
 	OIRefreshTopN        int
 	OIRefreshIntervalSec int
 
-	BinanceSpotREST     string
-	BinanceFuturesREST  string
-	BinanceBapiProducts string
+	BinanceSpotREST       string
+	BinanceFuturesREST    string
+	BinanceBapiProducts   string
+	BinanceBapiCompliance string
 }
 
 func mustInt(name string, def int) int {
@@ -77,6 +81,28 @@ func mustString(name, def string) string {
 	return v
 }
 
+func mustStringSlice(name string, def []string) []string {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return append([]string(nil), def...)
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for _, p := range parts {
+		s := strings.ToUpper(strings.TrimSpace(p))
+		if s == "" {
+			continue
+		}
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	return out
+}
+
 func Load() (*Config, error) {
 	c := &Config{
 		IngestClickHouseURL: mustString("INGEST_CLICKHOUSE_URL", mustString("CLICKHOUSE_URL", "")),
@@ -101,18 +127,22 @@ func Load() (*Config, error) {
 		Backfill1mLimit:     mustInt("BACKFILL_1M_LIMIT", 1500),
 
 		BucketWatchdogEnable:           mustBool("BUCKET_WATCHDOG_ENABLE", true),
-		BucketWatchdogIntervalSec:      mustInt("BUCKET_WATCHDOG_INTERVAL_SEC", 30),
+		BucketWatchdogIntervalSec:      mustInt("BUCKET_WATCHDOG_INTERVAL_SEC", 60),
 		BucketWatchdogTopN:             mustInt("BUCKET_WATCHDOG_TOP_N", 120),
 		BucketWatchdogWindowMin:        mustInt("BUCKET_WATCHDOG_WINDOW_MIN", 10),
 		BucketWatchdogMaxRepairMinutes: mustInt("BUCKET_WATCHDOG_MAX_REPAIR_MIN", 180),
 		BucketWatchdogCooldownSec:      mustInt("BUCKET_WATCHDOG_COOLDOWN_SEC", 90),
+		BucketWatchdogDiffCheckTopN:    mustInt("BUCKET_WATCHDOG_DIFF_CHECK_TOP_N", 120),
+		BucketWatchdogDiffCheckBatch:   mustInt("BUCKET_WATCHDOG_DIFF_CHECK_BATCH", 10),
+		BucketWatchdogHotSymbols:       mustStringSlice("BUCKET_WATCHDOG_HOT_SYMBOLS", []string{"BTCUSDT", "ETHUSDT", "SOLUSDT"}),
 
 		OIRefreshTopN:        mustInt("OI_REFRESH_TOP_N", 300),
 		OIRefreshIntervalSec: mustInt("OI_REFRESH_INTERVAL_SEC", 300),
 
-		BinanceSpotREST:     mustString("BINANCE_SPOT_REST", "https://api.binance.com"),
-		BinanceFuturesREST:  mustString("BINANCE_FUTURES_REST", "https://fapi.binance.com"),
-		BinanceBapiProducts: mustString("BINANCE_BAPI_PRODUCTS", "https://www.binance.com/bapi/asset/v2/public/asset-service/product/get-products"),
+		BinanceSpotREST:       mustString("BINANCE_SPOT_REST", "https://api.binance.com"),
+		BinanceFuturesREST:    mustString("BINANCE_FUTURES_REST", "https://fapi.binance.com"),
+		BinanceBapiProducts:   mustString("BINANCE_BAPI_PRODUCTS", "https://www.binance.com/bapi/asset/v2/public/asset-service/product/get-products"),
+		BinanceBapiCompliance: mustString("BINANCE_BAPI_COMPLIANCE", "https://www.binance.com/bapi/apex/v1/friendly/apex/marketing/complianceSymbolList"),
 	}
 
 	if !c.IngestEnableSpot && !c.IngestEnableSwap {

@@ -32,6 +32,8 @@ type AnomalyNotifier struct {
 	lastID          int64
 }
 
+const tgNotifyWhaleWallFar = "whale_wall_far"
+
 func NewAnomalyNotifier(store *sqlite.Store, redis *redisrepo.Store, chatID, market, minLevel, prefix string, pollSec, batchWin, batchMax int) *AnomalyNotifier {
 	if pollSec < 2 {
 		pollSec = 5
@@ -99,6 +101,9 @@ func (n *AnomalyNotifier) poll(ctx context.Context) []model.AnomalyEvent {
 		if r.ID > n.lastID {
 			n.lastID = r.ID
 		}
+		if !shouldTgNotifyEventType(r.EventType) {
+			continue
+		}
 		if binance.IsExcludedSymbol(r.Symbol) {
 			continue
 		}
@@ -114,6 +119,10 @@ func (n *AnomalyNotifier) poll(ctx context.Context) []model.AnomalyEvent {
 
 	n.persistLastID(ctx)
 	return filtered
+}
+
+func shouldTgNotifyEventType(eventType string) bool {
+	return strings.EqualFold(strings.TrimSpace(eventType), tgNotifyWhaleWallFar)
 }
 
 func (n *AnomalyNotifier) bootstrapLastID(ctx context.Context) {

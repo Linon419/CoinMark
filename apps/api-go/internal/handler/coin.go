@@ -709,7 +709,7 @@ func handleFundSnapshots(d *Deps) gin.HandlerFunc {
 			idx := 0
 			total := 0.0
 			for _, cutoff := range cutoffs {
-				for idx < len(entries) && entries[idx].Ts < cutoff {
+				for idx < len(entries) && entries[idx].Ts <= cutoff {
 					total += entries[idx].Net
 					idx++
 				}

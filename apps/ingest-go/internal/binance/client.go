@@ -52,6 +52,7 @@ func (c *Client) getJSON(ctx context.Context, endpoint string, query map[string]
 	if err != nil {
 		return err
 	}
+	req.Header.Set("User-Agent", "coinmark-ingest/1.0")
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return err
@@ -65,10 +66,25 @@ func (c *Client) getJSON(ctx context.Context, endpoint string, query map[string]
 
 type exchangeInfoResp struct {
 	Symbols []struct {
-		Symbol     string `json:"symbol"`
-		QuoteAsset string `json:"quoteAsset"`
-		Status     string `json:"status"`
+		Symbol       string `json:"symbol"`
+		QuoteAsset   string `json:"quoteAsset"`
+		Status       string `json:"status"`
+		ContractType string `json:"contractType"`
 	} `json:"symbols"`
+}
+
+func isPlainUSDTSymbol(sym string) bool {
+	if !strings.HasSuffix(sym, "USDT") || len(sym) <= 4 {
+		return false
+	}
+	base := sym[:len(sym)-4]
+	for i := 0; i < len(base); i++ {
+		ch := base[i]
+		if (ch < 'A' || ch > 'Z') && (ch < '0' || ch > '9') {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *Client) GetPairs(ctx context.Context, market string) ([]string, error) {
@@ -95,6 +111,12 @@ func (c *Client) GetPairs(ctx context.Context, market string) ([]string, error) 
 	out := make([]string, 0, len(resp.Symbols))
 	for _, s := range resp.Symbols {
 		if s.QuoteAsset != "USDT" || s.Status != "TRADING" || s.Symbol == "" {
+			continue
+		}
+		if market == "swap" && s.ContractType != "PERPETUAL" {
+			continue
+		}
+		if !isPlainUSDTSymbol(s.Symbol) {
 			continue
 		}
 		out = append(out, s.Symbol)
@@ -212,6 +234,17 @@ func (c *Client) GetBinanceBapiProducts(ctx context.Context) ([]map[string]inter
 	}
 	if resp.Code != "000000" {
 		return nil, fmt.Errorf("bapi code=%s", resp.Code)
+	}
+	return resp.Data, nil
+}
+
+func (c *Client) GetBinanceComplianceSymbols(ctx context.Context) ([]map[string]interface{}, error) {
+	var resp bapiResp
+	if err := c.getJSON(ctx, c.cfg.BinanceBapiCompliance, nil, &resp); err != nil {
+		return nil, err
+	}
+	if resp.Code != "000000" {
+		return nil, fmt.Errorf("compliance code=%s", resp.Code)
 	}
 	return resp.Data, nil
 }

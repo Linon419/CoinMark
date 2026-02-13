@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"coinmark/api-go/internal/binance"
@@ -11,18 +12,28 @@ import (
 	"coinmark/api-go/internal/repo/sqlite"
 )
 
+const hubNotifyWhaleWallFar = "whale_wall_far"
+
 type AnomalyStream struct {
-	store     *sqlite.Store
-	pub       *Publisher
-	batchSize int
-	lastID    int64
+	store      *sqlite.Store
+	pub        *Publisher
+	batchSize  int
+	lastID     int64
+	cooldownMs int64
+	recentSent map[string]int64
 }
 
 func NewAnomalyStream(store *sqlite.Store, pub *Publisher, batchSize int) *AnomalyStream {
 	if batchSize < 1 {
 		batchSize = 200
 	}
-	return &AnomalyStream{store: store, pub: pub, batchSize: batchSize}
+	return &AnomalyStream{
+		store:      store,
+		pub:        pub,
+		batchSize:  batchSize,
+		cooldownMs: 10 * 60 * 1000,
+		recentSent: make(map[string]int64),
+	}
 }
 
 func (s *AnomalyStream) RunLoop(ctx context.Context, intervalSec int, stopCh <-chan struct{}) {
@@ -54,7 +65,13 @@ func (s *AnomalyStream) pollOnce(ctx context.Context) {
 		if r.ID > s.lastID {
 			s.lastID = r.ID
 		}
+		if !shouldNotifyEventType(r.EventType) {
+			continue
+		}
 		if binance.IsExcludedSymbol(r.Symbol) {
+			continue
+		}
+		if s.hitCooldown(r.EventType, r.Symbol) {
 			continue
 		}
 		evt := anomalyToHubEvent(r)
@@ -63,24 +80,11 @@ func (s *AnomalyStream) pollOnce(ctx context.Context) {
 }
 
 func anomalyToHubEvent(r model.AnomalyEvent) HubEvent {
-	level := "info"
-	evtType := "ANOMALY_" + r.EventType
-	switch r.EventType {
-	case "breakout_up", "breakout_down":
-		level = "warning"
-		if r.EventType == "breakout_up" {
-			evtType = "ANOMALY_BREAKOUT_UP"
-		} else {
-			evtType = "ANOMALY_BREAKOUT_DOWN"
-		}
-	case "volume_spike":
-		evtType = "ANOMALY_VOLUME_SPIKE"
-	case "amplitude_spike":
-		evtType = "ANOMALY_AMPLITUDE_SPIKE"
-	}
+	level := toHubEventLevel(r.EventType)
+	evtType := toHubEventType(r.EventType)
 
 	minuteBucket := r.EventTimeMs / 60000
-	dedupeKey := fmt.Sprintf("anomaly:%s:%s:%s:%d", r.Market, r.Symbol, r.EventType, minuteBucket)
+	dedupeKey := fmt.Sprintf("anomaly:%s:%s:%s:%d", r.Market, r.Symbol, evtType, minuteBucket)
 
 	meta := make(map[string]interface{})
 	meta["event_type"] = r.EventType
@@ -89,16 +93,48 @@ func anomalyToHubEvent(r model.AnomalyEvent) HubEvent {
 		meta["tf_level"] = *r.TfLevel
 	}
 
+	content := strings.TrimSpace(r.Title)
+	if content == "" {
+		content = string(r.Details)
+	}
+
 	return HubEvent{
 		ID:        fmt.Sprintf("ae-%d", r.ID),
 		Type:      evtType,
 		Level:     level,
 		Title:     r.Title,
-		Content:   string(r.Details),
+		Content:   content,
 		Symbol:    r.Symbol,
 		Market:    r.Market,
 		Ts:        r.EventTimeMs,
 		Meta:      meta,
 		DedupeKey: dedupeKey,
 	}
+}
+
+func shouldNotifyEventType(eventType string) bool {
+	return strings.EqualFold(strings.TrimSpace(eventType), hubNotifyWhaleWallFar)
+}
+
+func (s *AnomalyStream) hitCooldown(eventType, symbol string) bool {
+	if s.cooldownMs <= 0 {
+		return false
+	}
+	nowMs := time.Now().UnixMilli()
+	key := strings.ToUpper(strings.TrimSpace(eventType)) + "|" + strings.ToUpper(strings.TrimSpace(symbol))
+	if last, ok := s.recentSent[key]; ok && nowMs-last < s.cooldownMs {
+		return true
+	}
+	s.recentSent[key] = nowMs
+
+	// Keep the map bounded for long-running processes.
+	if len(s.recentSent) > 2000 {
+		cutoff := nowMs - s.cooldownMs
+		for k, last := range s.recentSent {
+			if last < cutoff {
+				delete(s.recentSent, k)
+			}
+		}
+	}
+	return false
 }

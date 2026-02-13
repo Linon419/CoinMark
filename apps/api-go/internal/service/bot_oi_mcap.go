@@ -25,6 +25,20 @@ func baseFromSymbol(symbol string) string {
 	return symbol
 }
 
+func isPlainUSDTSymbol(symbol string) bool {
+	if !strings.HasSuffix(symbol, "USDT") || len(symbol) <= 4 {
+		return false
+	}
+	base := symbol[:len(symbol)-4]
+	for i := 0; i < len(base); i++ {
+		ch := base[i]
+		if (ch < 'A' || ch > 'Z') && (ch < '0' || ch > '9') {
+			return false
+		}
+	}
+	return true
+}
+
 func GetOIMarketCapRank(ctx context.Context, ch *chrepo.Client, limit int) ([]OIMcapItem, error) {
 	oiRows, err := ch.QueryOISnapshots(ctx)
 	if err != nil {
@@ -41,6 +55,9 @@ func GetOIMarketCapRank(ctx context.Context, ch *chrepo.Client, limit int) ([]OI
 
 	var items []OIMcapItem
 	for _, oi := range oiRows {
+		if !isPlainUSDTSymbol(oi.Symbol) {
+			continue
+		}
 		asset := baseFromSymbol(oi.Symbol)
 		idx, ok := capMap[asset]
 		if !ok {

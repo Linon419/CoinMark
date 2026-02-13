@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"log"
 	"math"
 	"math/rand"
@@ -14,6 +16,12 @@ import (
 	"coinmark/api-go/internal/binance"
 	"coinmark/api-go/internal/config"
 	"coinmark/api-go/internal/repo/sqlite"
+)
+
+const (
+	whaleWallFarEventType      = "whale_wall_far"
+	whaleWallFarMinDistancePct = 2.0
+	whaleWallFarMinNotionalUSD = 1_000_000.0
 )
 
 // ---------------------------------------------------------------------------
@@ -206,6 +214,81 @@ ON CONFLICT(market, symbol, bucket_start_ms, side, price_bin) DO UPDATE SET
 	})
 }
 
+type whaleWallFarEvent struct {
+	Side        string
+	WallPrice   float64
+	LatestPrice float64
+	DistancePct float64
+	NotionalUSD float64
+	BucketStart int64
+}
+
+func pickWhaleWallFar(rows []heatmapRow, latestPrice float64) *whaleWallFarEvent {
+	if latestPrice <= 0 || len(rows) == 0 {
+		return nil
+	}
+	var best *whaleWallFarEvent
+	for _, row := range rows {
+		if row.PriceBin <= 0 || row.Intensity <= 0 {
+			continue
+		}
+		distancePct := math.Abs((row.PriceBin-latestPrice)/latestPrice) * 100
+		if distancePct <= whaleWallFarMinDistancePct {
+			continue
+		}
+		if row.Intensity < whaleWallFarMinNotionalUSD {
+			continue
+		}
+		candidate := whaleWallFarEvent{
+			Side:        strings.ToLower(strings.TrimSpace(row.Side)),
+			WallPrice:   row.PriceBin,
+			LatestPrice: latestPrice,
+			DistancePct: distancePct,
+			NotionalUSD: row.Intensity,
+			BucketStart: row.BucketStartMs,
+		}
+		if best == nil || candidate.NotionalUSD > best.NotionalUSD {
+			tmp := candidate
+			best = &tmp
+		}
+	}
+	return best
+}
+
+func insertWhaleWallFarEvent(ctx context.Context, store *sqlite.Store, market, symbol string, event whaleWallFarEvent) error {
+	if event.BucketStart <= 0 {
+		return nil
+	}
+	sideText := "ask"
+	if event.Side == "bid" {
+		sideText = "bid"
+	}
+	title := fmt.Sprintf("%s %s wall %.2fM USDT, %.2f%% away",
+		symbol, sideText, event.NotionalUSD/1_000_000.0, event.DistancePct)
+	detailBytes, _ := json.Marshal(map[string]interface{}{
+		"side":        sideText,
+		"wallPrice":   event.WallPrice,
+		"latestPrice": event.LatestPrice,
+		"distancePct": math.Round(event.DistancePct*100) / 100,
+		"valueUSDT":   math.Round(event.NotionalUSD*100) / 100,
+		"signalState": "ALERT",
+		"score":       90,
+	})
+	_, err := insertAnomalyEvents(ctx, store, []map[string]interface{}{
+		{
+			"market":        market,
+			"symbol":        symbol,
+			"event_type":    whaleWallFarEventType,
+			"tf_signal":     "1m",
+			"tf_level":      nil,
+			"event_time_ms": event.BucketStart,
+			"title":         title,
+			"details":       string(detailBytes),
+		},
+	})
+	return err
+}
+
 // ---------------------------------------------------------------------------
 // Symbol parsing + tiers
 // ---------------------------------------------------------------------------
@@ -382,10 +465,15 @@ func (ds *DepthScanner) fetchOne(ctx context.Context, market, symbol string, lim
 			}
 		}
 		if heatDepth != nil {
-			rows, _ := buildHeatmapRows(targetMarket, symbol, heatDepth, time.Now().UnixMilli(), ds.cfg)
+			rows, mid := buildHeatmapRows(targetMarket, symbol, heatDepth, time.Now().UnixMilli(), ds.cfg)
 			if len(rows) > 0 {
 				if err := writeHeatmapRows(ctx, ds.store, rows); err != nil {
 					log.Printf("depth_scan: heatmap write failed market=%s symbol=%s: %v", targetMarket, symbol, err)
+				}
+				if evt := pickWhaleWallFar(rows, mid); evt != nil {
+					if err := insertWhaleWallFarEvent(ctx, ds.store, targetMarket, symbol, *evt); err != nil {
+						log.Printf("depth_scan: whale wall event write failed market=%s symbol=%s: %v", targetMarket, symbol, err)
+					}
 				}
 			}
 		}

@@ -443,14 +443,16 @@ func (s *Store) UpsertTradeBucketSnapshots(ctx context.Context, rows []TradeBuck
 }
 
 type TradeBucketHealthRow struct {
-	Symbol        string
-	BucketStartMS int64
-	TradeCount    int64
-	QuoteNotional float64
-	OpenPrice     *float64
-	ClosePrice    *float64
-	HighPrice     *float64
-	LowPrice      *float64
+	Symbol            string
+	BucketStartMS     int64
+	TakerBuyNotional  float64
+	TakerSellNotional float64
+	TradeCount        int64
+	QuoteNotional     float64
+	OpenPrice         *float64
+	ClosePrice        *float64
+	HighPrice         *float64
+	LowPrice          *float64
 }
 
 func (s *Store) QueryTradeBucketHealthRows(ctx context.Context, market string, symbols []string, startMS, endMS int64) ([]TradeBucketHealthRow, error) {
@@ -460,7 +462,7 @@ func (s *Store) QueryTradeBucketHealthRows(ctx context.Context, market string, s
 
 	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(symbols)), ",")
 	sql := fmt.Sprintf(`SELECT
-		symbol, bucket_start_ms, trade_count, quote_notional, open_price, close_price, high_price, low_price
+		symbol, bucket_start_ms, taker_buy_notional, taker_sell_notional, trade_count, quote_notional, open_price, close_price, high_price, low_price
 	FROM trade_buckets FINAL
 	WHERE market = ? AND bucket = '1m'
 	  AND symbol IN (%s)
@@ -487,6 +489,8 @@ func (s *Store) QueryTradeBucketHealthRows(ctx context.Context, market string, s
 		if err := rows.Scan(
 			&r.Symbol,
 			&r.BucketStartMS,
+			&r.TakerBuyNotional,
+			&r.TakerSellNotional,
 			&r.TradeCount,
 			&r.QuoteNotional,
 			&r.OpenPrice,

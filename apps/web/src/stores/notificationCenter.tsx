@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Message } from "@arco-design/web-react";
 import { hubClient } from "../services/hubClient";
+import { DEFAULT_NOTIFY_TYPES } from "../constants/notify";
 import type { HubEvent, HubStatus } from "../types/hub";
 
 export type NotificationItem = {
@@ -21,6 +22,7 @@ type NotificationCenterState = {
   items: NotificationItem[];
   unread: number;
   open: boolean;
+  showAllTypes: boolean;
   muted: boolean;
   muteTypes: string[];
   muteSymbols: string[];
@@ -32,12 +34,14 @@ type NotificationCenterContextValue = NotificationCenterState & {
   closePanel: () => void;
   markAllRead: () => void;
   clearAll: () => void;
+  toggleShowAllTypes: () => void;
   toggleMute: () => void;
   toggleTypeMute: (type: string) => void;
   toggleSymbolMute: (symbol: string) => void;
 };
 
 const STORAGE_MUTED = "coinmark_notify_muted";
+const STORAGE_SHOW_ALL_TYPES = "coinmark_notify_show_all_types";
 const STORAGE_MUTE_TYPES = "coinmark_notify_mute_types";
 const STORAGE_MUTE_SYMBOLS = "coinmark_notify_mute_symbols";
 const MAX_ITEMS = Number((import.meta as any).env?.VITE_NOTIFY_MAX_ITEMS || 200);
@@ -85,6 +89,7 @@ const NotificationCenterContext = createContext<NotificationCenterContextValue |
 export function NotificationCenterProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<NotificationItem[]>([]);
   const [open, setOpen] = useState(false);
+  const [showAllTypes, setShowAllTypes] = useState(() => readBoolean(STORAGE_SHOW_ALL_TYPES, false));
   const [muted, setMuted] = useState(() => readBoolean(STORAGE_MUTED, false));
   const [muteTypes, setMuteTypes] = useState<string[]>(() => readStringArray(STORAGE_MUTE_TYPES));
   const [muteSymbols, setMuteSymbols] = useState<string[]>(() => readStringArray(STORAGE_MUTE_SYMBOLS));
@@ -100,6 +105,10 @@ export function NotificationCenterProvider({ children }: { children: ReactNode }
   useEffect(() => {
     itemsRef.current = items;
   }, [items]);
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_SHOW_ALL_TYPES, String(showAllTypes));
+  }, [showAllTypes]);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_MUTED, String(muted));
@@ -173,7 +182,6 @@ export function NotificationCenterProvider({ children }: { children: ReactNode }
     const offEvent = hubClient.onEvent(pushEvent);
     const offStatus = hubClient.onStatus(setHubStatus);
     hubClient.connect();
-    hubClient.subscribe({});
 
     return () => {
       offEvent();
@@ -181,6 +189,10 @@ export function NotificationCenterProvider({ children }: { children: ReactNode }
       hubClient.disconnect();
     };
   }, [pushEvent]);
+
+  useEffect(() => {
+    hubClient.subscribe(showAllTypes ? {} : { types: [...DEFAULT_NOTIFY_TYPES] });
+  }, [showAllTypes]);
 
   const unread = useMemo(() => items.reduce((acc, item) => acc + (item.unread ? 1 : 0), 0), [items]);
 
@@ -190,6 +202,10 @@ export function NotificationCenterProvider({ children }: { children: ReactNode }
 
   const clearAll = useCallback(() => {
     setItems([]);
+  }, []);
+
+  const toggleShowAllTypes = useCallback(() => {
+    setShowAllTypes((prev) => !prev);
   }, []);
 
   const toggleMute = useCallback(() => {
@@ -219,6 +235,7 @@ export function NotificationCenterProvider({ children }: { children: ReactNode }
       items,
       unread,
       open,
+      showAllTypes,
       muted,
       muteTypes,
       muteSymbols,
@@ -227,11 +244,27 @@ export function NotificationCenterProvider({ children }: { children: ReactNode }
       closePanel: () => setOpen(false),
       markAllRead,
       clearAll,
+      toggleShowAllTypes,
       toggleMute,
       toggleTypeMute,
       toggleSymbolMute,
     }),
-    [clearAll, hubStatus, items, markAllRead, muteSymbols, muteTypes, muted, open, toggleMute, toggleSymbolMute, toggleTypeMute, unread]
+    [
+      clearAll,
+      hubStatus,
+      items,
+      markAllRead,
+      muteSymbols,
+      muteTypes,
+      muted,
+      open,
+      showAllTypes,
+      toggleMute,
+      toggleShowAllTypes,
+      toggleSymbolMute,
+      toggleTypeMute,
+      unread,
+    ]
   );
 
   return <NotificationCenterContext.Provider value={value}>{children}</NotificationCenterContext.Provider>;

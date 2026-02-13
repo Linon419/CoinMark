@@ -3,7 +3,9 @@ package runtime
 import (
 	"context"
 	"log"
+	"math"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -25,6 +27,7 @@ type Service struct {
 
 	watchdogMu         sync.Mutex
 	watchdogLastRepair map[string]int64
+	watchdogDiffCursor map[string]int
 }
 
 func NewService(cfg *config.Config, st *store.Store, bc *binance.Client, stats *Stats, tradeAgg *ingest.TradeAggregator, obAgg *ingest.OrderbookAggregator) *Service {
@@ -37,6 +40,7 @@ func NewService(cfg *config.Config, st *store.Store, bc *binance.Client, stats *
 		obAgg:    obAgg,
 
 		watchdogLastRepair: make(map[string]int64),
+		watchdogDiffCursor: make(map[string]int),
 	}
 }
 
@@ -163,20 +167,54 @@ func (s *Service) MarketCapLoop(ctx context.Context) error {
 }
 
 func (s *Service) refreshMarketCaps(ctx context.Context) error {
-	items, err := s.binance.GetBinanceBapiProducts(ctx)
-	if err != nil {
-		return err
-	}
 	nowMS := time.Now().UTC().UnixMilli()
+	best := map[string]store.MarketCapRow{}
+
+	complianceItems, complianceErr := s.binance.GetBinanceComplianceSymbols(ctx)
+	if complianceErr != nil {
+		log.Printf("Marketcap compliance fetch failed: %v", complianceErr)
+	}
+	for _, it := range complianceItems {
+		asset := assetFromPairSymbol(toUpperString(it["symbol"]))
+		if asset == "" {
+			asset = normalizeAssetCode(toUpperString(it["name"]))
+		}
+		if asset == "" {
+			continue
+		}
+		marketCap := toDecimal(it["marketCap"])
+		price := toDecimal(it["price"])
+		supply := toDecimal(it["circulatingSupply"])
+		if !marketCap.GreaterThan(decimal.Zero) && price.GreaterThan(decimal.Zero) && supply.GreaterThan(decimal.Zero) {
+			marketCap = price.Mul(supply)
+		}
+		if !marketCap.GreaterThan(decimal.Zero) {
+			continue
+		}
+		best[asset] = store.MarketCapRow{
+			Asset:             asset,
+			PriceUSD:          price,
+			CirculatingSupply: supply,
+			MarketCapUSD:      marketCap,
+			Source:            "binance_bapi_compliance_symbol_list",
+			EventTimeMS:       nowMS,
+		}
+	}
+
+	items, productsErr := s.binance.GetBinanceBapiProducts(ctx)
+	if productsErr != nil {
+		log.Printf("Marketcap products fetch failed: %v", productsErr)
+	}
+
 	type candidate struct {
 		row store.MarketCapRow
 		pm  string
 		qv  decimal.Decimal
 	}
-	best := map[string]candidate{}
+	productBest := map[string]candidate{}
 	for _, it := range items {
-		base, _ := it["b"].(string)
-		pm, _ := it["pm"].(string)
+		base := normalizeAssetCode(toUpperString(it["b"]))
+		pm := toUpperString(it["pm"])
 		if base == "" || (pm != "USDT" && pm != "USDC") {
 			continue
 		}
@@ -198,18 +236,36 @@ func (s *Service) refreshMarketCaps(ctx context.Context) error {
 			pm: pm,
 			qv: qv,
 		}
-		prev, ok := best[base]
+		prev, ok := productBest[base]
 		if !ok {
-			best[base] = cand
+			productBest[base] = cand
 			continue
 		}
 		if betterCandidate(cand, prev) {
-			best[base] = cand
+			productBest[base] = cand
 		}
 	}
+
+	for asset, cand := range productBest {
+		if _, ok := best[asset]; ok {
+			continue
+		}
+		best[asset] = cand.row
+	}
+
+	if len(best) == 0 {
+		if complianceErr != nil {
+			return complianceErr
+		}
+		if productsErr != nil {
+			return productsErr
+		}
+		return nil
+	}
+
 	values := make([]store.MarketCapRow, 0, len(best))
-	for _, c := range best {
-		values = append(values, c.row)
+	for _, row := range best {
+		values = append(values, row)
 	}
 	return s.store.UpsertMarketCaps(ctx, values)
 }
@@ -230,6 +286,35 @@ func betterCandidate(a, b struct {
 		return ra < rb
 	}
 	return a.qv.GreaterThan(b.qv)
+}
+
+func toUpperString(v interface{}) string {
+	switch t := v.(type) {
+	case string:
+		return strings.ToUpper(strings.TrimSpace(t))
+	default:
+		return ""
+	}
+}
+
+func normalizeAssetCode(asset string) string {
+	if asset == "" {
+		return ""
+	}
+	for i := 0; i < len(asset); i++ {
+		ch := asset[i]
+		if (ch < 'A' || ch > 'Z') && (ch < '0' || ch > '9') {
+			return ""
+		}
+	}
+	return asset
+}
+
+func assetFromPairSymbol(sym string) string {
+	if !strings.HasSuffix(sym, "USDT") || len(sym) <= 4 {
+		return ""
+	}
+	return normalizeAssetCode(sym[:len(sym)-4])
 }
 
 func toDecimal(v interface{}) decimal.Decimal {
@@ -313,7 +398,8 @@ func (s *Service) runTradeBucketWatchdogMarket(ctx context.Context, market strin
 	const minuteMS int64 = 60 * 1000
 	nowMS := ingest.UtcNowMS()
 	lastClosedStart := (nowMS/minuteMS)*minuteMS - minuteMS
-	windowMin := max(3, s.cfg.BucketWatchdogWindowMin)
+	// Keep a wider lookback to repair older gaps instead of only the latest few minutes.
+	windowMin := max(60, s.cfg.BucketWatchdogWindowMin)
 	startMS := lastClosedStart - int64(windowMin-1)*minuteMS
 	if startMS < 0 {
 		startMS = 0
@@ -336,9 +422,39 @@ func (s *Service) runTradeBucketWatchdogMarket(ctx context.Context, market strin
 
 	cooldownMS := int64(max(1, s.cfg.BucketWatchdogCooldownSec)) * 1000
 	repairLimit := max(windowMin+2, s.cfg.BucketWatchdogMaxRepairMinutes)
+	diffCheckTopN := max(0, s.cfg.BucketWatchdogDiffCheckTopN)
+	diffCheckBatch := max(0, s.cfg.BucketWatchdogDiffCheckBatch)
+
+	symbolSet := make(map[string]struct{}, len(symbols))
+	for _, sym := range symbols {
+		symbolSet[sym] = struct{}{}
+	}
+	diffCheckSet := make(map[string]struct{}, diffCheckBatch+len(s.cfg.BucketWatchdogHotSymbols))
+	for _, hot := range s.cfg.BucketWatchdogHotSymbols {
+		if _, ok := symbolSet[hot]; ok {
+			diffCheckSet[hot] = struct{}{}
+		}
+	}
+
+	candidateTopN := diffCheckTopN
+	if candidateTopN > len(symbols) {
+		candidateTopN = len(symbols)
+	}
+	coldCandidates := make([]string, 0, candidateTopN)
+	for _, sym := range symbols[:candidateTopN] {
+		if _, hot := diffCheckSet[sym]; hot {
+			continue
+		}
+		coldCandidates = append(coldCandidates, sym)
+	}
+	for _, sym := range s.nextWatchdogDiffBatch(market, coldCandidates, diffCheckBatch) {
+		diffCheckSet[sym] = struct{}{}
+	}
+	diffChecked := len(diffCheckSet)
 
 	missing := 0
 	abnormal := 0
+	mismatch := 0
 	repairedSymbols := 0
 	repairedBuckets := 0
 	failed := 0
@@ -346,18 +462,44 @@ func (s *Service) runTradeBucketWatchdogMarket(ctx context.Context, market strin
 	for _, sym := range symbols {
 		byTs := bySymbol[sym]
 		issues := make([]int64, 0, windowMin)
+		issueSet := make(map[int64]struct{}, windowMin)
+		appendIssue := func(ts int64) {
+			if ts < startMS || ts > lastClosedStart {
+				return
+			}
+			if _, ok := issueSet[ts]; ok {
+				return
+			}
+			issueSet[ts] = struct{}{}
+			issues = append(issues, ts)
+		}
 		for ts := startMS; ts <= lastClosedStart; ts += minuteMS {
 			row, ok := byTs[ts]
 			if !ok {
 				missing++
-				issues = append(issues, ts)
+				appendIssue(ts)
 				continue
 			}
 			if badTradeBucketRow(row) {
 				abnormal++
-				issues = append(issues, ts)
+				appendIssue(ts)
 			}
 		}
+
+		if _, shouldCheckDiff := diffCheckSet[sym]; shouldCheckDiff {
+			mismatchIssues, mismatchErr := s.findTradeBucketMismatchIssues(ctx, market, sym, byTs, startMS, lastClosedStart, repairLimit)
+			if mismatchErr != nil {
+				log.Printf("trade bucket watchdog diff-check failed market=%s symbol=%s err=%v", market, sym, mismatchErr)
+			} else {
+				for _, ts := range mismatchIssues {
+					if _, ok := issueSet[ts]; !ok {
+						mismatch++
+						appendIssue(ts)
+					}
+				}
+			}
+		}
+
 		if len(issues) == 0 {
 			continue
 		}
@@ -366,6 +508,8 @@ func (s *Service) runTradeBucketWatchdogMarket(ctx context.Context, market strin
 			continue
 		}
 
+		log.Printf("trade bucket watchdog repair start market=%s symbol=%s issues=%d range=[%d,%d] last_closed=%d",
+			market, sym, len(issues), issues[0], issues[len(issues)-1], lastClosedStart)
 		n, repairErr := s.repairTradeBucketsFromREST(ctx, market, sym, issues[0], issues[len(issues)-1], lastClosedStart, repairLimit)
 		if repairErr != nil {
 			failed++
@@ -375,12 +519,19 @@ func (s *Service) runTradeBucketWatchdogMarket(ctx context.Context, market strin
 		if n > 0 {
 			repairedSymbols++
 			repairedBuckets += n
+			log.Printf("trade bucket watchdog repair ok market=%s symbol=%s rows=%d range=[%d,%d]",
+				market, sym, n, issues[0], issues[len(issues)-1])
+			continue
 		}
+		// Avoid entering cooldown when repair returns no rows (usually no kline returned for range).
+		s.releaseWatchdogRepair(market, sym)
+		log.Printf("trade bucket watchdog repair empty market=%s symbol=%s range=[%d,%d] cooldown_released=true",
+			market, sym, issues[0], issues[len(issues)-1])
 	}
 
-	if missing > 0 || abnormal > 0 || repairedSymbols > 0 || failed > 0 {
-		log.Printf("trade bucket watchdog market=%s checked=%d missing=%d abnormal=%d repaired_symbols=%d repaired_buckets=%d failed=%d",
-			market, len(symbols), missing, abnormal, repairedSymbols, repairedBuckets, failed)
+	if missing > 0 || abnormal > 0 || mismatch > 0 || repairedSymbols > 0 || failed > 0 {
+		log.Printf("trade bucket watchdog market=%s checked=%d diff_checked=%d missing=%d abnormal=%d mismatch=%d repaired_symbols=%d repaired_buckets=%d failed=%d",
+			market, len(symbols), diffChecked, missing, abnormal, mismatch, repairedSymbols, repairedBuckets, failed)
 	}
 	return nil
 }
@@ -397,6 +548,38 @@ func (s *Service) claimWatchdogRepair(market, symbol string, nowMS, cooldownMS i
 	return true
 }
 
+func (s *Service) releaseWatchdogRepair(market, symbol string) {
+	key := market + ":" + symbol
+	s.watchdogMu.Lock()
+	delete(s.watchdogLastRepair, key)
+	s.watchdogMu.Unlock()
+}
+
+func (s *Service) nextWatchdogDiffBatch(market string, candidates []string, batch int) []string {
+	if len(candidates) == 0 || batch <= 0 {
+		return nil
+	}
+	if batch > len(candidates) {
+		batch = len(candidates)
+	}
+
+	key := "diff:" + market
+	s.watchdogMu.Lock()
+	start := s.watchdogDiffCursor[key]
+	if start < 0 || start >= len(candidates) {
+		start = 0
+	}
+	out := make([]string, 0, batch)
+	for i := 0; i < batch; i++ {
+		idx := (start + i) % len(candidates)
+		out = append(out, candidates[idx])
+	}
+	s.watchdogDiffCursor[key] = (start + batch) % len(candidates)
+	s.watchdogMu.Unlock()
+
+	return out
+}
+
 func badTradeBucketRow(r store.TradeBucketHealthRow) bool {
 	if r.OpenPrice == nil || r.ClosePrice == nil || r.HighPrice == nil || r.LowPrice == nil {
 		return true
@@ -406,6 +589,92 @@ func badTradeBucketRow(r store.TradeBucketHealthRow) bool {
 	}
 	if r.QuoteNotional <= 0 {
 		return true
+	}
+	return false
+}
+
+func (s *Service) findTradeBucketMismatchIssues(ctx context.Context, market, symbol string, byTs map[int64]store.TradeBucketHealthRow, startMS, endMS int64, limitMinutes int) ([]int64, error) {
+	if startMS > endMS || len(byTs) == 0 {
+		return nil, nil
+	}
+
+	limit := max(10, limitMinutes)
+	klines, err := s.binance.GetKlines(ctx, market, symbol, "1m", limit)
+	if err != nil {
+		return nil, err
+	}
+
+	issues := make([]int64, 0, 4)
+	for _, row := range klines {
+		if len(row) < 11 {
+			continue
+		}
+		openTime, ok := toInt64(row[0])
+		if !ok || openTime < startMS || openTime > endMS {
+			continue
+		}
+		actual, ok := byTs[openTime]
+		if !ok {
+			continue
+		}
+
+		quoteNotional := toDecimal(row[7])
+		trades, _ := toInt64(row[8])
+		takerBuyQuote := toDecimal(row[10])
+		takerSellQuote := quoteNotional.Sub(takerBuyQuote)
+		if takerSellQuote.IsNegative() {
+			takerSellQuote = decimal.Zero
+		}
+
+		quoteF, _ := quoteNotional.Float64()
+		takerBuyF, _ := takerBuyQuote.Float64()
+		takerSellF, _ := takerSellQuote.Float64()
+		expectedNet := takerBuyF - takerSellF
+		if hasSignificantTradeBucketDiff(actual, expectedNet, quoteF, trades) {
+			issues = append(issues, openTime)
+		}
+	}
+	return issues, nil
+}
+
+func hasSignificantTradeBucketDiff(actual store.TradeBucketHealthRow, expectedNet, expectedQuote float64, expectedTrades int64) bool {
+	const (
+		netAbsThreshold   = 50_000.0
+		netRelThreshold   = 0.10
+		quoteAbsThreshold = 200_000.0
+		quoteRelThreshold = 0.05
+		tradeMinDiff      = int64(80)
+	)
+
+	actualNet := actual.TakerBuyNotional - actual.TakerSellNotional
+	netDiff := math.Abs(actualNet - expectedNet)
+	if netDiff >= netAbsThreshold {
+		base := math.Abs(expectedNet)
+		if base < 1 || netDiff/base >= netRelThreshold {
+			return true
+		}
+	}
+
+	quoteDiff := math.Abs(actual.QuoteNotional - expectedQuote)
+	if quoteDiff >= quoteAbsThreshold {
+		base := math.Abs(expectedQuote)
+		if base < 1 || quoteDiff/base >= quoteRelThreshold {
+			return true
+		}
+	}
+
+	if expectedTrades > 0 && actual.TradeCount > 0 {
+		diff := expectedTrades - actual.TradeCount
+		if diff < 0 {
+			diff = -diff
+		}
+		threshold := expectedTrades / 3
+		if threshold < tradeMinDiff {
+			threshold = tradeMinDiff
+		}
+		if diff >= threshold {
+			return true
+		}
 	}
 	return false
 }

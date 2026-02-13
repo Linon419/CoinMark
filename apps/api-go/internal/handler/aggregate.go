@@ -79,7 +79,8 @@ func handleReturns(d *Deps) gin.HandlerFunc {
 		bucketEnd := (nowMs / bucketMs) * bucketMs
 		bucketStart := bucketEnd - bucketMs
 
-		rows, err := d.CH.QueryTradeBuckets(c.Request.Context(), market, "", nil, bucket, bucketStart, bucketEnd, "asc", 0)
+		// Query the last closed bucket as [bucketStart, bucketEnd) to avoid right-edge overlap.
+		rows, err := d.CH.QueryTradeBuckets(c.Request.Context(), market, "", nil, bucket, bucketStart, bucketEnd-1, "asc", 0)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return

@@ -32,6 +32,7 @@ func RegisterRoutes(r *gin.Engine, d *Deps) {
 	registerSymbolRoutes(api, d)
 	registerUserRoutes(api, d)
 	registerAggregateRoutes(api, d)
+	registerTGRankRoutes(api, d)
 	registerAnomalyRoutes(api, d)
 	registerCoinRoutes(api, d)
 	registerSignalLabRoutes(api, d)

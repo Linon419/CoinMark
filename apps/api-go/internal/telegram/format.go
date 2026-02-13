@@ -107,6 +107,7 @@ func normalizeSymbol(s string) string {
 
 func eventTypeLabel(et string) string {
 	labels := map[string]string{
+		"whale_wall_far":  "远离现价大挂单",
 		"breakout_up":     "突破阻力",
 		"breakout_down":   "跌破支撑",
 		"volume_spike":    "量能异常",

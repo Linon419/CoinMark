@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 	"log"
 	"math"
 	"regexp"
@@ -84,6 +85,7 @@ func (qb *QueryBot) register() {
 	qb.bot.Handle("/ncd", qb.ncdCmd)
 	qb.bot.Handle("/oih", qb.oihCmd)
 	qb.bot.Handle("/oid", qb.oidCmd)
+	qb.bot.Handle("/day", qb.dayCmd)
 	qb.bot.Handle("/tz", qb.tzCmd)
 	qb.bot.Handle("/hotmarket", qb.stubCmd("/hotmarket"))
 	qb.bot.Handle("/suit", qb.stubCmd("/suit"))
@@ -92,6 +94,8 @@ func (qb *QueryBot) register() {
 	qb.bot.Handle("/awake", qb.stubCmd("/awake"))
 	qb.bot.Handle("/myfav", qb.stubCmd("/myfav"))
 	qb.bot.Handle("/settings", qb.stubCmd("/settings"))
+	qb.bot.Handle("\f"+rankPageCallbackUnique, qb.rankPageCallback)
+	qb.bot.Handle(&tele.Btn{Unique: rankPageCallbackUnique}, qb.rankPageCallback)
 	qb.bot.Handle(tele.OnText, qb.textCmd)
 }
 
@@ -122,12 +126,12 @@ func (qb *QueryBot) queryMenuCommands() []tele.Command {
 	return []tele.Command{
 		{Text: "menu", Description: "打开菜单"},
 		{Text: "overview", Description: "市场概览"},
-		{Text: "fi1d", Description: "合约当日净流入(最大30)"},
+		{Text: "fi1d", Description: "合约当日净流入(前30)"},
 		{Text: "fo1d", Description: "合约24h净流出"},
-		{Text: "si1d", Description: "现货当日净流入(最大30)"},
+		{Text: "si1d", Description: "现货当日净流入(前30)"},
 		{Text: "so1d", Description: "现货24h净流出"},
-		{Text: "r15m", Description: "近15分钟涨跌幅(1-60)"},
-		{Text: "r1h", Description: "近1小时涨跌幅(1-120)"},
+		{Text: "r15m", Description: "近15分钟涨跌榜(1-60)"},
+		{Text: "r1h", Description: "近1小时涨跌榜(1-120)"},
 		{Text: "bullindex", Description: "多头指数排行"},
 		{Text: "openinterest", Description: "持仓增幅排行"},
 		{Text: "oicapratio", Description: "持仓与市值比例排行"},
@@ -142,6 +146,7 @@ func (qb *QueryBot) queryMenuCommands() []tele.Command {
 		{Text: "ncd", Description: "资金每日流向(示例:/ncdBTC)"},
 		{Text: "oih", Description: "持仓盘间快照(示例:/oihBTC)"},
 		{Text: "oid", Description: "持仓近日变化(示例:/oidBTC)"},
+		{Text: "day", Description: "日内看盘(示例:/dayBTC)"},
 		{Text: "tz", Description: "设置时区 /tz set Australia/Sydney"},
 		{Text: "price", Description: "兼容: 价格快照"},
 		{Text: "fund", Description: "兼容: 资金快照"},
@@ -173,8 +178,9 @@ func (qb *QueryBot) sendMenu(c tele.Context, title string) error {
 		"/bullindex 30 /openinterest 30 - 排名",
 		"/oicapratio 30 - 持仓/市值比",
 		"/hotmarket /suit /fundrate /showtime /awake /myfav /settings - 预留命令",
+		"/dayBTC - 日内看盘",
 		"/nchBTC /ncdBTC /oihBTC /oidBTC - 扩展命令",
-		"/tz - 查看时区，/tz set Australia/Sydney - 设置时区",
+		"/tz - 查看时区；/tz set Australia/Sydney - 设置时区",
 		"兼容: /price /fund /absorb /anomaly",
 		"直接输入币种（如 BTC）可看详情。",
 	}, "\n")
@@ -195,54 +201,300 @@ func (qb *QueryBot) stubCmd(name string) tele.HandlerFunc {
 	}
 }
 
-func parseLimitArg(args []string, defaultValue, minValue, maxValue int) (int, bool) {
+const (
+	rankPageSize           = 15
+	rankPageCallbackUnique = "rank_page"
+)
+
+func parseLimitPageArgs(args []string, defaultLimit, minLimit, maxLimit int) (limit, page int, ok bool) {
+	limit, page = defaultLimit, 1
 	if len(args) == 0 {
-		return defaultValue, true
+		return limit, page, true
+	}
+	if len(args) > 2 {
+		return 0, 0, false
 	}
 	n, err := strconv.Atoi(strings.TrimSpace(args[0]))
-	if err != nil || n < minValue || n > maxValue {
-		return 0, false
+	if err != nil || n < minLimit || n > maxLimit {
+		return 0, 0, false
 	}
-	return n, true
+	limit = n
+	if len(args) == 2 {
+		p, err := strconv.Atoi(strings.TrimSpace(args[1]))
+		if err != nil || p < 1 {
+			return 0, 0, false
+		}
+		page = p
+	}
+	return limit, page, true
+}
+
+func parseRankPagePayload(args []string) (kind string, limit, page int, ok bool) {
+	if len(args) != 3 {
+		return "", 0, 0, false
+	}
+	kind = strings.TrimSpace(args[0])
+	if kind == "" {
+		return "", 0, 0, false
+	}
+	limit, err := strconv.Atoi(strings.TrimSpace(args[1]))
+	if err != nil || limit < 1 || limit > 120 {
+		return "", 0, 0, false
+	}
+	page, err = strconv.Atoi(strings.TrimSpace(args[2]))
+	if err != nil || page < 1 {
+		return "", 0, 0, false
+	}
+	return kind, limit, page, true
+}
+
+func parseRankPagePayloadFromContext(c tele.Context) (kind string, limit, page int, ok bool) {
+	if k, l, p, ok := parseRankPagePayload(c.Args()); ok {
+		return k, l, p, true
+	}
+	cb := c.Callback()
+	if cb == nil {
+		return "", 0, 0, false
+	}
+	raw := strings.TrimSpace(cb.Data)
+	if raw == "" {
+		return "", 0, 0, false
+	}
+	if strings.HasPrefix(raw, "\f") {
+		raw = strings.TrimPrefix(raw, "\f")
+		if i := strings.Index(raw, "|"); i >= 0 {
+			raw = raw[i+1:]
+		} else {
+			return "", 0, 0, false
+		}
+	}
+	return parseRankPagePayload(strings.Split(raw, "|"))
+}
+
+func paginateRange(total, page, pageSize int) (start, end, totalPages int, ok bool) {
+	if total <= 0 {
+		return 0, 0, 0, false
+	}
+	if pageSize <= 0 {
+		pageSize = rankPageSize
+	}
+	totalPages = (total + pageSize - 1) / pageSize
+	if page < 1 || page > totalPages {
+		return 0, 0, totalPages, false
+	}
+	start = (page - 1) * pageSize
+	end = start + pageSize
+	if end > total {
+		end = total
+	}
+	return start, end, totalPages, true
+}
+
+func rankPageOutOfRange(cmd string, limit, totalPages int) string {
+	if totalPages <= 0 {
+		return fmt.Sprintf("/%s 暂无数据", cmd)
+	}
+	return fmt.Sprintf("页码超出范围，共%d页。示例: /%s %d %d", totalPages, cmd, limit, totalPages)
+}
+
+func (qb *QueryBot) rankPageMarkup(kind string, limit, page, totalPages int) *tele.ReplyMarkup {
+	if totalPages <= 1 {
+		return nil
+	}
+	markup := &tele.ReplyMarkup{}
+	row := make([]tele.Btn, 0, 3)
+	if page > 1 {
+		row = append(row, markup.Data("上一页", rankPageCallbackUnique, kind, strconv.Itoa(limit), strconv.Itoa(page-1)))
+	}
+	if page < totalPages {
+		row = append(row, markup.Data("下一页", rankPageCallbackUnique, kind, strconv.Itoa(limit), strconv.Itoa(page+1)))
+		row = append(row, markup.Data("末页", rankPageCallbackUnique, kind, strconv.Itoa(limit), strconv.Itoa(totalPages)))
+	}
+	if len(row) > 0 {
+		markup.Inline(markup.Row(row...))
+	}
+	return markup
+}
+
+func (qb *QueryBot) rankSend(c tele.Context, text string, markup *tele.ReplyMarkup, edit bool) error {
+	if edit {
+		if markup != nil {
+			return c.Edit(text, &tele.SendOptions{ReplyMarkup: markup})
+		}
+		return c.Edit(text)
+	}
+	if markup != nil {
+		return c.Send(text, &tele.SendOptions{ReplyMarkup: markup})
+	}
+	return c.Send(text)
+}
+
+func flowKind(market, direction string) string {
+	switch {
+	case market == "swap" && direction == "in":
+		return "fi"
+	case market == "swap" && direction == "out":
+		return "fo"
+	case market == "spot" && direction == "in":
+		return "si"
+	case market == "spot" && direction == "out":
+		return "so"
+	default:
+		return "fi"
+	}
+}
+
+func flowMetaByKind(kind string) (market, direction, cmdName, marketLabel, flowLabel string, ok bool) {
+	switch kind {
+	case "fi":
+		return "swap", "in", "fi1d", "合约", "净流入", true
+	case "fo":
+		return "swap", "out", "fo1d", "合约", "净流出", true
+	case "si":
+		return "spot", "in", "si1d", "现货", "净流入", true
+	case "so":
+		return "spot", "out", "so1d", "现货", "净流出", true
+	default:
+		return "", "", "", "", "", false
+	}
+}
+
+func returnMetaByBucket(bucket string) (kind, cmdName, label string, defaultLimit, maxLimit int, ok bool) {
+	switch bucket {
+	case "15m":
+		return "r15", "r15m", "近15分钟", 20, 60, true
+	case "1h":
+		return "r1h", "r1h", "近1小时", 30, 120, true
+	default:
+		return "", "", "", 0, 0, false
+	}
+}
+
+func returnMetaByKind(kind string) (bucket, cmdName, label string, defaultLimit, maxLimit int, ok bool) {
+	switch kind {
+	case "r15":
+		return "15m", "r15m", "近15分钟", 20, 60, true
+	case "r1h":
+		return "1h", "r1h", "近1小时", 30, 120, true
+	default:
+		return "", "", "", 0, 0, false
+	}
+}
+
+func ratioPctText(v float64) string {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return "-"
+	}
+	return fmt.Sprintf("%.0f%%", v*100)
+}
+
+func formatRankLine(index int, symbol, meta, metric string) string {
+	base := fmt.Sprintf("%d.%s", index, stripUSDT(symbol))
+	if strings.TrimSpace(meta) != "" {
+		base += fmt.Sprintf(" (%s)", meta)
+	}
+	metric = strings.TrimSpace(metric)
+	if metric == "" {
+		return base
+	}
+	const metricColumn = 34
+	pad := metricColumn - len([]rune(base))
+	if pad < 3 {
+		pad = 3
+	}
+	return base + strings.Repeat(" ", pad) + metric
+}
+
+func (qb *QueryBot) rankPageCallback(c tele.Context) error {
+	_ = c.Respond()
+	if !qb.requireCH(c) {
+		return nil
+	}
+	kind, limit, page, ok := parseRankPagePayloadFromContext(c)
+	if !ok {
+		return nil
+	}
+	switch kind {
+	case "bi":
+		return qb.renderBullIndexPage(c, limit, page, true)
+	case "oi":
+		return qb.renderOpenInterestPage(c, limit, page, true)
+	case "ocr":
+		return qb.renderOICapRatioPage(c, limit, page, true)
+	case "fi", "fo", "si", "so":
+		market, direction, _, _, _, ok := flowMetaByKind(kind)
+		if !ok {
+			return nil
+		}
+		return qb.renderFlowRankPage(c, market, direction, limit, page, true)
+	case "r15", "r1h":
+		bucket, _, _, _, _, ok := returnMetaByKind(kind)
+		if !ok {
+			return nil
+		}
+		return qb.renderReturnRankPage(c, bucket, limit, page, true)
+	default:
+		return nil
+	}
 }
 
 func (qb *QueryBot) bullIndexCmd(c tele.Context) error {
 	if !qb.requireCH(c) {
 		return nil
 	}
-	limit, ok := parseLimitArg(c.Args(), 30, 1, 120)
+	limit, page, ok := parseLimitPageArgs(c.Args(), 30, 1, 120)
 	if !ok {
-		return c.Send("用法: /bullindex 30 (范围 1-120)")
+		return c.Send("用法: /bullindex 30 [页码] (范围 1-120)")
 	}
+	return qb.renderBullIndexPage(c, limit, page, false)
+}
+
+func (qb *QueryBot) renderBullIndexPage(c tele.Context, limit, page int, edit bool) error {
 	ts, items := qb.bullIndexRank(context.Background(), limit)
 	if len(items) == 0 {
-		return c.Send("/bullindex 暂无数据")
+		return qb.rankSend(c, "/bullindex 暂无数据", nil, edit)
+	}
+	start, end, totalPages, ok := paginateRange(len(items), page, rankPageSize)
+	if !ok {
+		return qb.rankSend(c, rankPageOutOfRange("bullindex", limit, totalPages), nil, edit)
 	}
 	loc := qb.userLoc(c)
-	lines := []string{fmt.Sprintf("多头指数前%d (%s)", limit, fmtTs(ts, loc))}
-	for i, it := range items {
-		lines = append(lines, fmt.Sprintf("%d.%s %.1f分 | %s | %s", i+1, stripUSDT(it.Symbol), it.Score, fmtSignedPct(it.RetPct), fmtSignedPct(it.FlowBiasPct)))
+	lines := []string{fmt.Sprintf("多头指数前%d (%s) 第%d/%d页", len(items), fmtTs(ts, loc), page, totalPages)}
+	for i, it := range items[start:end] {
+		meta := fmt.Sprintf("%.1f分", it.Score)
+		metric := fmtSignedPct(it.RetPct)
+		lines = append(lines, formatRankLine(start+i+1, it.Symbol, meta, metric))
 	}
-	return c.Send(strings.Join(lines, "\n"))
+	return qb.rankSend(c, strings.Join(lines, "\n"), qb.rankPageMarkup("bi", limit, page, totalPages), edit)
 }
 
 func (qb *QueryBot) openInterestCmd(c tele.Context) error {
 	if !qb.requireCH(c) {
 		return nil
 	}
-	limit, ok := parseLimitArg(c.Args(), 30, 1, 120)
+	limit, page, ok := parseLimitPageArgs(c.Args(), 30, 1, 120)
 	if !ok {
-		return c.Send("用法: /openinterest 30 (范围 1-120)")
+		return c.Send("用法: /openinterest 30 [页码] (范围 1-120)")
 	}
+	return qb.renderOpenInterestPage(c, limit, page, false)
+}
+
+func (qb *QueryBot) renderOpenInterestPage(c tele.Context, limit, page int, edit bool) error {
 	items := qb.openInterestGrowthRank(context.Background(), limit)
 	if len(items) == 0 {
-		return c.Send("/openinterest 暂无数据")
+		return qb.rankSend(c, "/openinterest 暂无数据", nil, edit)
 	}
-	lines := []string{fmt.Sprintf("持仓增幅前%d (1d)", limit)}
-	for i, it := range items {
-		lines = append(lines, fmt.Sprintf("%d.%s %s | %sU", i+1, stripUSDT(it.Symbol), fmtSignedPct(it.ChangePct), fmtBigUSD(it.OINotionalUSD)))
+	start, end, totalPages, ok := paginateRange(len(items), page, rankPageSize)
+	if !ok {
+		return qb.rankSend(c, rankPageOutOfRange("openinterest", limit, totalPages), nil, edit)
 	}
-	return c.Send(strings.Join(lines, "\n"))
+	lines := []string{fmt.Sprintf("持仓增幅前%d (1d) 第%d/%d页", len(items), page, totalPages)}
+	for i, it := range items[start:end] {
+		meta := fmt.Sprintf("%sU", fmtBigUSD(it.OINotionalUSD))
+		metric := fmtSignedPct(it.ChangePct)
+		lines = append(lines, formatRankLine(start+i+1, it.Symbol, meta, metric))
+	}
+	return qb.rankSend(c, strings.Join(lines, "\n"), qb.rankPageMarkup("oi", limit, page, totalPages), edit)
 }
 
 func (qb *QueryBot) tzCmd(c tele.Context) error {
@@ -605,70 +857,92 @@ func (qb *QueryBot) flowRankCmd(market, direction string) tele.HandlerFunc {
 		if !qb.requireCH(c) {
 			return nil
 		}
-		ctx := context.Background()
-		nowMs := time.Now().UnixMilli()
-		startMs := nowMs - 24*60*60*1000
-		limit := 30
-
-		tickers, err := qb.bn.GetTicker24hAll(ctx, market)
-		if err != nil {
-			return c.Send("获取数据失败")
+		kind := flowKind(market, direction)
+		_, _, cmdName, _, _, ok := flowMetaByKind(kind)
+		if !ok {
+			return c.Send("参数错误")
 		}
-		symbols := make([]string, 0, len(tickers))
-		for _, t := range tickers {
-			sym, _ := t["symbol"].(string)
-			if sym == "" || binance.IsExcludedSymbol(sym) {
-				continue
-			}
-			symbols = append(symbols, sym)
+		limit, page, ok := parseLimitPageArgs(c.Args(), 30, 1, 120)
+		if !ok {
+			return c.Send(fmt.Sprintf("用法: /%s 30 [页码] (范围 1-120)", cmdName))
 		}
-
-		rows, err := qb.ch.QueryTradeFlowAgg(ctx, market, symbols, "1m", startMs)
-		if err != nil {
-			return c.Send("获取数据失败")
-		}
-
-		type item struct {
-			sym string
-			net float64
-		}
-		var items []item
-		for _, r := range rows {
-			if binance.IsExcludedSymbol(r.Symbol) {
-				continue
-			}
-			net := r.BuySum - r.SellSum
-			if direction == "in" && net > 0 {
-				items = append(items, item{r.Symbol, net})
-			} else if direction == "out" && net < 0 {
-				items = append(items, item{r.Symbol, net})
-			}
-		}
-
-		if direction == "in" {
-			sort.Slice(items, func(i, j int) bool { return items[i].net > items[j].net })
-		} else {
-			sort.Slice(items, func(i, j int) bool { return items[i].net < items[j].net })
-		}
-		totalCount := len(items)
-		label := "净流入"
-		if direction == "out" {
-			label = "净流出"
-		}
-		marketLabel := "合约"
-		if market == "spot" {
-			marketLabel = "现货"
-		}
-
-		lines := []string{fmt.Sprintf("%d个%s1日%s排行", totalCount, marketLabel, label), ""}
-		if len(items) > limit {
-			items = items[:limit]
-		}
-		for i, it := range items {
-			lines = append(lines, fmt.Sprintf("%d.%s %s", i+1, stripUSDT(it.sym), fmtCompact(it.net)))
-		}
-		return c.Send(strings.Join(lines, "\n"))
+		return qb.renderFlowRankPage(c, market, direction, limit, page, false)
 	}
+}
+
+func (qb *QueryBot) renderFlowRankPage(c tele.Context, market, direction string, limit, page int, edit bool) error {
+	kind := flowKind(market, direction)
+	_, _, cmdName, marketLabel, flowLabel, ok := flowMetaByKind(kind)
+	if !ok {
+		return qb.rankSend(c, "参数错误", nil, edit)
+	}
+	ctx := context.Background()
+	nowMs := time.Now().UnixMilli()
+	startMs := nowMs - 24*60*60*1000
+
+	tickers, err := qb.bn.GetTicker24hAll(ctx, market)
+	if err != nil {
+		return qb.rankSend(c, "获取数据失败", nil, edit)
+	}
+	symbols := make([]string, 0, len(tickers))
+	for _, t := range tickers {
+		sym, _ := t["symbol"].(string)
+		if sym == "" || binance.IsExcludedSymbol(sym) {
+			continue
+		}
+		symbols = append(symbols, sym)
+	}
+
+	rows, err := qb.ch.QueryTradeFlowAgg(ctx, market, symbols, "1m", startMs)
+	if err != nil {
+		return qb.rankSend(c, "获取数据失败", nil, edit)
+	}
+
+	type item struct {
+		sym     string
+		net     float64
+		biasPct float64
+	}
+	items := make([]item, 0, len(rows))
+	for _, r := range rows {
+		if binance.IsExcludedSymbol(r.Symbol) {
+			continue
+		}
+		net := r.BuySum - r.SellSum
+		biasPct := 0.0
+		if total := r.BuySum + r.SellSum; total > 0 {
+			biasPct = net / total * 100
+		}
+		if direction == "in" && net > 0 {
+			items = append(items, item{sym: r.Symbol, net: net, biasPct: biasPct})
+		} else if direction == "out" && net < 0 {
+			items = append(items, item{sym: r.Symbol, net: net, biasPct: biasPct})
+		}
+	}
+
+	if direction == "in" {
+		sort.Slice(items, func(i, j int) bool { return items[i].net > items[j].net })
+	} else {
+		sort.Slice(items, func(i, j int) bool { return items[i].net < items[j].net })
+	}
+	totalCount := len(items)
+	if totalCount == 0 {
+		return qb.rankSend(c, fmt.Sprintf("/%s 暂无数据", cmdName), nil, edit)
+	}
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	start, end, totalPages, ok := paginateRange(len(items), page, rankPageSize)
+	if !ok {
+		return qb.rankSend(c, rankPageOutOfRange(cmdName, limit, totalPages), nil, edit)
+	}
+	lines := []string{fmt.Sprintf("%s24h%s前%d 第%d/%d页（共%d）", marketLabel, flowLabel, len(items), page, totalPages, totalCount)}
+	for i, it := range items[start:end] {
+		meta := fmt.Sprintf("%sU", fmtBigUSD(math.Abs(it.net)))
+		metric := fmtSignedPct(it.biasPct)
+		lines = append(lines, formatRankLine(start+i+1, it.sym, meta, metric))
+	}
+	return qb.rankSend(c, strings.Join(lines, "\n"), qb.rankPageMarkup(kind, limit, page, totalPages), edit)
 }
 
 func (qb *QueryBot) returnRankCmd(bucket string) tele.HandlerFunc {
@@ -676,95 +950,107 @@ func (qb *QueryBot) returnRankCmd(bucket string) tele.HandlerFunc {
 		if !qb.requireCH(c) {
 			return nil
 		}
-		defaultLimit := 20
-		maxLimit := 60
-		label := "近15分钟"
-		if bucket == "1h" {
-			defaultLimit = 30
-			maxLimit = 120
-			label = "近1小时"
-		}
-		limit, ok := parseLimitArg(c.Args(), defaultLimit, 1, maxLimit)
+		kind, cmdName, _, defaultLimit, maxLimit, ok := returnMetaByBucket(bucket)
 		if !ok {
-			if bucket == "1h" {
-				return c.Send("用法: /r1h 30 (范围 1-120)")
-			}
-			return c.Send("用法: /r15m 20 (范围 1-60)")
+			return c.Send("参数错误")
 		}
-
-		ctx := context.Background()
-		bMs := bucketToMs(bucket)
-		nowMs := time.Now().UnixMilli()
-		bucketEnd := (nowMs / bMs) * bMs
-		bucketStart := bucketEnd - bMs
-
-		rows, err := qb.ch.QueryTradeBuckets(ctx, "swap", "", nil, bucket, bucketStart, bucketEnd, "asc", 0)
-		if err != nil {
-			return c.Send("获取数据失败")
+		limit, page, ok := parseLimitPageArgs(c.Args(), defaultLimit, 1, maxLimit)
+		if !ok {
+			return c.Send(fmt.Sprintf("用法: /%s %d [页码] (范围 1-%d)", cmdName, defaultLimit, maxLimit))
 		}
-
-		type item struct {
-			sym string
-			ret float64
-		}
-		var items []item
-		for _, r := range rows {
-			if binance.IsExcludedSymbol(r.Symbol) || r.OpenPrice == nil || r.ClosePrice == nil || *r.OpenPrice <= 0 {
-				continue
-			}
-			ret := (*r.ClosePrice / *r.OpenPrice - 1) * 100
-			items = append(items, item{r.Symbol, ret})
-		}
-		sort.Slice(items, func(i, j int) bool { return items[i].ret > items[j].ret })
-		loc := qb.userLoc(c)
-		top := append([]item(nil), items...)
-		if len(top) > limit {
-			top = top[:limit]
-		}
-		upLines := []string{fmt.Sprintf("%s涨幅前%d（%s）", label, limit, fmtTs(bucketStart, loc))}
-		for i, it := range top {
-			upLines = append(upLines, fmt.Sprintf("%d.%s %s", i+1, stripUSDT(it.sym), fmtSignedPct(it.ret)))
-		}
-		sort.Slice(items, func(i, j int) bool { return items[i].ret < items[j].ret })
-		down := items
-		downLines := []string{fmt.Sprintf("%s跌幅前%d（%s）", label, limit, fmtTs(bucketStart, loc))}
-		bot := down
-		if len(bot) > limit {
-			bot = bot[:limit]
-		}
-		for i, it := range bot {
-			downLines = append(downLines, fmt.Sprintf("%d.%s %s", i+1, stripUSDT(it.sym), fmtSignedPct(it.ret)))
-		}
-		if err := c.Send(strings.Join(upLines, "\n")); err != nil {
-			return err
-		}
-		return c.Send(strings.Join(downLines, "\n"))
+		_ = kind
+		return qb.renderReturnRankPage(c, bucket, limit, page, false)
 	}
+}
+
+func (qb *QueryBot) renderReturnRankPage(c tele.Context, bucket string, limit, page int, edit bool) error {
+	kind, cmdName, label, _, _, ok := returnMetaByBucket(bucket)
+	if !ok {
+		return qb.rankSend(c, "参数错误", nil, edit)
+	}
+	ctx := context.Background()
+	bMs := bucketToMs(bucket)
+	nowMs := time.Now().UnixMilli()
+	bucketEnd := (nowMs / bMs) * bMs
+	bucketStart := bucketEnd - bMs
+
+	rows, err := qb.ch.QueryTradeBuckets(ctx, "swap", "", nil, bucket, bucketStart, bucketEnd, "asc", 0)
+	if err != nil {
+		return qb.rankSend(c, "获取数据失败", nil, edit)
+	}
+
+	type item struct {
+		sym string
+		ret float64
+	}
+	items := make([]item, 0, len(rows))
+	for _, r := range rows {
+		if binance.IsExcludedSymbol(r.Symbol) || r.OpenPrice == nil || r.ClosePrice == nil || *r.OpenPrice <= 0 {
+			continue
+		}
+		ret := (*r.ClosePrice / *r.OpenPrice - 1) * 100
+		items = append(items, item{sym: r.Symbol, ret: ret})
+	}
+	if len(items) == 0 {
+		return qb.rankSend(c, fmt.Sprintf("/%s 暂无数据", cmdName), nil, edit)
+	}
+
+	sort.Slice(items, func(i, j int) bool { return items[i].ret > items[j].ret })
+	top := append([]item(nil), items...)
+	if len(top) > limit {
+		top = top[:limit]
+	}
+	start, end, totalPages, ok := paginateRange(len(top), page, rankPageSize)
+	if !ok {
+		return qb.rankSend(c, rankPageOutOfRange(cmdName, limit, totalPages), nil, edit)
+	}
+
+	sort.Slice(items, func(i, j int) bool { return items[i].ret < items[j].ret })
+	bot := append([]item(nil), items...)
+	if len(bot) > limit {
+		bot = bot[:limit]
+	}
+	loc := qb.userLoc(c)
+	lines := []string{fmt.Sprintf("%s涨跌榜前%d (%s) 第%d/%d页", label, len(top), fmtTs(bucketStart, loc), page, totalPages), "【涨幅】"}
+	for i, it := range top[start:end] {
+		lines = append(lines, formatRankLine(start+i+1, it.sym, fmtSignedPct(it.ret), ""))
+	}
+	lines = append(lines, "【跌幅】")
+	for i, it := range bot[start:end] {
+		lines = append(lines, formatRankLine(start+i+1, it.sym, fmtSignedPct(it.ret), ""))
+	}
+	return qb.rankSend(c, strings.Join(lines, "\n"), qb.rankPageMarkup(kind, limit, page, totalPages), edit)
 }
 
 func (qb *QueryBot) oiCapRatioCmd(c tele.Context) error {
 	if !qb.requireCH(c) {
 		return nil
 	}
-	ctx := context.Background()
-	limit, ok := parseLimitArg(c.Args(), 30, 1, 120)
+	limit, page, ok := parseLimitPageArgs(c.Args(), 30, 1, 120)
 	if !ok {
-		return c.Send("用法: /oicapratio 30 (范围 1-120)")
+		return c.Send("用法: /oicapratio 30 [页码] (范围 1-120)")
 	}
-	items, err := service.GetOIMarketCapRank(ctx, qb.ch, limit)
+	return qb.renderOICapRatioPage(c, limit, page, false)
+}
+
+func (qb *QueryBot) renderOICapRatioPage(c tele.Context, limit, page int, edit bool) error {
+	items, err := service.GetOIMarketCapRank(context.Background(), qb.ch, limit)
 	if err != nil {
-		return c.Send("获取数据失败")
+		return qb.rankSend(c, "获取数据失败", nil, edit)
 	}
 	if len(items) == 0 {
-		return c.Send("/oicapratio 暂无数据")
+		return qb.rankSend(c, "/oicapratio 暂无数据", nil, edit)
 	}
-	var b strings.Builder
-	b.WriteString(fmt.Sprintf("持仓/市值比例前%d:\n", limit))
-	for i, it := range items {
-		b.WriteString(fmt.Sprintf("%d.%s %s | %sU / %sU\n",
-			i+1, stripUSDT(it.Symbol), fmtSignedPctKeepNaN(it.Ratio*100, 2, false), fmtBigUSD(it.OINotionalUSD), fmtBigUSD(it.MarketCapUSD)))
+	start, end, totalPages, ok := paginateRange(len(items), page, rankPageSize)
+	if !ok {
+		return qb.rankSend(c, rankPageOutOfRange("oicapratio", limit, totalPages), nil, edit)
 	}
-	return c.Send(b.String())
+	lines := []string{fmt.Sprintf("持仓与市值比例排行 第%d/%d页", page, totalPages)}
+	for i, it := range items[start:end] {
+		meta := fmt.Sprintf("%sU", fmtBigUSD(it.OINotionalUSD))
+		lines = append(lines, formatRankLine(start+i+1, it.Symbol, meta, ratioPctText(it.Ratio)))
+	}
+	return qb.rankSend(c, strings.Join(lines, "\n"), qb.rankPageMarkup("ocr", limit, page, totalPages), edit)
 }
 
 func (qb *QueryBot) nchCmd(c tele.Context) error {
@@ -799,6 +1085,14 @@ func (qb *QueryBot) oidCmd(c tele.Context) error {
 	return qb.sendOID(c, normalizeSymbol(args[0]))
 }
 
+func (qb *QueryBot) dayCmd(c tele.Context) error {
+	args := c.Args()
+	if len(args) == 0 {
+		return c.Send("用法: /dayBTC")
+	}
+	return qb.sendDay(c, normalizeSymbol(args[0]))
+}
+
 func (qb *QueryBot) textCmd(c tele.Context) error {
 	if !qb.requireCH(c) {
 		return nil
@@ -806,6 +1100,11 @@ func (qb *QueryBot) textCmd(c tele.Context) error {
 	text := strings.TrimSpace(c.Text())
 	if cmd, sym, ok := parseInlineSymbolCommand(text); ok {
 		return qb.inlineSymbolCmd(c, cmd, sym)
+	}
+	if sym, ok := parseSlashSymbolShortcut(text); ok {
+		// Normalize "/BTC" into the same plain symbol path as "BTC",
+		// so both render via exactly the same logic below.
+		text = stripUSDT(sym)
 	}
 	if !isSymbolText(text) {
 		return nil
@@ -1000,11 +1299,352 @@ AND event_type IN ('breakout_up','breakout_down','amplitude_spike')`, sym, daySt
 		sb.WriteString(fmt.Sprintf("%02dD %s | %s\n", item.Day, fmtCompact(item.SwapNet), fmtCompact(item.SpotNet)))
 	}
 	sb.WriteString("\n")
+	sb.WriteString(fmt.Sprintf("/day%s 日内看盘\n", asset))
 	sb.WriteString(fmt.Sprintf("/nch%s 资金盘间快照\n", asset))
 	sb.WriteString(fmt.Sprintf("资金每日流向 /ncd%s\n", asset))
 	sb.WriteString(fmt.Sprintf("/oih%s 持仓盘间快照\n", asset))
 	sb.WriteString(fmt.Sprintf("持仓近日变化 /oid%s", asset))
 	return c.Send(sb.String())
+}
+
+func (qb *QueryBot) sendDay(c tele.Context, symbol string) error {
+	if !qb.requireCH(c) {
+		return nil
+	}
+	sym := normalizeSymbol(symbol)
+	if sym == "" {
+		return c.Send("用法: /dayBTC")
+	}
+	ctx := context.Background()
+	if pairs, err := qb.bn.GetPairs(ctx, "swap"); err == nil && !containsSymbol(pairs, sym) {
+		return c.Send("币种不存在或未在合约市场交易")
+	}
+
+	type dayBucket struct {
+		key   string
+		limit int
+	}
+	buckets := []dayBucket{
+		{key: "1m", limit: 60},
+		{key: "5m", limit: 72},
+		{key: "15m", limit: 96},
+		{key: "1h", limit: 24},
+	}
+
+	base := stripUSDT(sym)
+	loc := qb.userLoc(c)
+	headerLines := []string{
+		fmt.Sprintf("%s 日内看盘（数据口径=web intraday）", base),
+		fmt.Sprintf("更新时间 %s", fmtTs(time.Now().UnixMilli(), loc)),
+		"",
+		"【资金（日内累计 | 当前桶增量）】",
+	}
+	fundTableLines := []string{
+		"周期 时间  | 合约累计      | 现货累计      | 合约Δ        | 现货Δ",
+	}
+	for _, b := range buckets {
+		items, err := qb.queryFundIntraday(ctx, sym, b.key, b.limit)
+		if err != nil || len(items) == 0 {
+			fundTableLines = append(fundTableLines, fmt.Sprintf("%-3s %-5s | %-12s | %-12s | %-12s | %-12s",
+				strings.ToUpper(b.key), "--:--", "-", "-", "-", "-"))
+			continue
+		}
+		last := items[len(items)-1]
+		fundTableLines = append(fundTableLines, fmt.Sprintf("%-3s %-5s | %-12s | %-12s | %-12s | %-12s",
+			strings.ToUpper(b.key),
+			fmtHHMM(last.BucketStartMs, loc),
+			fmtCompact(last.SwapValue), fmtCompact(last.SpotValue),
+			fmtCompact(last.SwapDelta), fmtCompact(last.SpotDelta),
+		))
+	}
+	fundBlock := "<pre>" + html.EscapeString(strings.Join(fundTableLines, "\n")) + "</pre>"
+
+	lines := append([]string{}, headerLines...)
+	lines = append(lines, fundBlock)
+
+	lines = append(lines, "", "[盘口]")
+	ob, err := qb.queryDayOrderbookSummary(ctx, sym, 5)
+	if err != nil || ob == nil {
+		lines = append(lines, "-")
+	} else {
+		marketLabel := "合约"
+		if ob.Market == "spot" {
+			marketLabel = "现货"
+		}
+		lines = append(lines, fmt.Sprintf("%dm(%s) Spread %s | 深度 %s | 主动买 %s | 回补 %s",
+			ob.WindowMinutes,
+			marketLabel,
+			dayFmtBps(ob.SpreadBps),
+			fmtSignedPctKeepNaN(ob.DepthImbalancePct, 1, false),
+			dayFmtPct(ob.AggBuyPct),
+			dayFmtPct(ob.ReplenishScore),
+		))
+	}
+
+	lines = append(lines, "", "[信号]")
+	sig, err := qb.queryDaySignalSummary(ctx, sym)
+	if err != nil || sig == nil {
+		lines = append(lines, "-")
+	} else {
+		lines = append(lines, fmt.Sprintf("%s %.0f分 (%s)", sig.State, math.Round(sig.Score), fmtHHMM(sig.BucketStartMs, loc)))
+		if len(sig.Reasons) > 0 {
+			lines = append(lines, "理由: "+strings.Join(sig.Reasons, "；"))
+		}
+	}
+
+	lines = append(lines, "")
+	lines = append(lines, fmt.Sprintf("/day%s 日内看盘", base))
+	lines = append(lines, fmt.Sprintf("/nch%s 资金盘间快照", base))
+	lines = append(lines, fmt.Sprintf("资金每日流向 /ncd%s", base))
+	lines = append(lines, fmt.Sprintf("/oih%s 持仓盘间快照", base))
+	lines = append(lines, fmt.Sprintf("持仓近日变化 /oid%s", base))
+
+	return c.Send(strings.Join(lines, "\n"), &tele.SendOptions{ParseMode: tele.ModeHTML})
+}
+
+type intradayFundItem struct {
+	BucketStartMs int64
+	SwapValue     float64
+	SpotValue     float64
+	SwapDelta     float64
+	SpotDelta     float64
+}
+
+func (qb *QueryBot) queryFundIntraday(ctx context.Context, symbol, bucket string, limit int) ([]intradayFundItem, error) {
+	switch bucket {
+	case "1m", "5m", "15m", "1h":
+	default:
+		bucket = "1h"
+	}
+	if limit <= 0 {
+		limit = 60
+	}
+
+	bucketMs := int64(60 * 60 * 1000)
+	switch bucket {
+	case "1m":
+		bucketMs = 60 * 1000
+	case "5m":
+		bucketMs = 5 * 60 * 1000
+	case "15m":
+		bucketMs = 15 * 60 * 1000
+	case "1h":
+		bucketMs = 60 * 60 * 1000
+	}
+
+	nowMs := time.Now().UnixMilli()
+	dayMs := int64(24 * 60 * 60 * 1000)
+	dayStartMs := floorMs(nowMs, dayMs)
+	lastBucketStart := floorMs(nowMs, bucketMs)
+	if lastBucketStart < dayStartMs {
+		return nil, nil
+	}
+
+	totalCount := int((lastBucketStart-dayStartMs)/bucketMs) + 1
+	startIndex := totalCount - limit
+	if startIndex < 0 {
+		startIndex = 0
+	}
+	timeline := make([]int64, 0, totalCount-startIndex)
+	for i := startIndex; i < totalCount; i++ {
+		timeline = append(timeline, dayStartMs+int64(i)*bucketMs)
+	}
+
+	queryBucket := bucket
+	if bucket == "5m" {
+		queryBucket = "1m"
+	}
+	rows, err := qb.ch.QueryTradeBuckets(ctx, "", symbol, nil, queryBucket, dayStartMs, lastBucketStart, "asc", 0)
+	if err != nil {
+		return nil, err
+	}
+
+	byMarket := map[string]map[int64]float64{"spot": {}, "swap": {}}
+	for _, row := range rows {
+		ts := row.BucketStartMs
+		if bucket == "5m" {
+			ts = floorMs(ts, bucketMs)
+		}
+		net := row.TakerBuyNotional - row.TakerSellNotional
+		marketMap := byMarket[row.Market]
+		if marketMap == nil {
+			marketMap = map[int64]float64{}
+			byMarket[row.Market] = marketMap
+		}
+		marketMap[ts] += net
+	}
+
+	allStarts := make([]int64, 0, totalCount)
+	for ts := dayStartMs; ts <= lastBucketStart; ts += bucketMs {
+		allStarts = append(allStarts, ts)
+	}
+	cumMap := func(entries map[int64]float64) map[int64]float64 {
+		total := 0.0
+		out := make(map[int64]float64, len(allStarts))
+		for _, ts := range allStarts {
+			total += entries[ts]
+			out[ts] = total
+		}
+		return out
+	}
+	swapCum := cumMap(byMarket["swap"])
+	spotCum := cumMap(byMarket["spot"])
+
+	items := make([]intradayFundItem, 0, len(timeline))
+	for _, ts := range timeline {
+		items = append(items, intradayFundItem{
+			BucketStartMs: ts,
+			SwapValue:     swapCum[ts],
+			SpotValue:     spotCum[ts],
+			SwapDelta:     byMarket["swap"][ts],
+			SpotDelta:     byMarket["spot"][ts],
+		})
+	}
+	return items, nil
+}
+
+func floorMs(ts, bucketMs int64) int64 {
+	if bucketMs <= 0 {
+		return ts
+	}
+	return (ts / bucketMs) * bucketMs
+}
+
+type dayOrderbookSummary struct {
+	Market            string
+	WindowMinutes     int
+	BucketStartMs     int64
+	SpreadBps         float64
+	DepthImbalancePct float64
+	AggBuyPct         float64
+	ReplenishScore    float64
+	SampleCount       int
+}
+
+func (qb *QueryBot) queryDayOrderbookSummary(ctx context.Context, symbol string, windowMinutes int) (*dayOrderbookSummary, error) {
+	if windowMinutes <= 0 {
+		windowMinutes = 5
+	}
+	nowMs := time.Now().UnixMilli()
+	startMs := nowMs - int64(windowMinutes)*60*1000
+	rows, err := qb.ch.QueryOrderbookFeatures(ctx, "", symbol, nil, "1m", startMs, nowMs, "asc")
+	if err != nil {
+		return nil, err
+	}
+	type acc struct {
+		sampleCount int
+		latestMs    int64
+		spreadSum   float64
+		depthSum    float64
+		buySum      float64
+		sellSum     float64
+		depCount    int
+		repCount    int
+	}
+	byMkt := map[string]*acc{"swap": {}, "spot": {}}
+	for i := range rows {
+		row := rows[i]
+		if row.SampleCount <= 0 {
+			continue
+		}
+		a := byMkt[row.Market]
+		if a == nil {
+			a = &acc{}
+			byMkt[row.Market] = a
+		}
+		a.sampleCount += row.SampleCount
+		if row.BucketStartMs > a.latestMs {
+			a.latestMs = row.BucketStartMs
+		}
+		a.spreadSum += row.SpreadBpsSum
+		a.depthSum += row.DepthImbalanceL20Sum
+		a.buySum += row.TakerBuyNotional
+		a.sellSum += row.TakerSellNotional
+		a.depCount += row.DepletionEvents
+		a.repCount += row.ReplenishmentEvents
+	}
+	selectMarket := "swap"
+	if byMkt["swap"] == nil || byMkt["swap"].sampleCount <= 0 {
+		selectMarket = "spot"
+	}
+	a := byMkt[selectMarket]
+	if a == nil || a.sampleCount <= 0 {
+		return nil, nil
+	}
+	aggrBuyPct := math.NaN()
+	if d := a.buySum + a.sellSum; d > 0 {
+		aggrBuyPct = a.buySum / d * 100
+	}
+	replenishScore := 50.0
+	if a.depCount > 0 {
+		replenishScore = math.Min(100, math.Max(0, float64(a.repCount)/float64(a.depCount)*100))
+	}
+	return &dayOrderbookSummary{
+		Market:            selectMarket,
+		WindowMinutes:     windowMinutes,
+		BucketStartMs:     a.latestMs,
+		SpreadBps:         a.spreadSum / float64(a.sampleCount),
+		DepthImbalancePct: a.depthSum / float64(a.sampleCount) * 100,
+		AggBuyPct:         aggrBuyPct,
+		ReplenishScore:    replenishScore,
+		SampleCount:       a.sampleCount,
+	}, nil
+}
+
+type daySignalSummary struct {
+	State         string
+	Score         float64
+	BucketStartMs int64
+	Reasons       []string
+}
+
+func (qb *QueryBot) queryDaySignalSummary(ctx context.Context, symbol string) (*daySignalSummary, error) {
+	if qb.store == nil {
+		return nil, nil
+	}
+	var rows []model.AbsorptionSignalSnapshot
+	if err := qb.store.SelectContext(ctx, &rows,
+		`SELECT * FROM absorption_signal_snapshots WHERE market = 'swap' AND symbol = ? ORDER BY bucket_start_ms DESC LIMIT 1`, symbol); err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	row := rows[0]
+	reasons := make([]string, 0, 2)
+	var raw []interface{}
+	if err := json.Unmarshal(row.Reasons, &raw); err == nil {
+		for _, v := range raw {
+			text := strings.TrimSpace(fmt.Sprint(v))
+			if text == "" {
+				continue
+			}
+			reasons = append(reasons, text)
+			if len(reasons) >= 2 {
+				break
+			}
+		}
+	}
+	return &daySignalSummary{
+		State:         row.SignalState,
+		Score:         row.Score,
+		BucketStartMs: row.BucketStartMs,
+		Reasons:       reasons,
+	}, nil
+}
+
+func dayFmtBps(v float64) string {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return "-"
+	}
+	return fmt.Sprintf("%+.2fbps", v)
+}
+
+func dayFmtPct(v float64) string {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return "-"
+	}
+	return fmt.Sprintf("%.1f%%", v)
 }
 
 type fundWindowItem struct {
@@ -1356,7 +1996,7 @@ func (qb *QueryBot) intradayNetSnapshot(ctx context.Context, symbol string) []ne
 		idx := 0
 		total := 0.0
 		for _, cutoff := range cutoffs {
-			for idx < len(entries) && entries[idx].ts < cutoff {
+			for idx < len(entries) && entries[idx].ts <= cutoff {
 				total += entries[idx].net
 				idx++
 			}
@@ -1631,6 +2271,8 @@ func (qb *QueryBot) inlineSymbolCmd(c tele.Context, cmd, symbol string) error {
 		return qb.sendOIH(c, symbol)
 	case "oid":
 		return qb.sendOID(c, symbol)
+	case "day":
+		return qb.sendDay(c, symbol)
 	default:
 		return nil
 	}
@@ -1645,7 +2287,7 @@ func containsSymbol(symbols []string, symbol string) bool {
 	return false
 }
 
-var symbolTextRe = regexp.MustCompile(`^[A-Za-z0-9]{2,16}$`)
+var symbolTextRe = regexp.MustCompile(`^[A-Za-z0-9]{1,16}$`)
 
 func isSymbolText(text string) bool {
 	t := strings.TrimSpace(text)
@@ -1655,12 +2297,26 @@ func isSymbolText(text string) bool {
 	return symbolTextRe.MatchString(t)
 }
 
+var slashSymbolShortcutRe = regexp.MustCompile(`(?i)^/([A-Z0-9]{1,16})(?:@[A-Za-z0-9_]+)?$`)
+
+func parseSlashSymbolShortcut(text string) (string, bool) {
+	m := slashSymbolShortcutRe.FindStringSubmatch(strings.TrimSpace(text))
+	if len(m) != 2 {
+		return "", false
+	}
+	sym := normalizeSymbol(m[1])
+	if sym == "" {
+		return "", false
+	}
+	return sym, true
+}
+
 func stripUSDT(symbol string) string {
 	s := strings.ToUpper(strings.TrimSpace(symbol))
 	return strings.TrimSuffix(s, "USDT")
 }
 
-var inlineSymbolCmdRe = regexp.MustCompile(`(?i)^/(nch|ncd|oih|oid)([A-Za-z0-9]{2,16})(?:@[A-Za-z0-9_]+)?$`)
+var inlineSymbolCmdRe = regexp.MustCompile(`(?i)^/(nch|ncd|oih|oid|day)([A-Za-z0-9]{1,16})(?:@[A-Za-z0-9_]+)?$`)
 
 func parseInlineSymbolCommand(text string) (string, string, bool) {
 	m := inlineSymbolCmdRe.FindStringSubmatch(strings.TrimSpace(text))

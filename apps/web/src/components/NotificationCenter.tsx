@@ -31,6 +31,7 @@ export default function NotificationCenter() {
     items,
     unread,
     open,
+    showAllTypes,
     muted,
     muteTypes,
     muteSymbols,
@@ -39,6 +40,7 @@ export default function NotificationCenter() {
     closePanel,
     markAllRead,
     clearAll,
+    toggleShowAllTypes,
     toggleMute,
     toggleTypeMute,
     toggleSymbolMute,
@@ -60,6 +62,8 @@ export default function NotificationCenter() {
         <div className="cm-notifyToolbar">
           <Space>
             <Tag color={hubStatus === "connected" ? "green" : "orangered"}>Hub：{statusLabel(hubStatus)}</Tag>
+            <span className="cm-muted">全部类型</span>
+            <Switch checked={showAllTypes} onChange={toggleShowAllTypes} />
             <span className="cm-muted">静音</span>
             <Switch checked={muted} onChange={toggleMute} />
           </Space>
