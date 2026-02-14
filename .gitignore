@@ -21,3 +21,10 @@ tmp_*
 tmp_assets/
 *.har
 image copy*.png
+
+# playwright/debug temporary files
+.playwright-mcp/
+*check.png
+*dashboard-screenshot.png
+*heatmap-check.png
+sigs_tmp.json
