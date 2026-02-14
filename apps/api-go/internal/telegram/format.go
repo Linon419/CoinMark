@@ -107,12 +107,14 @@ func normalizeSymbol(s string) string {
 
 func eventTypeLabel(et string) string {
 	labels := map[string]string{
-		"whale_wall_far":  "远离现价大挂单",
-		"breakout_up":     "突破阻力",
-		"breakout_down":   "跌破支撑",
-		"volume_spike":    "量能异常",
-		"amplitude_spike": "振幅异常",
-		"climax_reversal": "高潮反转",
+		"whale_wall_far":      "远离现价大挂单",
+		"whale_wall_filled":   "大挂单已成交",
+		"whale_wall_canceled": "大挂单已撤销",
+		"breakout_up":         "突破阻力",
+		"breakout_down":       "跌破支撑",
+		"volume_spike":        "量能异常",
+		"amplitude_spike":     "振幅异常",
+		"climax_reversal":     "高潮反转",
 	}
 	if l, ok := labels[et]; ok {
 		return l

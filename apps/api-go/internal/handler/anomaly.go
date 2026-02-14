@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -54,8 +55,19 @@ func handleHotMarkets(d *Deps) gin.HandlerFunc {
 		limit := queryInt(c, "limit", 50, 1, 500)
 		sinceMinutes := queryInt(c, "sinceMinutes", 360, 5, 10080)
 		eventType := c.Query("eventType")
+		timeMode := strings.ToLower(c.DefaultQuery("timeMode", "local"))
+		if timeMode != "utc" {
+			timeMode = "local"
+		}
+		tzOffsetMin := queryInt(c, "tzOffsetMin", 0, -720, 720)
+		offsetMs := int64(0)
+		if timeMode == "local" {
+			offsetMs = int64(tzOffsetMin) * 60 * 1000
+		}
 
-		cutoffMs := time.Now().UnixMilli() - int64(sinceMinutes)*60*1000
+		nowMs := time.Now().UnixMilli()
+		cutoffMs := nowMs - int64(sinceMinutes)*60*1000
+		dayStartMs := floorBucketStartWithOffset(nowMs, 24*60*60*1000, offsetMs)
 		args := []interface{}{market, cutoffMs}
 		where := "market = ? AND event_time_ms >= ?"
 		if eventType != "" {
@@ -79,9 +91,44 @@ func handleHotMarkets(d *Deps) gin.HandlerFunc {
 		if filtered == nil {
 			filtered = []model.AnomalyEvent{}
 		}
+
+		type countRow struct {
+			Symbol    string `db:"symbol"`
+			EventType string `db:"event_type"`
+			Cnt       int    `db:"cnt"`
+		}
+		var countRows []countRow
+		_ = d.Store.SelectContext(
+			c.Request.Context(),
+			&countRows,
+			`SELECT symbol, event_type, COUNT(*) AS cnt
+FROM anomaly_events
+WHERE market = ? AND event_time_ms >= ? AND event_time_ms <= ?
+GROUP BY symbol, event_type`,
+			market, dayStartMs, nowMs,
+		)
+		countMap := make(map[string]int, len(countRows))
+		for _, r := range countRows {
+			key := strings.ToUpper(r.Symbol) + "|" + strings.ToLower(r.EventType)
+			countMap[key] = r.Cnt
+		}
+
+		type hotMarketItem struct {
+			model.AnomalyEvent
+			DailyAlertCount int `json:"dailyAlertCount"`
+		}
+		items := make([]hotMarketItem, 0, len(filtered))
+		for _, r := range filtered {
+			key := strings.ToUpper(r.Symbol) + "|" + strings.ToLower(r.EventType)
+			items = append(items, hotMarketItem{
+				AnomalyEvent:    r,
+				DailyAlertCount: countMap[key],
+			})
+		}
 		c.JSON(http.StatusOK, gin.H{
 			"market": market, "sinceMinutes": sinceMinutes,
-			"eventType": eventType, "items": filtered,
+			"eventType": eventType, "items": items,
+			"timeMode": timeMode, "tzOffsetMin": tzOffsetMin, "dayStartMs": dayStartMs,
 		})
 	}
 }

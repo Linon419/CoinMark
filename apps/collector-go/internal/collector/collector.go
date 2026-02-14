@@ -286,6 +286,9 @@ func (c *Collector) consumeTradeConn(ctx context.Context, wsURL string) error {
 		if !strings.HasSuffix(symbol, "USDT") {
 			continue
 		}
+		if binance.IsExcludedSymbol(symbol) {
+			continue
+		}
 
 		out := map[string]any{
 			"market":          c.cfg.Market,
@@ -355,6 +358,9 @@ func (c *Collector) consumeDepthConn(ctx context.Context, wsURL string) error {
 			symbol = streamSymbol(env.Stream)
 		}
 		if !strings.HasSuffix(symbol, "USDT") {
+			continue
+		}
+		if binance.IsExcludedSymbol(symbol) {
 			continue
 		}
 
@@ -530,6 +536,9 @@ func dedupeSymbols(symbols []string) []string {
 	for _, item := range symbols {
 		s := strings.ToUpper(strings.TrimSpace(item))
 		if s == "" {
+			continue
+		}
+		if binance.IsExcludedSymbol(s) {
 			continue
 		}
 		if _, ok := seen[s]; ok {

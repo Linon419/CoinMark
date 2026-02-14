@@ -13,7 +13,6 @@ import (
 
 	"coinmark/api-go/internal/binance"
 	chrepo "coinmark/api-go/internal/repo/ch"
-	"coinmark/api-go/internal/service"
 )
 
 const tgRankDefaultPageSize = 15
@@ -36,6 +35,7 @@ type tgRankItem struct {
 type tgRankResponse struct {
 	Kind       string       `json:"kind"`
 	Title      string       `json:"title"`
+	Interval   string       `json:"interval,omitempty"`
 	Limit      int          `json:"limit"`
 	Page       int          `json:"page"`
 	PageSize   int          `json:"pageSize"`
@@ -80,26 +80,38 @@ func handleTGRank(d *Deps) gin.HandlerFunc {
 
 		switch kind {
 		case "oicapratio":
-			resp.Title = "oicapratio"
-			all, err = buildOICapRatioRank(ctx, d.CH, limit)
+			cfg := parseOIGrowthInterval(c.Query("interval"))
+			resp.Interval = cfg.Interval
+			resp.Title = "oicapratio_" + cfg.Interval
+			all, err = buildOICapRatioRank(ctx, d.CH, d.BN, limit, cfg)
 		case "openinterest":
-			resp.Title = "openinterest_1d"
-			all, err = buildOpenInterestGrowthRank(ctx, d.CH, d.BN, limit)
+			cfg := parseOIGrowthInterval(c.Query("interval"))
+			resp.Interval = cfg.Interval
+			resp.Title = "openinterest_" + cfg.Interval
+			all, err = buildOpenInterestGrowthRank(ctx, d.CH, d.BN, limit, cfg)
 		case "bullindex":
 			resp.Title = "bullindex_1h"
 			resp.AsOfMs, all, err = buildBullIndexRank(ctx, d.CH, limit)
 		case "fi1d":
-			resp.Title = "swap_flow_in_1d"
-			all, err = buildFlowRank(ctx, d.CH, d.BN, "swap", "in", limit)
+			cfg := parseOIGrowthInterval(c.Query("interval"))
+			resp.Interval = cfg.Interval
+			resp.Title = "swap_flow_in_" + cfg.Interval
+			all, err = buildFlowRank(ctx, d.CH, d.BN, "swap", "in", limit, cfg)
 		case "fo1d":
-			resp.Title = "swap_flow_out_1d"
-			all, err = buildFlowRank(ctx, d.CH, d.BN, "swap", "out", limit)
+			cfg := parseOIGrowthInterval(c.Query("interval"))
+			resp.Interval = cfg.Interval
+			resp.Title = "swap_flow_out_" + cfg.Interval
+			all, err = buildFlowRank(ctx, d.CH, d.BN, "swap", "out", limit, cfg)
 		case "si1d":
-			resp.Title = "spot_flow_in_1d"
-			all, err = buildFlowRank(ctx, d.CH, d.BN, "spot", "in", limit)
+			cfg := parseOIGrowthInterval(c.Query("interval"))
+			resp.Interval = cfg.Interval
+			resp.Title = "spot_flow_in_" + cfg.Interval
+			all, err = buildFlowRank(ctx, d.CH, d.BN, "spot", "in", limit, cfg)
 		case "so1d":
-			resp.Title = "spot_flow_out_1d"
-			all, err = buildFlowRank(ctx, d.CH, d.BN, "spot", "out", limit)
+			cfg := parseOIGrowthInterval(c.Query("interval"))
+			resp.Interval = cfg.Interval
+			resp.Title = "spot_flow_out_" + cfg.Interval
+			all, err = buildFlowRank(ctx, d.CH, d.BN, "spot", "out", limit, cfg)
 		case "r15m":
 			resp.Title = "returns_15m"
 			resp.AsOfMs, all, err = buildReturnRank(ctx, d.CH, "15m", limit)
@@ -149,19 +161,97 @@ func paginateRank(total, page, pageSize int) (start, end, totalPages, actualPage
 	return start, end, totalPages, actualPage
 }
 
-func buildOICapRatioRank(ctx context.Context, ch *chrepo.Client, limit int) ([]tgRankItem, error) {
-	rows, err := service.GetOIMarketCapRank(ctx, ch, limit)
+func buildOICapRatioRank(ctx context.Context, ch *chrepo.Client, bn *binance.Client, limit int, cfg oiGrowthInterval) ([]tgRankItem, error) {
+	rows, err := ch.QueryOISnapshots(ctx)
 	if err != nil {
 		return nil, err
 	}
-	items := make([]tgRankItem, 0, len(rows))
+	capRows, err := ch.QueryMarketCaps(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	capMap := make(map[string]float64, len(capRows))
+	for _, r := range capRows {
+		if r.MarketCapUSD > 0 {
+			capMap[strings.ToUpper(strings.TrimSpace(r.Asset))] = r.MarketCapUSD
+		}
+	}
+
+	candidateCount := limit * 4
+	if candidateCount < 60 {
+		candidateCount = 60
+	}
+	if candidateCount > 200 {
+		candidateCount = 200
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].OINotionalUSD > rows[j].OINotionalUSD })
+	if len(rows) > candidateCount {
+		rows = rows[:candidateCount]
+	}
+
+	type result struct {
+		item tgRankItem
+		ok   bool
+	}
+	sem := make(chan struct{}, 8)
+	outCh := make(chan result, len(rows))
+	var wg sync.WaitGroup
 	for _, row := range rows {
-		items = append(items, tgRankItem{
-			Symbol:        row.Symbol,
-			OINotionalUSD: row.OINotionalUSD,
-			MarketCapUSD:  row.MarketCapUSD,
-			RatioPct:      row.Ratio * 100,
-		})
+		r := row
+		if binance.IsExcludedSymbol(r.Symbol) {
+			continue
+		}
+		asset := strings.TrimSuffix(strings.ToUpper(strings.TrimSpace(r.Symbol)), "USDT")
+		mcap, ok := capMap[asset]
+		if !ok || mcap <= 0 {
+			continue
+		}
+		wg.Add(1)
+		go func(marketCap float64) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			hist, e := bn.GetOpenInterestHist(ctx, r.Symbol, cfg.Period, 6)
+			if e != nil || len(hist) < 2 {
+				outCh <- result{}
+				return
+			}
+			prev, curr, ok := pickClosedOIPair(hist, cfg.BucketMs, time.Now().UnixMilli())
+			if !ok || prev <= 0 || curr <= 0 {
+				outCh <- result{}
+				return
+			}
+			prevRatio := prev / marketCap
+			currRatio := curr / marketCap
+			if prevRatio <= 0 || currRatio <= 0 {
+				outCh <- result{}
+				return
+			}
+			outCh <- result{
+				ok: true,
+				item: tgRankItem{
+					Symbol:        r.Symbol,
+					ChangePct:     (currRatio - prevRatio) / prevRatio * 100,
+					OINotionalUSD: r.OINotionalUSD,
+					MarketCapUSD:  marketCap,
+					RatioPct:      currRatio * 100,
+				},
+			}
+		}(mcap)
+	}
+	wg.Wait()
+	close(outCh)
+
+	items := make([]tgRankItem, 0, len(rows))
+	for r := range outCh {
+		if r.ok {
+			items = append(items, r.item)
+		}
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].ChangePct > items[j].ChangePct })
+	if len(items) > limit {
+		items = items[:limit]
 	}
 	for i := range items {
 		items[i].Rank = i + 1
@@ -169,7 +259,50 @@ func buildOICapRatioRank(ctx context.Context, ch *chrepo.Client, limit int) ([]t
 	return items, nil
 }
 
-func buildOpenInterestGrowthRank(ctx context.Context, ch *chrepo.Client, bn *binance.Client, limit int) ([]tgRankItem, error) {
+type oiGrowthInterval struct {
+	Interval string
+	Period   string
+	BucketMs int64
+}
+
+func parseOIGrowthInterval(raw string) oiGrowthInterval {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "15m", "15min":
+		return oiGrowthInterval{Interval: "15m", Period: "15m", BucketMs: 15 * 60 * 1000}
+	case "4h", "240m":
+		return oiGrowthInterval{Interval: "4h", Period: "4h", BucketMs: 4 * 60 * 60 * 1000}
+	case "1h", "60m":
+		return oiGrowthInterval{Interval: "1h", Period: "1h", BucketMs: 60 * 60 * 1000}
+	default:
+		return oiGrowthInterval{Interval: "24h", Period: "1d", BucketMs: 24 * 60 * 60 * 1000}
+	}
+}
+
+func pickClosedOIPair(hist []map[string]interface{}, bucketMs, nowMs int64) (prev, curr float64, ok bool) {
+	if len(hist) < 2 || bucketMs <= 0 {
+		return 0, 0, false
+	}
+	sort.Slice(hist, func(i, j int) bool { return tgToI64(hist[i]["timestamp"]) < tgToI64(hist[j]["timestamp"]) })
+	cutoff := (nowMs / bucketMs) * bucketMs
+	closed := make([]float64, 0, len(hist))
+	for _, h := range hist {
+		ts := tgToI64(h["timestamp"])
+		// 仅使用“已收盘”桶，排除当前进行中的桶（ts == cutoff）。
+		if ts <= 0 || ts >= cutoff {
+			continue
+		}
+		v := tgToF64(h["sumOpenInterestValue"])
+		if v > 0 {
+			closed = append(closed, v)
+		}
+	}
+	if len(closed) < 2 {
+		return 0, 0, false
+	}
+	return closed[len(closed)-2], closed[len(closed)-1], true
+}
+
+func buildOpenInterestGrowthRank(ctx context.Context, ch *chrepo.Client, bn *binance.Client, limit int, cfg oiGrowthInterval) ([]tgRankItem, error) {
 	rows, err := ch.QueryOISnapshots(ctx)
 	if err != nil || len(rows) == 0 {
 		return nil, err
@@ -206,15 +339,13 @@ func buildOpenInterestGrowthRank(ctx context.Context, ch *chrepo.Client, bn *bin
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			hist, e := bn.GetOpenInterestHist(ctx, r.Symbol, "1d", 2)
+			hist, e := bn.GetOpenInterestHist(ctx, r.Symbol, cfg.Period, 6)
 			if e != nil || len(hist) < 2 {
 				outCh <- result{}
 				return
 			}
-			sort.Slice(hist, func(i, j int) bool { return tgToI64(hist[i]["timestamp"]) < tgToI64(hist[j]["timestamp"]) })
-			prev := tgToF64(hist[len(hist)-2]["sumOpenInterestValue"])
-			curr := tgToF64(hist[len(hist)-1]["sumOpenInterestValue"])
-			if prev <= 0 || curr <= 0 {
+			prev, curr, ok := pickClosedOIPair(hist, cfg.BucketMs, time.Now().UnixMilli())
+			if !ok || prev <= 0 || curr <= 0 {
 				outCh <- result{}
 				return
 			}
@@ -305,7 +436,7 @@ func buildBullIndexRank(ctx context.Context, ch *chrepo.Client, limit int) (int6
 	return target, items, nil
 }
 
-func buildFlowRank(ctx context.Context, ch *chrepo.Client, bn *binance.Client, market, direction string, limit int) ([]tgRankItem, error) {
+func buildFlowRank(ctx context.Context, ch *chrepo.Client, bn *binance.Client, market, direction string, limit int, cfg oiGrowthInterval) ([]tgRankItem, error) {
 	tickers, err := bn.GetTicker24hAll(ctx, market)
 	if err != nil {
 		return nil, err
@@ -322,7 +453,10 @@ func buildFlowRank(ctx context.Context, ch *chrepo.Client, bn *binance.Client, m
 		return nil, nil
 	}
 
-	rows, err := ch.QueryTradeFlowAgg(ctx, market, symbols, "1m", time.Now().UnixMilli()-24*60*60*1000)
+	nowMs := time.Now().UnixMilli()
+	windowEnd := (nowMs / cfg.BucketMs) * cfg.BucketMs
+	windowStart := windowEnd - cfg.BucketMs
+	rows, err := ch.QueryTradeFlowAggRange(ctx, market, symbols, "1m", windowStart, windowEnd-1)
 	if err != nil {
 		return nil, err
 	}

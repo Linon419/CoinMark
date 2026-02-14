@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"coinmark/ingest-go/internal/binance"
 	"coinmark/ingest-go/internal/config"
 	"coinmark/ingest-go/internal/ingest"
 	"coinmark/ingest-go/internal/runtime"
@@ -112,6 +113,9 @@ func (c *Consumer) consumeTrade(ctx context.Context, market string, nc *nats.Con
 				if symbol == "" {
 					return
 				}
+				if binance.IsExcludedSymbol(symbol) {
+					return
+				}
 				tsMS := p.TradeTimeMS
 				if tsMS <= 0 {
 					tsMS = p.EventTimeMS
@@ -210,6 +214,9 @@ func (c *Consumer) consumeDepth(ctx context.Context, market string, nc *nats.Con
 				}
 				symbol := strings.ToUpper(strings.TrimSpace(p.Symbol))
 				if symbol == "" || p.EventTimeMS <= 0 {
+					return
+				}
+				if binance.IsExcludedSymbol(symbol) {
 					return
 				}
 				bids := parseDepthLevels(p.Bids)

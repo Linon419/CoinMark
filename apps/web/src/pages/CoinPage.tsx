@@ -10,7 +10,6 @@ type Market = "spot" | "swap";
 type TimeDisplayMode = "local" | "utc";
 
 type TabKey = "basic" | "hourly" | "daily" | "recent" | "quant";
-type HourlySubTab = "snapshot" | "netflow";
 
 type BasicResp = {
   basic: {
@@ -42,6 +41,8 @@ type BasicResp = {
 
 type FlowResp = {
   symbol: string;
+  day?: string;
+  isToday?: boolean;
   items: Array<{
     bucketStartMs: number;
     spotNetNotional: number;
@@ -206,6 +207,8 @@ type FundSnapshotResp = {
   timezone: string;
   timeMode?: "utc" | "local";
   tzOffsetMin?: number;
+  day?: string;
+  isToday?: boolean;
   source: string;
   items: Array<{
     key: number;
@@ -441,6 +444,14 @@ function isDayStartByMode(ts: number, _mode: TimeDisplayMode) {
   return d.getHours() === 0 && d.getMinutes() === 0;
 }
 
+function formatDateYmd(ts: number, mode: TimeDisplayMode) {
+  const d = new Date(ts);
+  const y = mode === "utc" ? d.getUTCFullYear() : d.getFullYear();
+  const m = mode === "utc" ? d.getUTCMonth() + 1 : d.getMonth() + 1;
+  const day = mode === "utc" ? d.getUTCDate() : d.getDate();
+  return `${y}-${`${m}`.padStart(2, "0")}-${`${day}`.padStart(2, "0")}`;
+}
+
 export default function CoinPage() {
   const { Title, Text } = Typography;
   const { symbol } = useParams();
@@ -448,7 +459,7 @@ export default function CoinPage() {
   const [market, setMarket] = useState<Market>("swap");
   const [timeDisplayMode, setTimeDisplayMode] = useState<TimeDisplayMode>("local");
   const [activeTab, setActiveTab] = useState<TabKey>("hourly");
-  const [hourlyTab, setHourlyTab] = useState<HourlySubTab>("snapshot");
+  const [hourlySnapshotDay, setHourlySnapshotDay] = useState<string>(() => formatDateYmd(Date.now(), "local"));
   const [basic, setBasic] = useState<BasicResp | null>(null);
   const [hourly, setHourly] = useState<FundSnapshotResp | null>(null);
   const [hourlyHealth, setHourlyHealth] = useState<FundSnapshotHealthResp | null>(null);
@@ -470,8 +481,20 @@ export default function CoinPage() {
   const [whaleRadar, setWhaleRadar] = useState<WhaleRadarResp | null>(null);
   const [loading, setLoading] = useState(false);
   const [nowTick, setNowTick] = useState(Date.now());
+  const hourlyMaxDay = useMemo(() => formatDateYmd(nowTick, timeDisplayMode), [nowTick, timeDisplayMode]);
+  const hourlyMinDay = useMemo(() => formatDateYmd(nowTick - 29 * 24 * 60 * 60 * 1000, timeDisplayMode), [nowTick, timeDisplayMode]);
   const hideSpotSeries = market === "spot" && !!basic?.marketFallback;
   const whaleSourceText = formatWhaleSource(whaleRadar?.sourceMarkets);
+
+  useEffect(() => {
+    if (hourlySnapshotDay > hourlyMaxDay) {
+      setHourlySnapshotDay(hourlyMaxDay);
+      return;
+    }
+    if (hourlySnapshotDay < hourlyMinDay) {
+      setHourlySnapshotDay(hourlyMinDay);
+    }
+  }, [hourlySnapshotDay, hourlyMinDay, hourlyMaxDay]);
 
   const load = async () => {
     if (!sym) return;
@@ -490,12 +513,14 @@ export default function CoinPage() {
           `/api/coin/detail/basic?market=${market}&symbol=${sym}&timeMode=${timeDisplayMode}&tzOffsetMin=${tzOffsetMin}`
         ),
         safeGet<FundSnapshotResp>(
-          `/api/coin/detail/fund/snapshots?symbol=${sym}&timeMode=${timeDisplayMode}&tzOffsetMin=${tzOffsetMin}`
+          `/api/coin/detail/fund/snapshots?symbol=${sym}&timeMode=${timeDisplayMode}&tzOffsetMin=${tzOffsetMin}&day=${encodeURIComponent(hourlySnapshotDay)}`
         ),
         safeGet<FundSnapshotHealthResp>(
           `/api/coin/detail/fund/snapshot-health?symbol=${sym}&timeMode=${timeDisplayMode}&tzOffsetMin=${tzOffsetMin}`
         ),
-        safeGet<FlowResp>(`/api/coin/detail/flows/hourly?symbol=${sym}&hours=24`),
+        safeGet<FlowResp>(
+          `/api/coin/detail/flows/hourly?symbol=${sym}&timeMode=${timeDisplayMode}&tzOffsetMin=${tzOffsetMin}&day=${encodeURIComponent(hourlySnapshotDay)}`
+        ),
         safeGet<FlowResp>(`/api/coin/detail/flows/daily?symbol=${sym}&days=30`),
         safeGet<FlowResp>(`/api/coin/detail/flows/daily?symbol=${sym}&days=30&includeToday=1`),
         safeGet<RecentDailyResp>(`/api/coin/detail/recent/daily?market=${market}&symbol=${sym}&days=20&includeToday=1`),
@@ -534,7 +559,7 @@ export default function CoinPage() {
 
   useEffect(() => {
     load();
-  }, [sym, market, timeDisplayMode, quantBucket]);
+  }, [sym, market, timeDisplayMode, quantBucket, hourlySnapshotDay]);
 
   useEffect(() => {
     const id = setInterval(() => {
@@ -542,15 +567,55 @@ export default function CoinPage() {
       if (document.visibilityState === "visible") {
         void load();
       }
-    }, 60 * 1000);
+  }, 60 * 1000);
     return () => clearInterval(id);
-  }, [sym, market, timeDisplayMode, quantBucket]);
+  }, [sym, market, timeDisplayMode, quantBucket, hourlySnapshotDay]);
+
+  const hourlyAligned = useMemo(() => {
+    const hourMs = 60 * 60 * 1000;
+    const minuteMs = 60 * 1000;
+    const axisTsSet = new Set<number>();
+    const snapshotSpotMap = new Map<number, number | null>();
+    const snapshotSwapMap = new Map<number, number | null>();
+    const flowSpotMap = new Map<number, number>();
+    const flowSwapMap = new Map<number, number>();
+
+    const normalizeFlowTs = (ts: number) => (ts % hourMs === 0 ? ts : Math.floor(ts / minuteMs) * minuteMs);
+    const normalizeSnapshotTs = (ts: number) => {
+      if (ts % hourMs === 0) {
+        return ts - hourMs;
+      }
+      return Math.floor(ts / minuteMs) * minuteMs;
+    };
+
+    for (const row of hourlyFlow?.items || []) {
+      const ts = normalizeFlowTs(row.bucketStartMs);
+      axisTsSet.add(ts);
+      flowSpotMap.set(ts, row.spotNetNotional || 0);
+      flowSwapMap.set(ts, row.swapNetNotional || 0);
+    }
+
+    for (const row of hourly?.items || []) {
+      const ts = normalizeSnapshotTs(row.labelTsMs);
+      axisTsSet.add(ts);
+      snapshotSpotMap.set(ts, row.spotValue == null ? null : row.spotValue);
+      snapshotSwapMap.set(ts, row.swapValue == null ? null : row.swapValue);
+    }
+
+    const axisTs = Array.from(axisTsSet).sort((a, b) => a - b);
+    return {
+      xs: axisTs.map((ts) => formatHour(ts, timeDisplayMode)),
+      snapshotSpot: axisTs.map((ts) => (snapshotSpotMap.has(ts) ? snapshotSpotMap.get(ts)! : null)),
+      snapshotSwap: axisTs.map((ts) => (snapshotSwapMap.has(ts) ? snapshotSwapMap.get(ts)! : null)),
+      flowSpot: axisTs.map((ts) => (flowSpotMap.has(ts) ? flowSpotMap.get(ts)! : null)),
+      flowSwap: axisTs.map((ts) => (flowSwapMap.has(ts) ? flowSwapMap.get(ts)! : null)),
+    };
+  }, [hourly, hourlyFlow, timeDisplayMode]);
 
   const hourlyOption = useMemo(() => {
-    const items = hourly?.items || [];
-    const xs = items.map((x) => formatHour(x.labelTsMs, timeDisplayMode));
-    const spot = items.map((x) => (x.spotValue == null ? null : x.spotValue));
-    const swap = items.map((x) => (x.swapValue == null ? null : x.swapValue));
+    const xs = hourlyAligned.xs;
+    const spot = hourlyAligned.snapshotSpot;
+    const swap = hourlyAligned.snapshotSwap;
     const series: any[] = [
       {
         name: "合约",
@@ -606,20 +671,19 @@ export default function CoinPage() {
       },
       series,
     };
-  }, [hourly, timeDisplayMode, hideSpotSeries]);
+  }, [hourlyAligned, hideSpotSeries]);
 
   const hourlyFlowOption = useMemo(() => {
-    const items = hourlyFlow?.items || [];
-    const xs = items.map((x) => formatHour(x.bucketStartMs, timeDisplayMode));
-    const spot = items.map((x) => x.spotNetNotional || 0);
-    const swap = items.map((x) => x.swapNetNotional || 0);
-    const buildBarData = (vals: number[]) =>
+    const xs = hourlyAligned.xs;
+    const spot = hourlyAligned.flowSpot;
+    const swap = hourlyAligned.flowSwap;
+    const buildBarData = (vals: Array<number | null>) =>
       vals.map((v) => ({
-        value: v,
+        value: v == null ? null : v,
         label: {
-          show: true,
-          position: v >= 0 ? "top" : "bottom",
-          offset: [0, v >= 0 ? -2 : 2],
+          show: v != null,
+          position: v == null ? "top" : v >= 0 ? "top" : "bottom",
+          offset: [0, v == null ? 0 : v >= 0 ? -2 : 2],
         },
       }));
     const swapData = buildBarData(swap);
@@ -634,7 +698,7 @@ export default function CoinPage() {
         labelLayout: { hideOverlap: true },
         label: {
           show: true,
-          formatter: (p: any) => formatCnCompact(p.value),
+          formatter: (p: any) => (p.value == null ? "" : formatCnCompact(p.value)),
           color: "#3b82f6",
           fontSize: 10,
           distance: 4,
@@ -651,7 +715,7 @@ export default function CoinPage() {
         labelLayout: { hideOverlap: true },
         label: {
           show: true,
-          formatter: (p: any) => formatCnCompact(p.value),
+          formatter: (p: any) => (p.value == null ? "" : formatCnCompact(p.value)),
           color: "#ff7a45",
           fontSize: 10,
           distance: 4,
@@ -667,7 +731,7 @@ export default function CoinPage() {
       xAxis: {
         type: "category",
         data: xs,
-        boundaryGap: true,
+        boundaryGap: false,
         axisLine: { lineStyle: { color: "#e2e8f0" } },
         axisTick: { show: false },
         axisLabel: { color: "#94a3b8" },
@@ -679,7 +743,7 @@ export default function CoinPage() {
       },
       series,
     };
-  }, [hourlyFlow, timeDisplayMode, hideSpotSeries]);
+  }, [hourlyAligned, hideSpotSeries]);
 
   const dailyAccOption = useMemo(() => {
     const items = dailyRecent?.items || daily?.items || [];
@@ -1589,75 +1653,79 @@ export default function CoinPage() {
 
       {activeTab === "hourly" && (
         <>
-          <div className="cm-section">
-            <div className="cm-card" style={{ padding: 8 }}>
-              <div className="cm-subTabs">
-                {(
-                  [
-                    { key: "snapshot", label: "累计资金快照" },
-                    { key: "netflow", label: "每小时净流入" },
-                  ] as Array<{ key: HourlySubTab; label: string }>
-                ).map((t) => (
-                  <button
-                    key={t.key}
-                    type="button"
-                    className={`cm-subTab ${hourlyTab === t.key ? "cm-subTab--active" : ""}`}
-                    onClick={() => setHourlyTab(t.key)}
-                  >
-                    {t.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          {hourlyTab === "snapshot" && (
-            <>
+          <>
               <div className="cm-section">
                 <div className="cm-card" style={{ padding: 12 }}>
                   <div className="cm-snapshotHeader">
                     <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
                       <Title heading={6} style={{ margin: 0 }}>
-                        今日每小时资金快照
+                        每小时资金快照（{hourly?.day || hourlySnapshotDay}）
                       </Title>
                       <Text className="cm-muted">
                         数据来源：trade_buckets（前端显示：浏览器本地时间；后端计算口径：{timeDisplayMode.toUpperCase()}）
                       </Text>
                       <Text className="cm-muted">悉尼时间：{formatTzTime(nowTick, "Australia/Sydney")}</Text>
                     </div>
-                    <div className="cm-miniLegend">
-                      <span className="cm-miniLegendItem">
-                        <span className="cm-miniDot cm-miniDot--swap" /> 合约
-                      </span>
-                      {!hideSpotSeries && (
+                    <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                      <div className="cm-miniLegend">
                         <span className="cm-miniLegendItem">
-                          <span className="cm-miniDot cm-miniDot--spot" /> 现货
+                          <span className="cm-miniDot cm-miniDot--swap" /> 合约
                         </span>
-                      )}
+                        {!hideSpotSeries && (
+                          <span className="cm-miniLegendItem">
+                            <span className="cm-miniDot cm-miniDot--spot" /> 现货
+                          </span>
+                        )}
+                      </div>
+                      <label className="cm-muted" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        回测日期
+                        <input
+                          type="date"
+                          value={hourlySnapshotDay}
+                          min={hourlyMinDay}
+                          max={hourlyMaxDay}
+                          onChange={(e) => setHourlySnapshotDay(e.target.value || hourlyMaxDay)}
+                        />
+                      </label>
                     </div>
                   </div>
-                  <div className="cm-card" style={{ padding: 10, marginBottom: 8 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                      <Text style={{ fontWeight: 600 }}>资金快照健康状态</Text>
-                      <Tag color={hourlyHealth == null ? "gray" : hourlyHealth.healthy ? "green" : "red"}>
-                        {hourlyHealth == null ? "未知" : hourlyHealth.healthy ? "健康" : "异常"}
-                      </Tag>
+                  {hourly?.isToday === false ? (
+                    <div className="cm-card" style={{ padding: 10, marginBottom: 8 }}>
+                      <div className="cm-muted">已切到历史回测日，不展示实时健康状态和回补冷却。</div>
                     </div>
-                    <div className="cm-muted" style={{ marginBottom: 4 }}>
-                      检测结果：{hourlyHealth?.reason || "-"}；一致性（1h vs 1m）：
-                      {hourlyHealth?.h1m1Consistency
-                        ? `${hourlyHealth.h1m1Consistency.mismatch}/${hourlyHealth.h1m1Consistency.compared}`
-                        : "-"}
+                  ) : (
+                    <div className="cm-card" style={{ padding: 10, marginBottom: 8 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                        <Text style={{ fontWeight: 600 }}>资金快照健康状态</Text>
+                        <Tag color={hourlyHealth == null ? "gray" : hourlyHealth.healthy ? "green" : "red"}>
+                          {hourlyHealth == null ? "未知" : hourlyHealth.healthy ? "健康" : "异常"}
+                        </Tag>
+                      </div>
+                      <div className="cm-muted" style={{ marginBottom: 4 }}>
+                        检测结果：{hourlyHealth?.reason || "-"}；一致性（1h vs 1m）：
+                        {hourlyHealth?.h1m1Consistency
+                          ? `${hourlyHealth.h1m1Consistency.mismatch}/${hourlyHealth.h1m1Consistency.compared}`
+                          : "-"}
+                      </div>
+                      <div className="cm-muted" style={{ marginBottom: 4 }}>
+                        最新1m：spot {formatTs(hourlyHealth?.latest1mByMarket?.spot || null)} / swap {formatTs(hourlyHealth?.latest1mByMarket?.swap || null)}
+                      </div>
+                      <div className="cm-muted">
+                        最近回补：{formatTs(hourlyHealth?.lastRepairAtMs || null)}；冷却剩余：
+                        {hourlyHealth ? `${Math.max(0, Math.floor((hourlyHealth.repairCooldownRemainingMs || 0) / 1000))}s` : "-"}
+                      </div>
                     </div>
-                    <div className="cm-muted" style={{ marginBottom: 4 }}>
-                      最新1m：spot {formatTs(hourlyHealth?.latest1mByMarket?.spot || null)} / swap {formatTs(hourlyHealth?.latest1mByMarket?.swap || null)}
-                    </div>
-                    <div className="cm-muted">
-                      最近回补：{formatTs(hourlyHealth?.lastRepairAtMs || null)}；冷却剩余：
-                      {hourlyHealth ? `${Math.max(0, Math.floor((hourlyHealth.repairCooldownRemainingMs || 0) / 1000))}s` : "-"}
-                    </div>
-                  </div>
+                  )}
                   <EChart option={hourlyOption} height={260} />
+                  <div style={{ marginTop: 12 }}>
+                    <div className="cm-snapshotHeader">
+                      <Title heading={6} style={{ margin: 0 }}>
+                        每小时净流入
+                      </Title>
+                      <Text className="cm-muted">数据来源：trade_buckets_1h（每小时净流入）</Text>
+                    </div>
+                    <EChart option={hourlyFlowOption} height={220} />
+                  </div>
                 </div>
               </div>
 
@@ -1750,34 +1818,7 @@ export default function CoinPage() {
                   </div>
                 </div>
               </div>
-            </>
-          )}
-
-          {hourlyTab === "netflow" && (
-            <div className="cm-section">
-              <div className="cm-card" style={{ padding: 12 }}>
-                <div className="cm-snapshotHeader">
-                  <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                    <Title heading={6} style={{ margin: 0 }}>
-                      每小时净流入
-                    </Title>
-                    <Text className="cm-muted">数据来源：trade_buckets_1h（每小时净流入）</Text>
-                  </div>
-                  <div className="cm-miniLegend">
-                    <span className="cm-miniLegendItem">
-                      <span className="cm-miniDot cm-miniDot--swap" /> 合约
-                    </span>
-                    {!hideSpotSeries && (
-                      <span className="cm-miniLegendItem">
-                        <span className="cm-miniDot cm-miniDot--spot" /> 现货
-                      </span>
-                    )}
-                  </div>
-                </div>
-                <EChart option={hourlyFlowOption} height={260} />
-              </div>
-            </div>
-          )}
+          </>
         </>
       )}
 

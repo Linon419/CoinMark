@@ -49,6 +49,15 @@ func startNotifyBot(ctx context.Context, cfg *config.Config, store *sqlite.Store
 		return
 	}
 	chat := &tele.Chat{ID: chatIDInt}
+	adminChatIDRaw := cfg.TGNotifyAdminChatID
+	if adminChatIDRaw == "" {
+		adminChatIDRaw = cfg.TGNotifyChatID
+	}
+	adminChatIDInt, err := strconv.ParseInt(adminChatIDRaw, 10, 64)
+	if err != nil {
+		log.Printf("tg notify: invalid admin chat_id: %v", err)
+		return
+	}
 
 	notifier := NewAnomalyNotifier(
 		store, redis,
@@ -56,6 +65,8 @@ func startNotifyBot(ctx context.Context, cfg *config.Config, store *sqlite.Store
 		cfg.TGStateRedisPrefix,
 		cfg.TGNotifyPollIntervalSec, cfg.TGNotifyBatchWindowSec, cfg.TGNotifyBatchMaxItems,
 	)
+	notifier.chatIDInt = chatIDInt
+	registerNotifyMenuHandlers(b, notifier, adminChatIDInt)
 
 	sendFn := func(text string) error {
 		_, err := b.Send(chat, text)
@@ -63,7 +74,16 @@ func startNotifyBot(ctx context.Context, cfg *config.Config, store *sqlite.Store
 	}
 
 	log.Println("tg notify: started")
-	notifier.RunLoop(ctx, sendFn, stopCh)
+	go notifier.RunLoop(ctx, sendFn, stopCh)
+	go func() {
+		select {
+		case <-stopCh:
+			b.Stop()
+		case <-ctx.Done():
+			b.Stop()
+		}
+	}()
+	b.Start()
 }
 
 func startQueryBot(ctx context.Context, cfg *config.Config, store *sqlite.Store, ch *chrepo.Client, bn *binance.Client, redis *redisrepo.Store, stopCh <-chan struct{}) {

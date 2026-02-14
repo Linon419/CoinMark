@@ -128,7 +128,10 @@ func IsExcludedSymbol(symbol string) bool {
 	if base == "" {
 		return true
 	}
-	return stableBaseAssets[base]
+	if stableBaseAssets[base] {
+		return true
+	}
+	return strings.Contains(base, "USD")
 }
 
 func FilterExcludedSymbols(symbols []string) []string {

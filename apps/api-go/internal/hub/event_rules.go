@@ -14,6 +14,10 @@ func toHubEventLevel(eventType string) string {
 	switch strings.ToLower(strings.TrimSpace(eventType)) {
 	case "whale_wall_far":
 		return "warning"
+	case "whale_wall_filled":
+		return "warning"
+	case "whale_wall_canceled":
+		return "info"
 	case "signal_lab_climax_long", "signal_lab_climax_short":
 		return "critical"
 	case "breakout_up", "breakout_down":

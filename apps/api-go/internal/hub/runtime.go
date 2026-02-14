@@ -13,14 +13,14 @@ import (
 )
 
 type Runtime struct {
-	Manager  *Manager
-	Pub      *Publisher
-	Stream   *AnomalyStream
-	cfg      *config.Config
-	store    *sqlite.Store
-	ch       *chrepo.Client
-	bn       *binance.Client
-	stopCh   chan struct{}
+	Manager *Manager
+	Pub     *Publisher
+	Stream  *AnomalyStream
+	cfg     *config.Config
+	store   *sqlite.Store
+	ch      *chrepo.Client
+	bn      *binance.Client
+	stopCh  chan struct{}
 }
 
 func NewRuntime(cfg *config.Config, store *sqlite.Store, ch *chrepo.Client, bn *binance.Client) *Runtime {
@@ -51,6 +51,11 @@ func (rt *Runtime) Start(ctx context.Context) {
 	// climax scan loop
 	if rt.ch != nil {
 		go rt.climaxLoop(ctx)
+		go rt.marketYidongMinuteLoop(ctx)
+		go rt.marketYidongVolumeLoop(ctx)
+		if rt.bn != nil {
+			go rt.absorptionLoop(ctx)
+		}
 	}
 
 	// depth fullscan
@@ -90,16 +95,16 @@ func (rt *Runtime) climaxLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			result, err := service.ScanClimaxReversal(ctx, rt.ch, rt.store, "both",
-				200,   // symbolLimit
-				60,    // lookbackMinutes
-				30,    // avgWindow
-				5.0,   // climaxFactor
-				10,    // reversalWindowMinutes
-				0.30,  // sellCascadeThreshold
-				0.70,  // buyCascadeThreshold
-				3e6,   // minCascadeNotional
-				0.15,  // obImbalanceThreshold
-				120,   // cooldownMinutes
+				200,  // symbolLimit
+				60,   // lookbackMinutes
+				30,   // avgWindow
+				5.0,  // climaxFactor
+				10,   // reversalWindowMinutes
+				0.30, // sellCascadeThreshold
+				0.70, // buyCascadeThreshold
+				3e6,  // minCascadeNotional
+				0.15, // obImbalanceThreshold
+				120,  // cooldownMinutes
 			)
 			if err != nil {
 				log.Printf("hub: climax scan error: %v", err)
@@ -125,6 +130,73 @@ func (rt *Runtime) cleanupLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			rt.doCleanup(ctx)
+		}
+	}
+}
+
+func (rt *Runtime) marketYidongMinuteLoop(ctx context.Context) {
+	interval := rt.cfg.AnomalyScanIntervalSec
+	if interval < 10 {
+		interval = 60
+	}
+	ticker := time.NewTicker(time.Duration(interval) * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-rt.stopCh:
+			return
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			inserted, err := service.ScanMarketYidongMinute(ctx, rt.ch, rt.store, rt.bn, "swap", rt.cfg.AnomalyScanTopN)
+			if err != nil {
+				log.Printf("hub: market yidong minute scan error: %v", err)
+			} else if inserted > 0 {
+				log.Printf("hub: market yidong minute inserted %d events", inserted)
+			}
+		}
+	}
+}
+
+func (rt *Runtime) marketYidongVolumeLoop(ctx context.Context) {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-rt.stopCh:
+			return
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			inserted, err := service.ScanMarketYidongVolume(ctx, rt.ch, rt.store, rt.bn, "swap", rt.cfg.AnomalyScanTopN)
+			if err != nil {
+				log.Printf("hub: market yidong volume scan error: %v", err)
+			} else if inserted > 0 {
+				log.Printf("hub: market yidong volume inserted %d events", inserted)
+			}
+		}
+	}
+}
+
+func (rt *Runtime) absorptionLoop(ctx context.Context) {
+	interval := rt.cfg.AnomalyScanIntervalSec
+	if interval < 30 {
+		interval = 60
+	}
+	ticker := time.NewTicker(time.Duration(interval) * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-rt.stopCh:
+			return
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := service.RefreshAbsorptionSignalSnapshots(ctx, rt.ch, rt.bn, rt.store, "swap", rt.cfg.AnomalyScanTopN); err != nil {
+				log.Printf("hub: absorption scan error: %v", err)
+			}
 		}
 	}
 }

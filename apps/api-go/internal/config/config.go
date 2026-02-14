@@ -65,7 +65,7 @@ type Config struct {
 	Backfill1dLimit     int
 
 	// OI refresh
-	OIRefreshTopN       int
+	OIRefreshTopN        int
 	OIRefreshIntervalSec int
 
 	// SR refresh
@@ -81,7 +81,7 @@ type Config struct {
 	AnomalyAmplitudeSpikeFactory float64
 
 	// Absorption
-	AbsorptionSnapshotRetentionHours   int
+	AbsorptionSnapshotRetentionHours     int
 	AbsorptionSnapshotCleanupIntervalSec int
 
 	// Rank
@@ -93,11 +93,12 @@ type Config struct {
 	MarketCapSource string
 
 	// Telegram
-	TGEnabled              bool
-	TGNotifyBotToken       string
-	TGQueryBotToken        string
-	TGNotifyChatID         string
-	TGNotifyMarket         string
+	TGEnabled               bool
+	TGNotifyBotToken        string
+	TGQueryBotToken         string
+	TGNotifyChatID          string
+	TGNotifyAdminChatID     string
+	TGNotifyMarket          string
 	TGNotifyPollIntervalSec int
 	TGNotifyBatchWindowSec  int
 	TGNotifyBatchMaxItems   int
@@ -200,6 +201,7 @@ func Load() (*Config, error) {
 		TGNotifyBotToken:        getenv("TG_NOTIFY_BOT_TOKEN", ""),
 		TGQueryBotToken:         getenv("TG_QUERY_BOT_TOKEN", ""),
 		TGNotifyChatID:          getenv("TG_NOTIFY_CHAT_ID", ""),
+		TGNotifyAdminChatID:     getenv("TG_NOTIFY_ADMIN_CHAT_ID", ""),
 		TGNotifyMarket:          getenv("TG_NOTIFY_MARKET", "swap"),
 		TGNotifyPollIntervalSec: getenvInt("TG_NOTIFY_POLL_INTERVAL_SEC", 5),
 		TGNotifyBatchWindowSec:  getenvInt("TG_NOTIFY_BATCH_WINDOW_SEC", 30),

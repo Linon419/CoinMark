@@ -193,4 +193,14 @@ var schemaDDL = []string{
 	)`,
 	`CREATE INDEX IF NOT EXISTS ix_orderbook_heatmap_market_time ON orderbook_heatmap_1m (market, bucket_start_ms)`,
 	`CREATE INDEX IF NOT EXISTS ix_orderbook_heatmap_market_symbol ON orderbook_heatmap_1m (market, symbol, bucket_start_ms)`,
+
+	// tg_notify_prefs (group-level notify switches)
+	`CREATE TABLE IF NOT EXISTS tg_notify_prefs (
+		chat_id BIGINT PRIMARY KEY,
+		market_anomaly_enabled BOOLEAN NOT NULL DEFAULT 1,
+		whale_wall_enabled BOOLEAN NOT NULL DEFAULT 0,
+		signal_lab_enabled BOOLEAN NOT NULL DEFAULT 0,
+		mute_all BOOLEAN NOT NULL DEFAULT 0,
+		updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+	)`,
 }

@@ -227,9 +227,79 @@ body {
   gap: 14px;
 }
 
+.cm-homeSummary {
+  padding: 12px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.cm-homeSummaryItem {
+  border: 1px solid var(--cm-border);
+  border-radius: 10px;
+  padding: 10px;
+  background: rgba(148, 163, 184, 0.06);
+}
+
+.cm-homeSummaryLabel {
+  color: var(--cm-muted);
+  font-size: 12px;
+}
+
+.cm-homeSummaryValue {
+  margin-top: 6px;
+  font-size: 18px;
+  font-weight: 600;
+}
+
 @media (max-width: 900px) {
   .cm-grid-2 {
     grid-template-columns: 1fr;
+  }
+
+  .cm-homeSummary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 520px) {
+  .cm-shell {
+    padding: 10px;
+  }
+
+  .cm-content {
+    margin-top: 10px;
+  }
+
+  .cm-page {
+    gap: 12px;
+  }
+
+  .cm-topbar {
+    padding: 10px 10px;
+  }
+
+  .cm-homeSummary {
+    grid-template-columns: 1fr;
+  }
+
+  .cm-coinTabs,
+  .cm-subTabs {
+    justify-content: flex-start;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    white-space: nowrap;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .cm-tab,
+  .cm-subTab {
+    flex: 0 0 auto;
+  }
+
+  .cm-coinTabs::-webkit-scrollbar,
+  .cm-subTabs::-webkit-scrollbar {
+    display: none;
   }
 }
 

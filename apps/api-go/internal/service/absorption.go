@@ -46,7 +46,7 @@ type absRow struct {
 type absValue struct {
 	Market, Symbol                string
 	BucketStartMs                 int64
-	Direction, SignalState         string
+	Direction, SignalState        string
 	Score                         float64
 	NetFlowStrength, ImpactPerNot *float64
 	W4h, W1d, W3d                 bool
@@ -155,9 +155,41 @@ func scoreWindow(w windowResult, side string) float64 {
 // ---------------------------------------------------------------------------
 
 func RefreshAbsorptionSignalSnapshots(ctx context.Context, ch *chrepo.Client, bn *binance.Client, store *sqlite.Store, market string, topN int) error {
+	if ch == nil || bn == nil || store == nil {
+		return nil
+	}
+
+	const (
+		b1mMs = int64(60 * 1000)
+		b4hMs = int64(4 * 60 * 60 * 1000)
+		d1Ms  = int64(24 * 60 * 60 * 1000)
+
+		// Robustness guards:
+		// - minute coverage avoids distorted percentile baselines from sparse data
+		// - 4h coverage avoids persistence ratios over missing windows
+		minMinuteCoverage7d = 0.72
+		minWindowCoverage7d = 0.75
+
+		// dual threshold: rolling percentile + absolute floor
+		bigAbsFloorNotional = 20000.0
+
+		// hysteresis to reduce edge flicker around confirm/fading border
+		confirmEntryRatio = 0.60
+		confirmExitRatio  = 0.55
+		minFadingDrop     = 0.08
+	)
+
 	nowMs := time.Now().UnixMilli()
-	fullStartMs := nowMs - 3*24*60*60*1000
-	bucketStartMs := (nowMs / 60000) * 60000
+	lastClosed1mStart := (nowMs/b1mMs)*b1mMs - b1mMs
+	lastClosed4hStart := (lastClosed1mStart/b4hMs)*b4hMs - b4hMs
+	if lastClosed1mStart <= 0 || lastClosed4hStart <= 0 {
+		return nil
+	}
+	// Keep enough history for:
+	// - 7d percentile baselines
+	// - recent 30 and previous 30 of 4h windows
+	fullStartMs := lastClosed1mStart - 20*d1Ms
+	bucketStartMs := (nowMs / b1mMs) * b1mMs
 
 	tickers, err := bn.GetTicker24hAll(ctx, market)
 	if err != nil {
@@ -174,7 +206,7 @@ func RefreshAbsorptionSignalSnapshots(ctx context.Context, ch *chrepo.Client, bn
 			continue
 		}
 		qv := toFloat64(row["quoteVolume"])
-		ranked = append(ranked, symVol{sym, qv})
+		ranked = append(ranked, symVol{sym: sym, qv: qv})
 	}
 	sort.Slice(ranked, func(i, j int) bool { return ranked[i].qv > ranked[j].qv })
 	if topN < 20 {
@@ -183,7 +215,7 @@ func RefreshAbsorptionSignalSnapshots(ctx context.Context, ch *chrepo.Client, bn
 	if len(ranked) > topN {
 		ranked = ranked[:topN]
 	}
-	var symbols []string
+	symbols := make([]string, 0, len(ranked))
 	for _, r := range ranked {
 		symbols = append(symbols, r.sym)
 	}
@@ -192,227 +224,321 @@ func RefreshAbsorptionSignalSnapshots(ctx context.Context, ch *chrepo.Client, bn
 		return nil
 	}
 
-	obRows, err := ch.QueryOrderbookFeatures(ctx, market, "", symbols, "1m", fullStartMs, 0, "asc")
+	trRows, err := ch.QueryTradeBuckets(ctx, market, "", symbols, "1m", fullStartMs, lastClosed1mStart, "asc", 0)
 	if err != nil {
 		return err
 	}
-	trRows, err := ch.QueryTradeBuckets(ctx, market, "", symbols, "1m", fullStartMs, 0, "asc", 0)
-	if err != nil {
-		return err
+	if len(trRows) == 0 {
+		return nil
 	}
 
-	obBySym := make(map[string]map[int64]model.CHOBFeatureRow)
-	for _, r := range obRows {
-		m, ok := obBySym[r.Symbol]
-		if !ok {
-			m = make(map[int64]model.CHOBFeatureRow)
-			obBySym[r.Symbol] = m
-		}
-		m[r.BucketStartMs] = r
+	type point4h struct {
+		StartMs  int64
+		Delta4h  float64
+		BigDelta float64
 	}
-	trBySym := make(map[string]map[int64]model.CHTradeRow)
+	type agg4h struct {
+		Delta4h  float64
+		BigDelta float64
+	}
+	type symData struct {
+		rows []model.CHTradeRow
+	}
+	bySym := make(map[string]*symData, len(symbols))
 	for _, r := range trRows {
-		m, ok := trBySym[r.Symbol]
-		if !ok {
-			m = make(map[int64]model.CHTradeRow)
-			trBySym[r.Symbol] = m
+		sym := r.Symbol
+		if sym == "" || binance.IsExcludedSymbol(sym) {
+			continue
 		}
-		m[r.BucketStartMs] = r
+		if bySym[sym] == nil {
+			bySym[sym] = &symData{}
+		}
+		bySym[sym].rows = append(bySym[sym].rows, r)
 	}
 
-	var values []absValue
+	values := make([]absValue, 0, len(symbols))
 	for _, sym := range symbols {
-		obMap := obBySym[sym]
-		trMap := trBySym[sym]
-		tsSet := make(map[int64]struct{})
-		for ts := range obMap {
-			tsSet[ts] = struct{}{}
+		data := bySym[sym]
+		if data == nil || len(data.rows) < 1200 {
+			continue
 		}
-		for ts := range trMap {
-			tsSet[ts] = struct{}{}
+		rows := data.rows
+
+		recentStart1m := lastClosed1mStart - 7*d1Ms
+		recentRows := 0
+		for _, r := range rows {
+			if r.BucketStartMs >= recentStart1m && r.BucketStartMs <= lastClosed1mStart {
+				recentRows++
+			}
 		}
-		var timeline []int64
-		for ts := range tsSet {
-			timeline = append(timeline, ts)
-		}
-		sort.Slice(timeline, func(i, j int) bool { return timeline[i] < timeline[j] })
-		if len(timeline) < 240 {
+		expRows := int((lastClosed1mStart-recentStart1m)/b1mMs) + 1
+		if expRows <= 0 || float64(recentRows)/float64(expRows) < minMinuteCoverage7d {
 			continue
 		}
 
-		var rows []absRow
-		for _, ts := range timeline {
-			ob, obOk := obMap[ts]
-			tr, trOk := trMap[ts]
+		last7dAbsDelta1m := make([]float64, 0, 20000)
+		winAgg := make(map[int64]*agg4h, 256)
 
-			buy, sell := 0.0, 0.0
-			if obOk {
-				buy = ob.TakerBuyNotional
-				sell = ob.TakerSellNotional
-			} else if trOk {
-				buy = tr.TakerBuyNotional
-				sell = tr.TakerSellNotional
-			}
-			net := buy - sell
-			denom := buy + sell
-			var aggrBuyRatio *float64
-			if denom > 0 {
-				v := buy / denom
-				aggrBuyRatio = &v
-			}
-
-			var spreadBps *float64
-			if obOk && ob.SampleCount > 0 {
-				v := ob.SpreadBpsSum / float64(ob.SampleCount)
-				spreadBps = &v
-			}
-
-			var replenishScore *float64
-			if obOk {
-				dep := ob.DepletionEvents
-				rep := ob.ReplenishmentEvents
-				if dep <= 0 {
-					v := 50.0
-					replenishScore = &v
-				} else {
-					v := clamp(float64(rep)/float64(dep)*100.0, 0, 100)
-					replenishScore = &v
-				}
-			}
-
-			var closePrice *float64
-			if trOk && tr.ClosePrice != nil {
-				closePrice = tr.ClosePrice
-			}
-			rows = append(rows, absRow{Ts: ts, NetBuyNotional: net, AggrBuyRatio: aggrBuyRatio, SpreadBps: spreadBps, ReplenishScore: replenishScore, ClosePrice: closePrice})
-		}
-
-		for i := range rows {
-			if i == 0 {
-				rows[i].Ret1m = 0
+		for _, r := range rows {
+			ts := r.BucketStartMs
+			if ts > lastClosed1mStart {
 				continue
 			}
-			if rows[i].ClosePrice != nil && rows[i-1].ClosePrice != nil && *rows[i-1].ClosePrice > 0 {
-				rows[i].Ret1m = *rows[i].ClosePrice / *rows[i-1].ClosePrice - 1.0
+			delta := r.TakerBuyNotional - r.TakerSellNotional
+			wStart := (ts / b4hMs) * b4hMs
+			if winAgg[wStart] == nil {
+				winAgg[wStart] = &agg4h{}
+			}
+			winAgg[wStart].Delta4h += delta
+			if ts >= lastClosed1mStart-7*d1Ms {
+				last7dAbsDelta1m = append(last7dAbsDelta1m, math.Abs(delta))
 			}
 		}
+		if len(last7dAbsDelta1m) < 500 {
+			continue
+		}
+		p95 := percentileValue(last7dAbsDelta1m, 95.0)
+		p85 := percentileValue(last7dAbsDelta1m, 85.0)
+		bigThreshold := math.Max(p95, math.Max(bigAbsFloorNotional, p85*1.6))
+		if bigThreshold <= 0 {
+			continue
+		}
 
-		var spreadValues []float64
 		for _, r := range rows {
-			if r.SpreadBps != nil {
-				spreadValues = append(spreadValues, *r.SpreadBps)
+			ts := r.BucketStartMs
+			if ts > lastClosed1mStart {
+				continue
 			}
+			delta := r.TakerBuyNotional - r.TakerSellNotional
+			if math.Abs(delta) < bigThreshold {
+				continue
+			}
+			wStart := (ts / b4hMs) * b4hMs
+			if winAgg[wStart] == nil {
+				continue
+			}
+			winAgg[wStart].BigDelta += delta
 		}
 
-		for _, side := range []string{"LONG_BIAS", "SHORT_BIAS"} {
-			w4h := windowEval(rows, spreadValues, 240, side, 0.60, 0.35, 0.60, 55.0)
-			w1d := windowEval(rows, spreadValues, 1440, side, 0.55, 0.80, 0.60, 55.0)
-			w3d := windowEval(rows, spreadValues, 4320, side, 0.50, 1.60, 0.60, 55.0)
-			s4h := scoreWindow(w4h, side)
-			s1d := scoreWindow(w1d, side)
-			s3d := scoreWindow(w3d, side)
+		starts := make([]int64, 0, len(winAgg))
+		for s := range winAgg {
+			if s <= lastClosed4hStart {
+				starts = append(starts, s)
+			}
+		}
+		sort.Slice(starts, func(i, j int) bool { return starts[i] < starts[j] })
+		if len(starts) < 80 {
+			continue
+		}
+
+		points := make([]point4h, 0, len(starts))
+		latestIdx := -1
+		for i, s := range starts {
+			a := winAgg[s]
+			points = append(points, point4h{StartMs: s, Delta4h: a.Delta4h, BigDelta: a.BigDelta})
+			if s == lastClosed4hStart {
+				latestIdx = i
+			}
+		}
+		if latestIdx < 0 {
+			continue
+		}
+
+		histStart := lastClosed4hStart - 7*d1Ms
+		histDelta := make([]float64, 0, 64)
+		histBig := make([]float64, 0, 64)
+		hist4hObs := 0
+		for _, p := range points {
+			if p.StartMs >= histStart && p.StartMs < lastClosed4hStart {
+				histDelta = append(histDelta, p.Delta4h)
+				histBig = append(histBig, p.BigDelta)
+				hist4hObs++
+			}
+		}
+		if len(histDelta) < 20 {
+			continue
+		}
+		exp4h := int((lastClosed4hStart - histStart) / b4hMs)
+		if exp4h <= 0 || float64(hist4hObs)/float64(exp4h) < minWindowCoverage7d {
+			continue
+		}
+		p80DeltaBuy := percentileValue(histDelta, 80.0)
+		p80DeltaSell := percentileValue(negSeries(histDelta), 80.0)
+		p80BigDeltaBuy := percentileValue(histBig, 80.0)
+		p80BigDeltaSell := percentileValue(negSeries(histBig), 80.0)
+		deltaThresholdBuy := math.Max(0, p80DeltaBuy)
+		deltaThresholdSell := math.Max(0, p80DeltaSell)
+		bigDeltaThresholdBuy := math.Max(0, p80BigDeltaBuy)
+		bigDeltaThresholdSell := math.Max(0, p80BigDeltaSell)
+
+		abnormalBuyFlags := make([]bool, len(points))
+		abnormalSellFlags := make([]bool, len(points))
+		for i := range points {
+			abnormalBuyFlags[i] = points[i].Delta4h > deltaThresholdBuy
+			abnormalSellFlags[i] = (-points[i].Delta4h) > deltaThresholdSell
+		}
+
+		priceChange5d := 0.0
+		hasPrice5d := false
+		latestClose, okLatestClose := closeAtOrBefore(rows, lastClosed1mStart)
+		close5dAgo, okClose5d := closeAtOrBefore(rows, lastClosed1mStart-5*d1Ms)
+		if okLatestClose && okClose5d && close5dAgo > 0 {
+			priceChange5d = latestClose/close5dAgo - 1.0
+			hasPrice5d = true
+		}
+
+		buildSignal := func(side string, abnormalFlags []bool, deltaNow, deltaThreshold, bigNow, bigThreshold float64) absValue {
+			l1 := deltaNow > deltaThreshold
+			recentRatio, recentOK := ratioRange(abnormalFlags, latestIdx-29, latestIdx)
+			prevRatio, prevOK := ratioRange(abnormalFlags, latestIdx-59, latestIdx-30)
+			l2 := recentOK && recentRatio > confirmEntryRatio
+			// hysteresis: keep CONFIRM when ratio only small pullback
+			if !l2 && l1 && recentOK && prevOK && prevRatio > confirmEntryRatio && recentRatio >= confirmExitRatio {
+				l2 = true
+			}
+			l3 := l2 && bigNow > bigThreshold && bigNow > 0
+
+			cumSlope := 0.0
+			if recentOK {
+				winDeltas := make([]float64, 0, 30)
+				for i := latestIdx - 29; i <= latestIdx; i++ {
+					if i < 0 || i >= len(points) {
+						continue
+					}
+					d := points[i].Delta4h
+					if side == "SHORT_BIAS" {
+						d = -d
+					}
+					winDeltas = append(winDeltas, d)
+				}
+				if len(winDeltas) >= 10 {
+					cum := make([]float64, len(winDeltas))
+					s := 0.0
+					for i, v := range winDeltas {
+						s += v
+						cum[i] = s
+					}
+					cumSlope = linearSlope(cum)
+				}
+			}
+
+			l3Plus := l3 && hasPrice5d && cumSlope > 0 && math.Abs(priceChange5d) <= 0.10
+			fading := prevOK && recentOK && prevRatio > confirmEntryRatio &&
+				recentRatio <= confirmExitRatio &&
+				(prevRatio-recentRatio) >= minFadingDrop &&
+				!l2 && !l3
 
 			state := "NONE"
-			if w3d.Passed && s3d >= 78 {
-				state = "STRONG"
-			} else if w1d.Passed && s1d >= 65 {
-				state = "CONFIRM"
-			} else if w4h.Passed && s4h >= 55 {
-				state = "WATCH"
-			}
-
 			score := 0.0
-			var reasons []string
-			contReason := ""
-
-			if state == "NONE" {
-				n4h := 240
-				if len(rows) < n4h {
-					n4h = len(rows)
-				}
-				n12h := 720
-				if len(rows) < n12h {
-					n12h = len(rows)
-				}
-				recent4h := rows[len(rows)-n4h:]
-				recent12h := rows[len(rows)-n12h:]
-				flow4h := meanNetBuy(recent4h)
-				flow12h := meanNetBuy(recent12h)
-				p1d := w1d.BuyPersistenceRatio
-				if side == "SHORT_BIAS" {
-					p1d = w1d.SellPersistenceRatio
-				}
-				contOk := false
-				if side == "LONG_BIAS" {
-					contOk = flow4h > 0 && flow12h > 0
-				} else {
-					contOk = flow4h < 0 && flow12h < 0
-				}
-				contOk = contOk && p1d >= 0.50 && w1d.NetRetAbsPct <= 1.20
-				if contOk && math.Max(s4h, s1d) >= 52 {
-					state = "WATCH"
-					score = math.Max(52, math.Min(68, math.Max(s4h, s1d)))
-					contReason = "FLOW_CONTINUATION_12H"
-				}
+			switch {
+			case l3Plus:
+				state, score = "STRONG", 95
+			case l3:
+				state, score = "STRONG", 86
+			case l2:
+				state, score = "CONFIRM", 72
+			case fading:
+				state, score = "FADING", 52
+			case l1:
+				state, score = "WATCH", 58
 			}
 
-			switch state {
-			case "WATCH":
-				score = math.Max(score, s4h)
-			case "CONFIRM":
-				score = math.Max(s4h, s1d)
-			case "STRONG":
-				score = math.Max(math.Max(s4h, s1d), s3d)
+			reasons := make([]string, 0, 9)
+			if l1 {
+				reasons = append(reasons, "L1_DELTA4H_ABNORMAL")
 			}
-
-			var impactVals []float64
-			tail := rows
-			if len(tail) > 20 {
-				tail = tail[len(tail)-20:]
+			if l2 {
+				reasons = append(reasons, "L2_PERSISTENCE_RATIO_GT_60")
 			}
-			for _, r := range tail {
-				if math.Abs(r.NetBuyNotional) > 1e-9 {
-					impactVals = append(impactVals, math.Abs(r.Ret1m)/math.Abs(r.NetBuyNotional))
-				}
+			if l3 {
+				reasons = append(reasons, "L3_BIG_DELTA_CONFIRM")
 			}
-			var impactAvg, netStrength *float64
-			if len(impactVals) > 0 {
-				v := mean(impactVals)
-				impactAvg = &v
+			if l3Plus {
+				reasons = append(reasons, "L3_PLUS_PRICE_DELTA_DIVERGENCE")
 			}
-			ns := meanNetBuy(tail)
-			netStrength = &ns
-
-			if w4h.Passed {
-				reasons = append(reasons, "4h通过")
-			}
-			if w1d.Passed {
-				reasons = append(reasons, "1d通过")
-			}
-			if w3d.Passed {
-				reasons = append(reasons, "3d通过")
+			if fading {
+				reasons = append(reasons, "FADING_RECENT_RATIO_DROPPED")
 			}
 			if len(reasons) == 0 {
-				reasons = append(reasons, "未触发")
+				reasons = append(reasons, "NO_TRIGGER")
 			}
-			if contReason != "" {
-				reasons = append(reasons, contReason)
+			if side == "SHORT_BIAS" {
+				for i := range reasons {
+					reasons[i] = "SHORT_" + reasons[i]
+				}
 			}
 
-			w4h.Score = s4h
-			w1d.Score = s1d
-			w3d.Score = s3d
-			wj, _ := json.Marshal(map[string]windowResult{"4h": w4h, "1d": w1d, "3d": w3d})
-			rj, _ := json.Marshal(reasons)
-
-			values = append(values, absValue{
-				Market: market, Symbol: sym, BucketStartMs: bucketStartMs,
-				Direction: side, SignalState: state, Score: score,
-				NetFlowStrength: netStrength, ImpactPerNot: impactAvg,
-				W4h: w4h.Passed, W1d: w1d.Passed, W3d: w3d.Passed,
-				Windows: wj, Reasons: rj,
+			windows, _ := json.Marshal(map[string]map[string]interface{}{
+				"4h": {
+					"passed":     l1,
+					"score":      round4(clamp((deltaNow/math.Max(1e-9, deltaThreshold))*100.0, 0, 100)),
+					"delta4h":    round4(deltaNow),
+					"p80":        round4(deltaThreshold),
+					"coverage7d": round4(float64(hist4hObs) / math.Max(1.0, float64(exp4h))),
+				},
+				"1d": {
+					"passed":               l2,
+					"score":                round4(clamp(recentRatio*100.0, 0, 100)),
+					"persistenceRatio":     round4(recentRatio),
+					"persistenceRatioPrev": round4(prevRatio),
+				},
+				"3d": {
+					"passed":           l3 || l3Plus,
+					"score":            round4(clamp((bigNow/math.Max(1e-9, bigThreshold))*100.0, 0, 100)),
+					"bigDelta4h":       round4(bigNow),
+					"bigDeltaP80":      round4(bigThreshold),
+					"cumDelta5dSlope":  round4(cumSlope),
+					"priceChange5dPct": round4(priceChange5d * 100),
+					"divergencePassed": l3Plus,
+				},
 			})
+			reasonsJSON, _ := json.Marshal(reasons)
+
+			netFlowStrength := points[latestIdx].Delta4h
+			if side == "SHORT_BIAS" {
+				netFlowStrength = -math.Abs(netFlowStrength)
+			}
+			var impactPerNotional *float64
+			if hasPrice5d {
+				v := math.Abs(priceChange5d) / math.Max(1e-9, math.Abs(points[latestIdx].Delta4h))
+				impactPerNotional = &v
+			}
+
+			return absValue{
+				Market:          market,
+				Symbol:          sym,
+				BucketStartMs:   bucketStartMs,
+				Direction:       side,
+				SignalState:     state,
+				Score:           score,
+				NetFlowStrength: &netFlowStrength,
+				ImpactPerNot:    impactPerNotional,
+				W4h:             l1,
+				W1d:             l2,
+				W3d:             l3 || l3Plus,
+				Windows:         windows,
+				Reasons:         reasonsJSON,
+			}
 		}
+
+		longSig := buildSignal(
+			"LONG_BIAS",
+			abnormalBuyFlags,
+			points[latestIdx].Delta4h,
+			deltaThresholdBuy,
+			points[latestIdx].BigDelta,
+			bigDeltaThresholdBuy,
+		)
+		shortSig := buildSignal(
+			"SHORT_BIAS",
+			abnormalSellFlags,
+			-points[latestIdx].Delta4h,
+			deltaThresholdSell,
+			-points[latestIdx].BigDelta,
+			bigDeltaThresholdSell,
+		)
+
+		values = append(values, longSig, shortSig)
 	}
 
 	if len(values) == 0 {
@@ -421,6 +547,97 @@ func RefreshAbsorptionSignalSnapshots(ctx context.Context, ch *chrepo.Client, bn
 	return upsertAbsorptionSnapshots(ctx, store, values)
 }
 
+func percentileValue(values []float64, p float64) float64 {
+	if len(values) == 0 {
+		return 0
+	}
+	s := make([]float64, 0, len(values))
+	for _, v := range values {
+		if !math.IsNaN(v) && !math.IsInf(v, 0) {
+			s = append(s, v)
+		}
+	}
+	if len(s) == 0 {
+		return 0
+	}
+	sort.Float64s(s)
+	if p <= 0 {
+		return s[0]
+	}
+	if p >= 100 {
+		return s[len(s)-1]
+	}
+	pos := (p / 100.0) * float64(len(s)-1)
+	lo := int(math.Floor(pos))
+	hi := int(math.Ceil(pos))
+	if lo == hi {
+		return s[lo]
+	}
+	frac := pos - float64(lo)
+	return s[lo] + (s[hi]-s[lo])*frac
+}
+
+func ratioRange(flags []bool, start, end int) (float64, bool) {
+	if len(flags) == 0 {
+		return 0, false
+	}
+	if start < 0 || end < 0 || start >= len(flags) || end >= len(flags) || start > end {
+		return 0, false
+	}
+	total := end - start + 1
+	if total <= 0 {
+		return 0, false
+	}
+	hit := 0
+	for i := start; i <= end; i++ {
+		if flags[i] {
+			hit++
+		}
+	}
+	return float64(hit) / float64(total), true
+}
+
+func closeAtOrBefore(rows []model.CHTradeRow, ts int64) (float64, bool) {
+	for i := len(rows) - 1; i >= 0; i-- {
+		if rows[i].BucketStartMs <= ts && rows[i].ClosePrice != nil && *rows[i].ClosePrice > 0 {
+			return *rows[i].ClosePrice, true
+		}
+	}
+	return 0, false
+}
+
+func linearSlope(vals []float64) float64 {
+	n := len(vals)
+	if n < 2 {
+		return 0
+	}
+	meanX := float64(n-1) / 2.0
+	meanY := 0.0
+	for _, v := range vals {
+		meanY += v
+	}
+	meanY /= float64(n)
+	num, den := 0.0, 0.0
+	for i, v := range vals {
+		x := float64(i)
+		dx := x - meanX
+		dy := v - meanY
+		num += dx * dy
+		den += dx * dx
+	}
+	if den <= 0 {
+		return 0
+	}
+	return num / den
+}
+
+func negSeries(vals []float64) []float64 {
+	out := make([]float64, 0, len(vals))
+	for _, v := range vals {
+		out = append(out, -v)
+	}
+	return out
+}
 func upsertAbsorptionSnapshots(ctx context.Context, store *sqlite.Store, values []absValue) error {
 	sql := `INSERT INTO absorption_signal_snapshots
 (market, symbol, bucket_start_ms, direction, signal_state, score, net_flow_strength, impact_per_notional,

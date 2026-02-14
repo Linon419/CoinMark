@@ -268,7 +268,13 @@ func parseRankPagePayloadFromContext(c tele.Context) (kind string, limit, page i
 			return "", 0, 0, false
 		}
 	}
-	return parseRankPagePayload(strings.Split(raw, "|"))
+	parts := strings.Split(raw, "|")
+	// Some callback payloads come as "rank_page|kind|limit|page".
+	// Normalize them to "kind|limit|page" for a single parser path.
+	if len(parts) == 4 && strings.TrimSpace(parts[0]) == rankPageCallbackUnique {
+		parts = parts[1:]
+	}
+	return parseRankPagePayload(parts)
 }
 
 func paginateRange(total, page, pageSize int) (start, end, totalPages int, ok bool) {
@@ -308,7 +314,9 @@ func (qb *QueryBot) rankPageMarkup(kind string, limit, page, totalPages int) *te
 	}
 	if page < totalPages {
 		row = append(row, markup.Data("下一页", rankPageCallbackUnique, kind, strconv.Itoa(limit), strconv.Itoa(page+1)))
-		row = append(row, markup.Data("末页", rankPageCallbackUnique, kind, strconv.Itoa(limit), strconv.Itoa(totalPages)))
+		if page+1 < totalPages {
+			row = append(row, markup.Data("末页", rankPageCallbackUnique, kind, strconv.Itoa(limit), strconv.Itoa(totalPages)))
+		}
 	}
 	if len(row) > 0 {
 		markup.Inline(markup.Row(row...))

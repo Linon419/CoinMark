@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -436,18 +437,31 @@ func ScanAnomalies(ctx context.Context, ch *chrepo.Client, store *sqlite.Store, 
 }
 
 func insertAnomalyEvents(ctx context.Context, store *sqlite.Store, events []map[string]interface{}) (int, error) {
-	sql := `INSERT INTO anomaly_events (market, symbol, event_type, tf_signal, tf_level, event_time_ms, title, details)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(market, symbol, event_type, tf_signal, event_time_ms) DO NOTHING`
+	sqlCheck := `SELECT id FROM anomaly_events
+WHERE market = ? AND symbol = ? AND event_type = ? AND tf_signal = ? AND event_time_ms = ?
+LIMIT 1`
+	sqlInsert := `INSERT INTO anomaly_events (market, symbol, event_type, tf_signal, tf_level, event_time_ms, title, details)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
 
 	inserted := 0
 	err := store.Write(ctx, func(_ context.Context, tx *sqlx.Tx) error {
 		for _, e := range events {
-			res, err := tx.Exec(sql,
+			var existedID int64
+			checkErr := tx.GetContext(ctx, &existedID, sqlCheck,
+				e["market"], e["symbol"], e["event_type"], e["tf_signal"], e["event_time_ms"],
+			)
+			if checkErr == nil {
+				continue
+			}
+			if checkErr != sql.ErrNoRows {
+				return checkErr
+			}
+
+			res, insErr := tx.Exec(sqlInsert,
 				e["market"], e["symbol"], e["event_type"], e["tf_signal"],
 				e["tf_level"], e["event_time_ms"], e["title"], e["details"],
 			)
-			if err != nil {
+			if insErr != nil {
 				continue
 			}
 			n, _ := res.RowsAffected()

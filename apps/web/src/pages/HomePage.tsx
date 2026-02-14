@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  AutoComplete,
   Button,
   Input,
   Message,
   Select,
+  Skeleton,
   Space,
   Table,
   Tag,
@@ -73,7 +75,40 @@ type CoinBasicResp = {
   };
 };
 
+type PairResp = {
+  market: Market;
+  pairs: string[];
+};
+
+type RankInterval = "24h" | "4h" | "1h" | "15m";
+type RankKind = "openinterest" | "oicapratio" | "fi1d" | "fo1d" | "si1d" | "so1d";
+
+type RankItem = {
+  rank: number;
+  symbol: string;
+  changePct: number;
+  oiNotionalUsd: number;
+  netUsd: number;
+  biasPct: number;
+  ratioPct: number;
+  marketCapUsd: number;
+};
+
+type RankResp = {
+  kind: RankKind;
+  title: string;
+  interval?: RankInterval;
+  limit: number;
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+  asOfMs: number;
+  items: RankItem[];
+};
+
 type HomeTabKey = "overview" | "quant";
+type OverviewSectionKey = "movers24h" | "ret15m" | "ret1h";
 
 type QuantItem = {
   ts: number;
@@ -154,6 +189,22 @@ const CVD_MODE_OPTIONS: Array<{ value: CvdMode; label: string }> = [
   { value: "visible", label: "Visible" },
   { value: "rolling24h", label: "Rolling 24H" },
   { value: "session", label: "Session" },
+];
+
+const RANK_KIND_OPTIONS: Array<{ value: RankKind; label: string }> = [
+  { value: "openinterest", label: "OI变化排行" },
+  { value: "oicapratio", label: "持仓/市值变化排行" },
+  { value: "fi1d", label: "合约净流入" },
+  { value: "fo1d", label: "合约净流出" },
+  { value: "si1d", label: "现货净流入" },
+  { value: "so1d", label: "现货净流出" },
+];
+
+const RANK_INTERVAL_OPTIONS: Array<{ value: RankInterval; label: string }> = [
+  { value: "24h", label: "24h" },
+  { value: "4h", label: "4h" },
+  { value: "1h", label: "1h" },
+  { value: "15m", label: "15m" },
 ];
 
 const QUANT_MAX_POINTS = 240;
@@ -364,9 +415,22 @@ export default function HomePage() {
   const [hot, setHot] = useState<HotItem[]>([]);
   const [favorites, setFavorites] = useState<FavoritesResp | null>(null);
   const [favDetails, setFavDetails] = useState<Record<string, CoinBasicResp>>({});
+  const [rankKind, setRankKind] = useState<RankKind>("openinterest");
+  const [rankInterval, setRankInterval] = useState<RankInterval>("24h");
+  const [rankResp, setRankResp] = useState<RankResp | null>(null);
+  const [rankLoading, setRankLoading] = useState(false);
+  const [rankUpdatedMs, setRankUpdatedMs] = useState<number | null>(null);
   const [lastUpdatedMs, setLastUpdatedMs] = useState<number | null>(null);
   const [quantUpdatedMs, setQuantUpdatedMs] = useState<number | null>(null);
   const [favInput, setFavInput] = useState("");
+  const [pairPool, setPairPool] = useState<string[]>([]);
+  const [pairPoolByMarket, setPairPoolByMarket] = useState<Record<Market, string[]>>({ spot: [], swap: [] });
+  const [pairPoolLoading, setPairPoolLoading] = useState(false);
+  const [overviewCollapsed, setOverviewCollapsed] = useState<Record<OverviewSectionKey, boolean>>({
+    movers24h: false,
+    ret15m: true,
+    ret1h: false,
+  });
   const refreshSeq = useRef(0);
   const quantMainDataZoomRef = useRef<{ startValue?: number; endValue?: number } | null>(null);
   const quantRealtimeItemsRef = useRef<QuantItem[]>([]);
@@ -404,7 +468,7 @@ export default function HomePage() {
     }
   };
 
-  const refresh = async () => {
+  const refreshOverview = async () => {
     const seq = ++refreshSeq.current;
     setLoading(true);
     try {
@@ -420,7 +484,19 @@ export default function HomePage() {
       setBasic(bi);
       setRet15m(r15);
       setRet1h(r1);
-      setHot(hm.items || []);
+      const hotItems: HotItem[] = (hm.items || [])
+        .map((e: any) => ({
+          id: Number(e?.id ?? 0),
+          symbol: String(e?.symbol ?? ""),
+          eventType: String(e?.eventType ?? e?.event_type ?? ""),
+          tfSignal: String(e?.tfSignal ?? e?.tf_signal ?? ""),
+          tfLevel: e?.tfLevel ?? e?.tf_level ?? null,
+          eventTimeMs: Number(e?.eventTimeMs ?? e?.event_time_ms ?? 0),
+          title: String(e?.title ?? ""),
+          details: e?.details,
+        }))
+        .filter((e) => e.symbol && Number.isFinite(e.eventTimeMs) && e.eventTimeMs > 0);
+      setHot(hotItems);
       setFavorites(fav);
       setLastUpdatedMs(Date.now());
 
@@ -448,17 +524,68 @@ export default function HomePage() {
     }
   };
 
+  const refreshRankCenter = async () => {
+    setRankLoading(true);
+    try {
+      const d = await getJson<RankResp>(
+        `/api/tg/rank?kind=${rankKind}&interval=${rankInterval}&limit=30&page=1`
+      );
+      setRankResp(d);
+      setRankUpdatedMs(Date.now());
+    } catch {
+      setRankResp(null);
+    } finally {
+      setRankLoading(false);
+    }
+  };
+
   useEffect(() => {
-    refresh();
-    const t = setInterval(refresh, 15000);
+    if (activeHomeTab !== "overview") return;
+    refreshOverview();
+    refreshRankCenter();
+    const t = setInterval(() => {
+      refreshOverview();
+      refreshRankCenter();
+    }, 15000);
     return () => clearInterval(t);
-  }, [market, quantBucket]);
+  }, [activeHomeTab, market, rankKind, rankInterval]);
 
   useEffect(() => {
+    let stopped = false;
+    const loadPairPool = async () => {
+      setPairPoolLoading(true);
+      try {
+        const [spotResp, swapResp] = await Promise.all([
+          getJson<PairResp>(`/api/symbol/getpairs?market=spot`),
+          getJson<PairResp>(`/api/symbol/getpairs?market=swap`),
+        ]);
+        if (stopped) return;
+        const spotPairs = (spotResp.pairs || []).map((s) => String(s || "").toUpperCase()).filter(Boolean);
+        const swapPairs = (swapResp.pairs || []).map((s) => String(s || "").toUpperCase()).filter(Boolean);
+        const merged = Array.from(new Set([...spotPairs, ...swapPairs])).sort((a, b) => a.localeCompare(b));
+        setPairPoolByMarket({ spot: spotPairs, swap: swapPairs });
+        setPairPool(merged);
+      } catch {
+        if (stopped) return;
+        setPairPoolByMarket({ spot: [], swap: [] });
+        setPairPool([]);
+      } finally {
+        if (!stopped) setPairPoolLoading(false);
+      }
+    };
+    loadPairPool();
+    return () => {
+      stopped = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (activeHomeTab !== "quant") return;
     loadQuant();
-  }, [market, quantBucket]);
+  }, [activeHomeTab, market, quantBucket]);
 
   useEffect(() => {
+    if (activeHomeTab !== "quant") return;
     const sym = (quantSymbol || "").trim().toUpperCase();
     if (!sym) return;
 
@@ -538,7 +665,7 @@ export default function HomePage() {
         // no-op
       }
     };
-  }, [market, quantSymbol, quantBucket]);
+  }, [activeHomeTab, market, quantSymbol, quantBucket]);
 
   const basicColumns = useMemo(
     () => [
@@ -577,8 +704,9 @@ export default function HomePage() {
       {
         title: "涨跌幅",
         render: (_: any, r: ReturnItem) => {
-          const cls = r.returnPct >= 0 ? "cm-number--pos" : "cm-number--neg";
-          return <span className={cls}>{formatPct(r.returnPct, 2)}</span>;
+          const ret = (r as any).returnPct ?? ((r as any).retPct != null ? (r as any).retPct / 100 : null);
+          const cls = (ret ?? 0) >= 0 ? "cm-number--pos" : "cm-number--neg";
+          return <span className={cls}>{formatPct(ret, 2)}</span>;
         },
       },
       {
@@ -593,14 +721,36 @@ export default function HomePage() {
     []
   );
 
-  const handleAddFavorite = async () => {
-    const sym = favInput.trim().toUpperCase();
+  const favoriteSearchCandidates = useMemo(() => {
+    const keyword = favInput.trim().toUpperCase();
+    if (!keyword) return pairPool.slice(0, 30);
+    const inMarket = pairPoolByMarket[market] || [];
+    const startsInMarket = inMarket.filter((s) => s.startsWith(keyword));
+    const containsInMarket = inMarket.filter((s) => !s.startsWith(keyword) && s.includes(keyword));
+    const startsAll = pairPool.filter((s) => s.startsWith(keyword) && !startsInMarket.includes(s));
+    const containsAll = pairPool.filter(
+      (s) => !s.startsWith(keyword) && s.includes(keyword) && !containsInMarket.includes(s)
+    );
+    return [...startsInMarket, ...containsInMarket, ...startsAll, ...containsAll].slice(0, 40);
+  }, [favInput, market, pairPool, pairPoolByMarket]);
+
+  const resolveFavoriteSymbol = (raw: string) => {
+    const keyword = (raw || "").trim().toUpperCase();
+    if (!keyword) return "";
+    if (pairPool.includes(keyword)) return keyword;
+    const options = favoriteSearchCandidates;
+    if (!options.length) return keyword;
+    return options[0];
+  };
+
+  const handleAddFavorite = async (symbolOverride?: string) => {
+    const sym = resolveFavoriteSymbol(symbolOverride ?? favInput);
     if (!sym) return;
     try {
       const cid = getClientId();
       await postJson(`/api/user/favorites?clientId=${cid}`, { market, symbols: [sym] });
       setFavInput("");
-      refresh();
+      refreshOverview();
     } catch (e: any) {
       Message.error(`收藏失败：${e?.message || e}`);
     }
@@ -610,7 +760,7 @@ export default function HomePage() {
     try {
       const cid = getClientId();
       await deleteReq(`/api/user/favorites/${sym}?clientId=${cid}&market=${market}`);
-      refresh();
+      refreshOverview();
     } catch (e: any) {
       Message.error(`取消收藏失败：${e?.message || e}`);
     }
@@ -769,7 +919,7 @@ export default function HomePage() {
       },
       series: [
         {
-          name: "Spot5000挂单热力",
+          name: "Spot5000热力图",
           type: "heatmap",
           xAxisIndex: 0,
           yAxisIndex: 0,
@@ -855,11 +1005,112 @@ export default function HomePage() {
     return "cm-muted";
   }, [quantMlfCompare]);
 
+  const rankKindLabel = useMemo(() => {
+    return RANK_KIND_OPTIONS.find((x) => x.value === rankKind)?.label || rankKind;
+  }, [rankKind]);
+
+  const rankColumns = useMemo(() => {
+    const isFlow = rankKind === "fi1d" || rankKind === "fo1d" || rankKind === "si1d" || rankKind === "so1d";
+    const isOICap = rankKind === "oicapratio";
+    const changeTitle = `${rankInterval}变化`;
+    const mainTitle = isFlow ? `${rankInterval}净额` : changeTitle;
+    const subTitle = isFlow ? "资金偏向" : isOICap ? "当前持仓/市值比" : "当前持仓(U)";
+    return [
+      {
+        title: "#",
+        width: 56,
+        render: (_: any, r: RankItem) => <span className="cm-number--mono">{r.rank ?? "-"}</span>,
+      },
+      {
+        title: "Symbol",
+        dataIndex: "symbol",
+        render: (_: any, r: RankItem) => <Link to={`/coin/${r.symbol}`}>{r.symbol}</Link>,
+      },
+      {
+        title: mainTitle,
+        render: (_: any, r: RankItem) => {
+          if (isFlow) {
+            const cls = (r.netUsd ?? 0) >= 0 ? "cm-number--pos" : "cm-number--neg";
+            return <span className={cls}>{formatCompactSigned(r.netUsd, 2)}</span>;
+          }
+          const pct = (r.changePct ?? 0) / 100;
+          const cls = pct >= 0 ? "cm-number--pos" : "cm-number--neg";
+          return <span className={cls}>{formatPct(pct, 2)}</span>;
+        },
+      },
+      {
+        title: subTitle,
+        render: (_: any, r: RankItem) => {
+          if (isFlow) {
+            const pct = (r.biasPct ?? 0) / 100;
+            const cls = pct >= 0 ? "cm-number--pos" : "cm-number--neg";
+            return <span className={cls}>{formatPct(pct, 2)}</span>;
+          }
+          if (isOICap) {
+            return <span className="cm-number--mono">{Number(r.ratioPct ?? 0).toFixed(2)}%</span>;
+          }
+          return <span className="cm-number--mono">{formatCompact(r.oiNotionalUsd, 2)}</span>;
+        },
+      },
+    ];
+  }, [rankKind, rankInterval]);
+
+  const toggleOverviewSection = (key: OverviewSectionKey) => {
+    setOverviewCollapsed((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const overviewSummary = useMemo(() => {
+    const gainers24h = basic?.gainers?.length || 0;
+    const losers24h = basic?.losers?.length || 0;
+    const gainers15m = ret15m?.gainers?.length || 0;
+    const losers15m = ret15m?.losers?.length || 0;
+    const gainers1h = ret1h?.gainers?.length || 0;
+    const losers1h = ret1h?.losers?.length || 0;
+    const hotCount = hot?.length || 0;
+    const favCount = favorites?.items?.length || 0;
+    return {
+      gainers24h,
+      losers24h,
+      gainers15m,
+      losers15m,
+      gainers1h,
+      losers1h,
+      hotCount,
+      favCount,
+    };
+  }, [basic, ret15m, ret1h, hot, favorites]);
+
   const eventTypeLabel: Record<string, string> = {
     breakout_up: "突破",
     breakout_down: "跌破",
     volume_spike: "量能",
     amplitude_spike: "振幅",
+    new_high_1d: "今日新高",
+    new_high_7d: "7日新高",
+    new_high_30d: "30日新高",
+    new_low_1d: "今日新低",
+    new_low_7d: "7日新低",
+    new_low_30d: "30日新低",
+    price_rise_small_5m: "5分钟小涨",
+    price_rise_medium_5m: "5分钟中涨",
+    price_rise_large_5m: "5分钟大涨",
+    price_fall_small_5m: "5分钟小跌",
+    price_fall_medium_5m: "5分钟中跌",
+    price_fall_large_5m: "5分钟大跌",
+    price_rise_small_2h: "2小时小涨",
+    price_rise_medium_2h: "2小时中涨",
+    price_rise_large_2h: "2小时大涨",
+    price_fall_small_2h: "2小时小跌",
+    price_fall_medium_2h: "2小时中跌",
+    price_fall_large_2h: "2小时大跌",
+    intraday_peak_reversal: "冲高回落",
+    intraday_bottom_rebound: "探底回升",
+    volume_rise_small_15m: "放量小涨",
+    volume_rise_medium_15m: "放量中涨",
+    volume_rise_large_15m: "放量大涨",
+    volume_fall_small_15m: "放量小跌",
+    volume_fall_medium_15m: "放量中跌",
+    volume_fall_large_15m: "放量大跌",
     signal_lab_persistent_buy: "持续吸筹",
     signal_lab_bid_wall: "买盘墙",
     signal_lab_ask_wall: "卖盘墙",
@@ -870,7 +1121,7 @@ export default function HomePage() {
       <div className="cm-section">
         <div className="cm-sectionHeader">
           <Title heading={5} style={{ margin: 0 }}>
-            主页面（默认市场：合约）
+            首页（默认市场：合约）
           </Title>
           <Space>
             <span className="cm-pill">
@@ -881,13 +1132,80 @@ export default function HomePage() {
               </Select>
             </span>
             <span className="cm-pill">
-              <span className="cm-muted">上次刷新</span>
-              <span className="cm-number--mono">{lastUpdatedMs ? new Date(lastUpdatedMs).toLocaleString() : "—"}</span>
+              <span className="cm-muted">{activeHomeTab === "quant" ? "上次量化刷新" : "上次总览刷新"}</span>
+              <span className="cm-number--mono">
+                {activeHomeTab === "quant"
+                  ? quantUpdatedMs
+                    ? new Date(quantUpdatedMs).toLocaleString()
+                    : "—"
+                  : lastUpdatedMs
+                    ? new Date(lastUpdatedMs).toLocaleString()
+                    : "—"}
+              </span>
             </span>
-            <Button loading={loading} onClick={refresh} type="primary">
-              立即刷新
+            <Button
+              loading={activeHomeTab === "quant" ? quantLoading : loading || rankLoading}
+              onClick={
+                activeHomeTab === "quant"
+                  ? () => loadQuant()
+                  : () => {
+                      refreshOverview();
+                      refreshRankCenter();
+                    }
+              }
+              type="primary"
+            >
+              {activeHomeTab === "quant" ? "刷新量化" : "刷新总览"}
             </Button>
           </Space>
+        </div>
+
+        <div className="cm-card" style={{ padding: 12, marginTop: 10 }}>
+          <div className="cm-sectionHeader" style={{ marginBottom: 6 }}>
+            <Title heading={6} style={{ margin: 0 }}>
+              收藏入口
+            </Title>
+            <Text className="cm-muted">支持输入 BTC 自动联想（spot + swap 全部交易对）</Text>
+          </div>
+          <Space style={{ width: "100%" }}>
+            <AutoComplete
+              style={{ width: 260 }}
+              value={favInput}
+              data={favoriteSearchCandidates}
+              loading={pairPoolLoading}
+              placeholder="输入 btc 或 BTCUSDT"
+              onChange={(v) => setFavInput((v || "").toUpperCase())}
+              onSearch={(v) => setFavInput((v || "").toUpperCase())}
+              onPressEnter={(_e, activeOption) => {
+                const selected =
+                  typeof activeOption?.value === "string" && activeOption.value
+                    ? String(activeOption.value)
+                    : favoriteSearchCandidates[0] || favInput;
+                handleAddFavorite(selected);
+              }}
+            />
+            <Button type="primary" onClick={() => handleAddFavorite()}>
+              添加
+            </Button>
+          </Space>
+          <div className="cm-favList">
+            {(favorites?.items || []).length === 0 && <Text className="cm-muted">暂无收藏</Text>}
+            {(favorites?.items || []).map((f) => {
+              const d = favDetails[f.symbol]?.basic;
+              const pct = d?.priceChangePercent24h == null ? null : d.priceChangePercent24h / 100;
+              const cls = pct == null ? "cm-muted" : pct >= 0 ? "cm-number--pos" : "cm-number--neg";
+              return (
+                <div key={f.symbol} className="cm-favItem">
+                  <Link to={`/coin/${f.symbol}`}>{f.symbol}</Link>
+                  <span className="cm-number--mono">{formatPrice(d?.lastPrice ?? null)}</span>
+                  <span className={cls}>{formatPct(pct, 2)}</span>
+                  <Button size="mini" onClick={() => handleRemoveFavorite(f.symbol)}>
+                    移除
+                  </Button>
+                </div>
+              );
+            })}
+          </div>
         </div>
 
         <div className="cm-coinTabs" style={{ justifyContent: "flex-start", marginTop: 10 }}>
@@ -958,6 +1276,10 @@ export default function HomePage() {
                   replaceMerge: ["series"],
                 }}
               />
+            ) : quantLoading ? (
+              <div style={{ padding: 12 }}>
+                <Skeleton animation text={{ rows: 8 }} />
+              </div>
             ) : (
               <Text className="cm-muted">暂无可视化数据</Text>
             )}
@@ -1021,84 +1343,221 @@ export default function HomePage() {
 
       {activeHomeTab === "overview" && (
         <>
+          <div className="cm-section">
+            <div className="cm-card cm-homeSummary">
+              <div className="cm-homeSummaryItem">
+                <div className="cm-homeSummaryLabel">24h 上涨币种数 / 下跌币种数</div>
+                <div className="cm-homeSummaryValue cm-number--mono">
+                  {overviewSummary.gainers24h} / {overviewSummary.losers24h}
+                </div>
+              </div>
+              <div className="cm-homeSummaryItem">
+                <div className="cm-homeSummaryLabel">15m 上涨币种数 / 下跌币种数</div>
+                <div className="cm-homeSummaryValue cm-number--mono">
+                  {overviewSummary.gainers15m} / {overviewSummary.losers15m}
+                </div>
+              </div>
+              <div className="cm-homeSummaryItem">
+                <div className="cm-homeSummaryLabel">1h 上涨币种数 / 下跌币种数</div>
+                <div className="cm-homeSummaryValue cm-number--mono">
+                  {overviewSummary.gainers1h} / {overviewSummary.losers1h}
+                </div>
+              </div>
+              <div className="cm-homeSummaryItem">
+                <div className="cm-homeSummaryLabel">异动 / 收藏</div>
+                <div className="cm-homeSummaryValue cm-number--mono">
+                  {overviewSummary.hotCount} / {overviewSummary.favCount}
+                </div>
+              </div>
+            </div>
+          </div>
 
-      <div className="cm-section">
-        <div className="cm-sectionHeader">
-          <Title heading={6} style={{ margin: 0 }}>
-            24h 涨跌榜
-          </Title>
-          <Text className="cm-muted">来自 Binance 24h ticker，口径清晰可复算</Text>
-        </div>
-        <div className="cm-grid-2">
-          <div className="cm-card" style={{ padding: 12 }}>
-            <Text className="cm-muted">上涨榜</Text>
-            <div className="cm-table">
-              <Table loading={loading} rowKey="symbol" pagination={false} size="small" columns={basicColumns as any} data={basic?.gainers || []} />
+          <div className="cm-section">
+            <div className="cm-sectionHeader">
+              <Title heading={6} style={{ margin: 0 }}>
+                排行中心
+              </Title>
+              <Space>
+                <Select value={rankKind} onChange={(v) => setRankKind(v as RankKind)} style={{ width: 220 }}>
+                  {RANK_KIND_OPTIONS.map((option) => (
+                    <Select.Option key={option.value} value={option.value}>
+                      {option.label}
+                    </Select.Option>
+                  ))}
+                </Select>
+                <Select value={rankInterval} onChange={(v) => setRankInterval(v as RankInterval)} style={{ width: 100 }}>
+                  {RANK_INTERVAL_OPTIONS.map((option) => (
+                    <Select.Option key={option.value} value={option.value}>
+                      {option.label}
+                    </Select.Option>
+                  ))}
+                </Select>
+                <Text className="cm-muted">
+                  {rankUpdatedMs ? `更新于 ${new Date(rankUpdatedMs).toLocaleTimeString()}` : "—"}
+                </Text>
+              </Space>
+            </div>
+            <div className="cm-card" style={{ padding: 12 }}>
+              <Text className="cm-muted">{rankKindLabel}（按最近已收盘周期）</Text>
+              <div className="cm-table" style={{ marginTop: 8 }}>
+                <Table
+                  loading={rankLoading}
+                  rowKey="symbol"
+                  pagination={false}
+                  size="small"
+                  columns={rankColumns as any}
+                  data={rankResp?.items || []}
+                  scroll={{ x: "max-content", y: 380 }}
+                />
+              </div>
             </div>
           </div>
-          <div className="cm-card" style={{ padding: 12 }}>
-            <Text className="cm-muted">下跌榜</Text>
-            <div className="cm-table">
-              <Table loading={loading} rowKey="symbol" pagination={false} size="small" columns={basicColumns as any} data={basic?.losers || []} />
-            </div>
-          </div>
-        </div>
-      </div>
 
-      <div className="cm-section">
-        <div className="cm-sectionHeader">
-          <Title heading={6} style={{ margin: 0 }}>
-            最近 15m（已收盘）
-          </Title>
-          <Text className="cm-muted">
-            {ret15m?.bucketStartMs && ret15m.bucketEndMs
-              ? `${new Date(ret15m.bucketStartMs).toLocaleTimeString()} ~ ${new Date(ret15m.bucketEndMs).toLocaleTimeString()}`
-              : "—"}
-          </Text>
-        </div>
-        <div className="cm-grid-2">
-          <div className="cm-card" style={{ padding: 12 }}>
-            <Text className="cm-muted">涨幅榜</Text>
-            <div className="cm-table">
-              <Table loading={loading} rowKey="symbol" pagination={false} size="small" columns={returnColumns as any} data={ret15m?.gainers || []} />
+          <div className="cm-section">
+            <div className="cm-sectionHeader">
+              <Title heading={6} style={{ margin: 0 }}>
+                24h 涨跌榜
+              </Title>
+              <Space>
+                <Text className="cm-muted">来自 Binance 24h ticker</Text>
+                <Button size="mini" type="text" onClick={() => toggleOverviewSection("movers24h")}>
+                  {overviewCollapsed.movers24h ? "展开" : "收起"}
+                </Button>
+              </Space>
             </div>
+            {!overviewCollapsed.movers24h && (
+              <div className="cm-grid-2">
+                <div className="cm-card" style={{ padding: 12 }}>
+                  <Text className="cm-muted">上涨榜</Text>
+                  <div className="cm-table">
+                    <Table
+                      loading={loading}
+                      rowKey="symbol"
+                      pagination={false}
+                      size="small"
+                      columns={basicColumns as any}
+                      data={basic?.gainers || []}
+                      scroll={{ x: "max-content", y: 340 }}
+                    />
+                  </div>
+                </div>
+                <div className="cm-card" style={{ padding: 12 }}>
+                  <Text className="cm-muted">下跌榜</Text>
+                  <div className="cm-table">
+                    <Table
+                      loading={loading}
+                      rowKey="symbol"
+                      pagination={false}
+                      size="small"
+                      columns={basicColumns as any}
+                      data={basic?.losers || []}
+                      scroll={{ x: "max-content", y: 340 }}
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
-          <div className="cm-card" style={{ padding: 12 }}>
-            <Text className="cm-muted">跌幅榜</Text>
-            <div className="cm-table">
-              <Table loading={loading} rowKey="symbol" pagination={false} size="small" columns={returnColumns as any} data={ret15m?.losers || []} />
-            </div>
-          </div>
-        </div>
-      </div>
 
-      <div className="cm-section">
-        <div className="cm-sectionHeader">
-          <Title heading={6} style={{ margin: 0 }}>
-            最近 1h（已收盘）
-          </Title>
-          <Text className="cm-muted">
-            {ret1h?.bucketStartMs && ret1h.bucketEndMs
-              ? `${new Date(ret1h.bucketStartMs).toLocaleTimeString()} ~ ${new Date(ret1h.bucketEndMs).toLocaleTimeString()}`
-              : "—"}
-          </Text>
-        </div>
-        <div className="cm-grid-2">
-          <div className="cm-card" style={{ padding: 12 }}>
-            <Text className="cm-muted">涨幅榜</Text>
-            <div className="cm-table">
-              <Table loading={loading} rowKey="symbol" pagination={false} size="small" columns={returnColumns as any} data={ret1h?.gainers || []} />
+          <div className="cm-section">
+            <div className="cm-sectionHeader">
+              <Title heading={6} style={{ margin: 0 }}>
+                最近 15m（已收盘）
+              </Title>
+              <Space>
+                <Text className="cm-muted">
+                  {ret15m?.bucketStartMs && ret15m.bucketEndMs
+                    ? `${new Date(ret15m.bucketStartMs).toLocaleTimeString()} ~ ${new Date(ret15m.bucketEndMs).toLocaleTimeString()}`
+                    : "—"}
+                </Text>
+                <Button size="mini" type="text" onClick={() => toggleOverviewSection("ret15m")}>
+                  {overviewCollapsed.ret15m ? "展开" : "收起"}
+                </Button>
+              </Space>
             </div>
+            {!overviewCollapsed.ret15m && (
+              <div className="cm-grid-2">
+                <div className="cm-card" style={{ padding: 12 }}>
+                  <Text className="cm-muted">涨幅榜</Text>
+                  <div className="cm-table">
+                    <Table
+                      loading={loading}
+                      rowKey="symbol"
+                      pagination={false}
+                      size="small"
+                      columns={returnColumns as any}
+                      data={ret15m?.gainers || []}
+                      scroll={{ x: "max-content", y: 340 }}
+                    />
+                  </div>
+                </div>
+                <div className="cm-card" style={{ padding: 12 }}>
+                  <Text className="cm-muted">跌幅榜</Text>
+                  <div className="cm-table">
+                    <Table
+                      loading={loading}
+                      rowKey="symbol"
+                      pagination={false}
+                      size="small"
+                      columns={returnColumns as any}
+                      data={ret15m?.losers || []}
+                      scroll={{ x: "max-content", y: 340 }}
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
-          <div className="cm-card" style={{ padding: 12 }}>
-            <Text className="cm-muted">跌幅榜</Text>
-            <div className="cm-table">
-              <Table loading={loading} rowKey="symbol" pagination={false} size="small" columns={returnColumns as any} data={ret1h?.losers || []} />
-            </div>
-          </div>
-        </div>
-      </div>
 
+          <div className="cm-section">
+            <div className="cm-sectionHeader">
+              <Title heading={6} style={{ margin: 0 }}>
+                最近 1h（已收盘）
+              </Title>
+              <Space>
+                <Text className="cm-muted">
+                  {ret1h?.bucketStartMs && ret1h.bucketEndMs
+                    ? `${new Date(ret1h.bucketStartMs).toLocaleTimeString()} ~ ${new Date(ret1h.bucketEndMs).toLocaleTimeString()}`
+                    : "—"}
+                </Text>
+                <Button size="mini" type="text" onClick={() => toggleOverviewSection("ret1h")}>
+                  {overviewCollapsed.ret1h ? "展开" : "收起"}
+                </Button>
+              </Space>
+            </div>
+            {!overviewCollapsed.ret1h && (
+              <div className="cm-grid-2">
+                <div className="cm-card" style={{ padding: 12 }}>
+                  <Text className="cm-muted">涨幅榜</Text>
+                  <div className="cm-table">
+                    <Table
+                      loading={loading}
+                      rowKey="symbol"
+                      pagination={false}
+                      size="small"
+                      columns={returnColumns as any}
+                      data={ret1h?.gainers || []}
+                      scroll={{ x: "max-content", y: 340 }}
+                    />
+                  </div>
+                </div>
+                <div className="cm-card" style={{ padding: 12 }}>
+                  <Text className="cm-muted">跌幅榜</Text>
+                  <div className="cm-table">
+                    <Table
+                      loading={loading}
+                      rowKey="symbol"
+                      pagination={false}
+                      size="small"
+                      columns={returnColumns as any}
+                      data={ret1h?.losers || []}
+                      scroll={{ x: "max-content", y: 340 }}
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
       <div className="cm-section">
         <div className="cm-grid-2">
           <div className="cm-card" style={{ padding: 12 }}>
@@ -1119,51 +1578,14 @@ export default function HomePage() {
                   </div>
                   <div className="cm-eventMeta">
                     <span className="cm-number--mono">{new Date(e.eventTimeMs).toLocaleString()}</span>
-                    <span className="cm-muted">信号：{e.tfSignal}</span>
-                    {e.tfLevel && <span className="cm-muted">水平：{e.tfLevel}</span>}
+                    <span className="cm-muted">信号: {e.tfSignal}</span>
+                    {e.tfLevel && <span className="cm-muted">水平: {e.tfLevel}</span>}
                   </div>
                 </div>
               ))}
             </div>
           </div>
 
-          <div className="cm-card" style={{ padding: 12 }}>
-            <div className="cm-sectionHeader">
-              <Title heading={6} style={{ margin: 0 }}>
-                收藏入口
-              </Title>
-              <Text className="cm-muted">匿名 client_id 存储（本地浏览器）</Text>
-            </div>
-            <Space style={{ width: "100%" }}>
-              <Input
-                placeholder="输入 symbol，例如 BTCUSDT"
-                value={favInput}
-                onChange={setFavInput}
-                onPressEnter={handleAddFavorite}
-              />
-              <Button type="primary" onClick={handleAddFavorite}>
-                添加
-              </Button>
-            </Space>
-            <div className="cm-favList">
-              {(favorites?.items || []).length === 0 && <Text className="cm-muted">暂无收藏</Text>}
-              {(favorites?.items || []).map((f) => {
-                const d = favDetails[f.symbol]?.basic;
-                const pct = d?.priceChangePercent24h == null ? null : d.priceChangePercent24h / 100;
-                const cls = pct == null ? "cm-muted" : pct >= 0 ? "cm-number--pos" : "cm-number--neg";
-                return (
-                  <div key={f.symbol} className="cm-favItem">
-                    <Link to={`/coin/${f.symbol}`}>{f.symbol}</Link>
-                    <span className="cm-number--mono">{formatPrice(d?.lastPrice ?? null)}</span>
-                    <span className={cls}>{formatPct(pct, 2)}</span>
-                    <Button size="mini" onClick={() => handleRemoveFavorite(f.symbol)}>
-                      移除
-                    </Button>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
         </div>
       </div>
 

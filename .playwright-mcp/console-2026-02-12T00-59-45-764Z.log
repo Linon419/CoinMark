@@ -1,0 +1,22 @@
+[     728ms] [ERROR] TypeError: Cannot read properties of undefined (reading 'sampleCount')
+    at http://localhost:5173/assets/index-zLj2tvPy.js:164:164584
+    at Array.reduce (<anonymous>)
+    at uW (http://localhost:5173/assets/index-zLj2tvPy.js:164:164565)
+    at http://localhost:5173/assets/index-zLj2tvPy.js:164:165288
+    at Array.map (<anonymous>)
+    at cW (http://localhost:5173/assets/index-zLj2tvPy.js:164:165252)
+    at http://localhost:5173/assets/index-zLj2tvPy.js:164:179218
+    at Object.zL [as useMemo] (http://localhost:5173/assets/index-zLj2tvPy.js:38:22250)
+    at ir.useMemo (http://localhost:5173/assets/index-zLj2tvPy.js:9:6251)
+    at oAe (http://localhost:5173/assets/index-zLj2tvPy.js:164:179196) @ http://localhost:5173/assets/index-zLj2tvPy.js:39
+[     819ms] TypeError: Cannot read properties of undefined (reading 'sampleCount')
+    at http://localhost:5173/assets/index-zLj2tvPy.js:164:164584
+    at Array.reduce (<anonymous>)
+    at uW (http://localhost:5173/assets/index-zLj2tvPy.js:164:164565)
+    at http://localhost:5173/assets/index-zLj2tvPy.js:164:165288
+    at Array.map (<anonymous>)
+    at cW (http://localhost:5173/assets/index-zLj2tvPy.js:164:165252)
+    at http://localhost:5173/assets/index-zLj2tvPy.js:164:179218
+    at Object.zL [as useMemo] (http://localhost:5173/assets/index-zLj2tvPy.js:38:22250)
+    at ir.useMemo (http://localhost:5173/assets/index-zLj2tvPy.js:9:6251)
+    at oAe (http://localhost:5173/assets/index-zLj2tvPy.js:164:179196)

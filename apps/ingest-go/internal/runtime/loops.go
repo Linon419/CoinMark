@@ -830,12 +830,22 @@ func (s *Service) BackfillOnce(ctx context.Context) error {
 	if !s.cfg.BackfillEnable {
 		return nil
 	}
-	log.Printf("Backfill start TopN=%d concurrency=%d", s.cfg.BackfillTopN, s.cfg.BackfillConcurrency)
+	log.Printf("Backfill start TopN=%d concurrency=%d symbols=%v", s.cfg.BackfillTopN, s.cfg.BackfillConcurrency, s.cfg.BackfillSymbols)
 
 	run := func(market string) {
-		syms, err := s.binance.TopSymbolsByVolume(ctx, market, s.cfg.BackfillTopN)
-		if err != nil {
-			log.Printf("backfill top symbols %s failed: %v", market, err)
+		syms := append([]string(nil), s.cfg.BackfillSymbols...)
+		if len(syms) == 0 {
+			var err error
+			syms, err = s.binance.TopSymbolsByVolume(ctx, market, s.cfg.BackfillTopN)
+			if err != nil {
+				log.Printf("backfill top symbols %s failed: %v", market, err)
+				return
+			}
+		} else {
+			syms = binance.FilterExcludedSymbols(syms)
+		}
+		if len(syms) == 0 {
+			log.Printf("backfill skipped market=%s no symbols after filter", market)
 			return
 		}
 		intervals := []struct {

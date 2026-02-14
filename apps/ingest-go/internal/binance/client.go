@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -73,6 +74,55 @@ type exchangeInfoResp struct {
 	} `json:"symbols"`
 }
 
+var stableBaseAssets = map[string]bool{
+	"USDC": true, "USDT": true, "BUSD": true, "FDUSD": true,
+	"TUSD": true, "USDP": true, "DAI": true, "FRAX": true,
+	"USDD": true, "USDE": true, "USD1": true, "PYUSD": true,
+	"RLUSD": true, "LUSD": true, "SUSD": true, "USDS": true,
+}
+
+var leadingDigitsRe = regexp.MustCompile(`^\d+`)
+
+func symbolBaseAsset(symbol string) string {
+	sym := strings.ToUpper(strings.TrimSpace(symbol))
+	if sym == "" {
+		return ""
+	}
+	base := sym
+	for _, quote := range []string{"USDT", "USDC", "BUSD", "FDUSD", "TUSD", "USDP"} {
+		if strings.HasSuffix(base, quote) && len(base) > len(quote) {
+			base = base[:len(base)-len(quote)]
+			break
+		}
+	}
+	base = leadingDigitsRe.ReplaceAllString(base, "")
+	return base
+}
+
+func IsExcludedSymbol(symbol string) bool {
+	if symbol == "" {
+		return true
+	}
+	base := symbolBaseAsset(symbol)
+	if base == "" {
+		return true
+	}
+	if stableBaseAssets[base] {
+		return true
+	}
+	return strings.Contains(base, "USD")
+}
+
+func FilterExcludedSymbols(symbols []string) []string {
+	out := make([]string, 0, len(symbols))
+	for _, s := range symbols {
+		if !IsExcludedSymbol(s) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 func isPlainUSDTSymbol(sym string) bool {
 	if !strings.HasSuffix(sym, "USDT") || len(sym) <= 4 {
 		return false
@@ -122,6 +172,7 @@ func (c *Client) GetPairs(ctx context.Context, market string) ([]string, error) 
 		out = append(out, s.Symbol)
 	}
 	sort.Strings(out)
+	out = FilterExcludedSymbols(out)
 
 	c.mu.Lock()
 	c.pairsCache[market] = pairsEntry{ts: time.Now(), pairs: append([]string(nil), out...)}
@@ -173,6 +224,9 @@ func (c *Client) TopSymbolsByVolume(ctx context.Context, market string, topN int
 	arr := make([]ranked, 0, len(rows))
 	for _, row := range rows {
 		if !strings.HasSuffix(row.Symbol, "USDT") {
+			continue
+		}
+		if IsExcludedSymbol(row.Symbol) {
 			continue
 		}
 		if _, ok := valid[row.Symbol]; !ok {

@@ -29,6 +29,7 @@ type Config struct {
 	BackfillTopN        int
 	BackfillConcurrency int
 	Backfill1mLimit     int
+	BackfillSymbols     []string
 
 	BucketWatchdogEnable           bool
 	BucketWatchdogIntervalSec      int
@@ -125,6 +126,7 @@ func Load() (*Config, error) {
 		BackfillTopN:        mustInt("BACKFILL_TOP_N", 120),
 		BackfillConcurrency: mustInt("BACKFILL_CONCURRENCY", 8),
 		Backfill1mLimit:     mustInt("BACKFILL_1M_LIMIT", 1500),
+		BackfillSymbols:     mustStringSlice("BACKFILL_SYMBOLS", nil),
 
 		BucketWatchdogEnable:           mustBool("BUCKET_WATCHDOG_ENABLE", true),
 		BucketWatchdogIntervalSec:      mustInt("BUCKET_WATCHDOG_INTERVAL_SEC", 60),

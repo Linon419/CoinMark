@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -16,6 +17,45 @@ type exchangeInfoResponse struct {
 		ContractType string `json:"contractType"`
 		QuoteAsset   string `json:"quoteAsset"`
 	} `json:"symbols"`
+}
+
+var stableBaseAssets = map[string]bool{
+	"USDC": true, "USDT": true, "BUSD": true, "FDUSD": true,
+	"TUSD": true, "USDP": true, "DAI": true, "FRAX": true,
+	"USDD": true, "USDE": true, "USD1": true, "PYUSD": true,
+	"RLUSD": true, "LUSD": true, "SUSD": true, "USDS": true,
+}
+
+var leadingDigitsRe = regexp.MustCompile(`^\d+`)
+
+func symbolBaseAsset(symbol string) string {
+	sym := strings.ToUpper(strings.TrimSpace(symbol))
+	if sym == "" {
+		return ""
+	}
+	base := sym
+	for _, quote := range []string{"USDT", "USDC", "BUSD", "FDUSD", "TUSD", "USDP"} {
+		if strings.HasSuffix(base, quote) && len(base) > len(quote) {
+			base = base[:len(base)-len(quote)]
+			break
+		}
+	}
+	base = leadingDigitsRe.ReplaceAllString(base, "")
+	return base
+}
+
+func IsExcludedSymbol(symbol string) bool {
+	if symbol == "" {
+		return true
+	}
+	base := symbolBaseAsset(symbol)
+	if base == "" {
+		return true
+	}
+	if stableBaseAssets[base] {
+		return true
+	}
+	return strings.Contains(base, "USD")
 }
 
 func FetchSwapUSDTPerpetualSymbols(ctx context.Context, restBase string, timeout time.Duration) ([]string, error) {
@@ -37,6 +77,9 @@ func FetchSwapUSDTPerpetualSymbols(ctx context.Context, restBase string, timeout
 			continue
 		}
 		if strings.ToUpper(item.ContractType) != "PERPETUAL" {
+			continue
+		}
+		if IsExcludedSymbol(symbol) {
 			continue
 		}
 		out = append(out, symbol)
@@ -68,6 +111,9 @@ func FetchSpotUSDTTradingSymbols(ctx context.Context, restBase string, timeout t
 			continue
 		}
 		if strings.ToUpper(item.Status) != "TRADING" {
+			continue
+		}
+		if IsExcludedSymbol(symbol) {
 			continue
 		}
 		out = append(out, symbol)

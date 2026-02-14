@@ -20,8 +20,12 @@ import (
 
 const (
 	whaleWallFarEventType      = "whale_wall_far"
+	whaleWallFilledEventType   = "whale_wall_filled"
+	whaleWallCanceledEventType = "whale_wall_canceled"
 	whaleWallFarMinDistancePct = 2.0
 	whaleWallFarMinNotionalUSD = 1_000_000.0
+	whaleWallTouchBufferPct    = 0.3
+	whaleWallMissingRounds     = 3
 )
 
 // ---------------------------------------------------------------------------
@@ -223,6 +227,18 @@ type whaleWallFarEvent struct {
 	BucketStart int64
 }
 
+type whaleWallTrack struct {
+	Market      string
+	Symbol      string
+	Side        string
+	WallPrice   float64
+	NotionalUSD float64
+	FirstSeenMs int64
+	LastSeenMs  int64
+	LastPrice   float64
+	MissCount   int
+}
+
 func pickWhaleWallFar(rows []heatmapRow, latestPrice float64) *whaleWallFarEvent {
 	if latestPrice <= 0 || len(rows) == 0 {
 		return nil
@@ -271,7 +287,7 @@ func insertWhaleWallFarEvent(ctx context.Context, store *sqlite.Store, market, s
 		"latestPrice": event.LatestPrice,
 		"distancePct": math.Round(event.DistancePct*100) / 100,
 		"valueUSDT":   math.Round(event.NotionalUSD*100) / 100,
-		"signalState": "ALERT",
+		"signalState": "ACTIVE",
 		"score":       90,
 	})
 	_, err := insertAnomalyEvents(ctx, store, []map[string]interface{}{
@@ -282,6 +298,62 @@ func insertWhaleWallFarEvent(ctx context.Context, store *sqlite.Store, market, s
 			"tf_signal":     "1m",
 			"tf_level":      nil,
 			"event_time_ms": event.BucketStart,
+			"title":         title,
+			"details":       string(detailBytes),
+		},
+	})
+	return err
+}
+
+func closeTypeByPrice(side string, wallPrice, latestPrice float64) string {
+	side = strings.ToLower(strings.TrimSpace(side))
+	if wallPrice <= 0 || latestPrice <= 0 {
+		return whaleWallCanceledEventType
+	}
+	buf := whaleWallTouchBufferPct / 100.0
+	if side == "bid" && latestPrice <= wallPrice*(1+buf) {
+		return whaleWallFilledEventType
+	}
+	if side == "ask" && latestPrice >= wallPrice*(1-buf) {
+		return whaleWallFilledEventType
+	}
+	return whaleWallCanceledEventType
+}
+
+func insertWhaleWallCloseEvent(ctx context.Context, store *sqlite.Store, st whaleWallTrack, latestPrice float64, bucketStartMs int64, closeType string) error {
+	if bucketStartMs <= 0 {
+		return nil
+	}
+	sideText := "ask"
+	if st.Side == "bid" {
+		sideText = "bid"
+	}
+	statusText := "canceled"
+	stateCode := "CANCELED"
+	if closeType == whaleWallFilledEventType {
+		statusText = "filled"
+		stateCode = "FILLED"
+	}
+	title := fmt.Sprintf("%s %s wall %.2fM USDT %s",
+		st.Symbol, sideText, st.NotionalUSD/1_000_000.0, statusText)
+	detailBytes, _ := json.Marshal(map[string]interface{}{
+		"side":        sideText,
+		"wallPrice":   st.WallPrice,
+		"latestPrice": latestPrice,
+		"valueUSDT":   math.Round(st.NotionalUSD*100) / 100,
+		"signalState": stateCode,
+		"firstSeenMs": st.FirstSeenMs,
+		"lastSeenMs":  st.LastSeenMs,
+		"score":       90,
+	})
+	_, err := insertAnomalyEvents(ctx, store, []map[string]interface{}{
+		{
+			"market":        st.Market,
+			"symbol":        st.Symbol,
+			"event_type":    closeType,
+			"tf_signal":     "1m",
+			"tf_level":      nil,
+			"event_time_ms": bucketStartMs,
 			"title":         title,
 			"details":       string(detailBytes),
 		},
@@ -333,13 +405,20 @@ func splitTiers(all []string, fastRaw string) (fast, slow []string) {
 // ---------------------------------------------------------------------------
 
 type DepthScanner struct {
-	bn    *binance.Client
-	store *sqlite.Store
-	cfg   *config.Config
+	bn        *binance.Client
+	store     *sqlite.Store
+	cfg       *config.Config
+	wallMu    sync.Mutex
+	wallState map[string]whaleWallTrack
 }
 
 func NewDepthScanner(bn *binance.Client, store *sqlite.Store, cfg *config.Config) *DepthScanner {
-	return &DepthScanner{bn: bn, store: store, cfg: cfg}
+	return &DepthScanner{
+		bn:        bn,
+		store:     store,
+		cfg:       cfg,
+		wallState: make(map[string]whaleWallTrack),
+	}
 }
 
 func (ds *DepthScanner) Run(ctx context.Context) {
@@ -470,15 +549,98 @@ func (ds *DepthScanner) fetchOne(ctx context.Context, market, symbol string, lim
 				if err := writeHeatmapRows(ctx, ds.store, rows); err != nil {
 					log.Printf("depth_scan: heatmap write failed market=%s symbol=%s: %v", targetMarket, symbol, err)
 				}
-				if evt := pickWhaleWallFar(rows, mid); evt != nil {
-					if err := insertWhaleWallFarEvent(ctx, ds.store, targetMarket, symbol, *evt); err != nil {
-						log.Printf("depth_scan: whale wall event write failed market=%s symbol=%s: %v", targetMarket, symbol, err)
-					}
-				}
+			}
+			evt := pickWhaleWallFar(rows, mid)
+			if err := ds.handleWhaleWallState(ctx, targetMarket, symbol, evt, mid); err != nil {
+				log.Printf("depth_scan: whale wall state failed market=%s symbol=%s: %v", targetMarket, symbol, err)
 			}
 		}
 	}
 	return true
+}
+
+func (ds *DepthScanner) handleWhaleWallState(ctx context.Context, market, symbol string, evt *whaleWallFarEvent, latestPrice float64) error {
+	key := strings.ToLower(strings.TrimSpace(market)) + "|" + strings.ToUpper(strings.TrimSpace(symbol))
+	nowBucket := (time.Now().UnixMilli() / 60000) * 60000
+
+	ds.wallMu.Lock()
+	defer ds.wallMu.Unlock()
+
+	st, ok := ds.wallState[key]
+
+	if evt != nil {
+		side := strings.ToLower(strings.TrimSpace(evt.Side))
+		if side != "bid" && side != "ask" {
+			side = "ask"
+		}
+
+		if !ok {
+			if err := insertWhaleWallFarEvent(ctx, ds.store, market, symbol, *evt); err != nil {
+				return err
+			}
+			ds.wallState[key] = whaleWallTrack{
+				Market:      market,
+				Symbol:      symbol,
+				Side:        side,
+				WallPrice:   evt.WallPrice,
+				NotionalUSD: evt.NotionalUSD,
+				FirstSeenMs: evt.BucketStart,
+				LastSeenMs:  evt.BucketStart,
+				LastPrice:   evt.LatestPrice,
+				MissCount:   0,
+			}
+			return nil
+		}
+
+		sameWall := st.Side == side && math.Abs(st.WallPrice-evt.WallPrice) <= math.Max(1e-9, math.Abs(st.WallPrice)*1e-6)
+		if sameWall {
+			st.LastSeenMs = evt.BucketStart
+			st.LastPrice = evt.LatestPrice
+			st.NotionalUSD = evt.NotionalUSD
+			st.MissCount = 0
+			ds.wallState[key] = st
+			return nil
+		}
+
+		closeType := closeTypeByPrice(st.Side, st.WallPrice, evt.LatestPrice)
+		if err := insertWhaleWallCloseEvent(ctx, ds.store, st, evt.LatestPrice, evt.BucketStart, closeType); err != nil {
+			return err
+		}
+		if err := insertWhaleWallFarEvent(ctx, ds.store, market, symbol, *evt); err != nil {
+			return err
+		}
+		ds.wallState[key] = whaleWallTrack{
+			Market:      market,
+			Symbol:      symbol,
+			Side:        side,
+			WallPrice:   evt.WallPrice,
+			NotionalUSD: evt.NotionalUSD,
+			FirstSeenMs: evt.BucketStart,
+			LastSeenMs:  evt.BucketStart,
+			LastPrice:   evt.LatestPrice,
+			MissCount:   0,
+		}
+		return nil
+	}
+
+	if !ok {
+		return nil
+	}
+	if latestPrice > 0 {
+		st.LastPrice = latestPrice
+	}
+	st.MissCount++
+	if st.MissCount < whaleWallMissingRounds {
+		ds.wallState[key] = st
+		return nil
+	}
+
+	closeType := closeTypeByPrice(st.Side, st.WallPrice, st.LastPrice)
+	if err := insertWhaleWallCloseEvent(ctx, ds.store, st, st.LastPrice, nowBucket, closeType); err != nil {
+		return err
+	}
+	delete(ds.wallState, key)
+	return nil
 }
 
 // ---------------------------------------------------------------------------

@@ -23,6 +23,13 @@ func handleBasicInfo(d *Deps) gin.HandlerFunc {
 		market := queryMarket(c)
 		limit := queryInt(c, "limit", 50, 1, 500)
 
+		tradingSet := map[string]struct{}{}
+		if pairs, err := d.BN.GetPairs(c.Request.Context(), market); err == nil {
+			for _, p := range pairs {
+				tradingSet[p] = struct{}{}
+			}
+		}
+
 		tickers, err := d.BN.GetTicker24hAll(c.Request.Context(), market)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -41,6 +48,11 @@ func handleBasicInfo(d *Deps) gin.HandlerFunc {
 			if sym == "" || binance.IsExcludedSymbol(sym) {
 				continue
 			}
+			if len(tradingSet) > 0 {
+				if _, ok := tradingSet[sym]; !ok {
+					continue
+				}
+			}
 			items = append(items, item{
 				Symbol:      sym,
 				PriceChange: toF(t["priceChangePercent"]),
@@ -48,13 +60,17 @@ func handleBasicInfo(d *Deps) gin.HandlerFunc {
 				Volume:      toF(t["quoteVolume"]),
 			})
 		}
-		sort.Slice(items, func(i, j int) bool { return items[i].PriceChange > items[j].PriceChange })
-		gainers := items
+		gainersAll := make([]item, len(items))
+		copy(gainersAll, items)
+		sort.Slice(gainersAll, func(i, j int) bool { return gainersAll[i].PriceChange > gainersAll[j].PriceChange })
+		gainers := gainersAll
 		if len(gainers) > limit {
 			gainers = gainers[:limit]
 		}
-		sort.Slice(items, func(i, j int) bool { return items[i].PriceChange < items[j].PriceChange })
-		losers := items
+		losersAll := make([]item, len(items))
+		copy(losersAll, items)
+		sort.Slice(losersAll, func(i, j int) bool { return losersAll[i].PriceChange < losersAll[j].PriceChange })
+		losers := losersAll
 		if len(losers) > limit {
 			losers = losers[:limit]
 		}

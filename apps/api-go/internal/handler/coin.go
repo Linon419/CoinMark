@@ -260,12 +260,62 @@ func handleCoinFlows(d *Deps, bucket string) gin.HandlerFunc {
 		nowMs := time.Now().UnixMilli()
 
 		if bucket == "1h" {
-			hours := queryInt(c, "hours", 24, 6, 168)
 			const hourMs int64 = 60 * 60 * 1000
 			const minuteMs int64 = 60 * 1000
-			cur := (nowMs / hourMs) * hourMs
-			lastClosed := cur - hourMs
-			startMs := lastClosed - int64(hours)*hourMs
+			const dayMs int64 = 24 * 60 * 60 * 1000
+
+			timeMode := c.DefaultQuery("timeMode", "utc")
+			if timeMode != "local" {
+				timeMode = "utc"
+			}
+			tzOffsetMin := queryInt(c, "tzOffsetMin", 0, -720, 720)
+			offsetMs := int64(0)
+			if timeMode == "local" {
+				offsetMs = int64(tzOffsetMin) * 60 * 1000
+			}
+
+			dayParam := strings.TrimSpace(c.Query("day"))
+			if dayParam != "" {
+				if _, err := time.Parse("2006-01-02", dayParam); err != nil {
+					c.JSON(http.StatusBadRequest, gin.H{"error": "invalid day, use YYYY-MM-DD"})
+					return
+				}
+			}
+
+			todayStart := floorBucketStartWithOffset(nowMs, dayMs, offsetMs)
+			isToday := true
+			selectedDay := time.UnixMilli(todayStart - offsetMs).UTC().Format("2006-01-02")
+
+			var (
+				startMs    int64
+				lastClosed int64
+				cur        int64
+				hours      int
+			)
+
+			if dayParam != "" {
+				dayParsed, _ := time.Parse("2006-01-02", dayParam)
+				dayStart := dayParsed.UnixMilli() + offsetMs
+				if dayStart > todayStart {
+					c.JSON(http.StatusBadRequest, gin.H{"error": "day cannot be in the future"})
+					return
+				}
+				selectedDay = dayParam
+				isToday = dayStart == todayStart
+				startMs = dayStart
+				dayEnd := dayStart + dayMs
+				cur = floorBucketStartWithOffset(nowMs, hourMs, offsetMs)
+				lastClosed = dayEnd - hourMs
+				if isToday {
+					lastClosed = cur - hourMs
+				}
+				hours = 24
+			} else {
+				hours = queryInt(c, "hours", 24, 6, 168)
+				cur = floorBucketStartWithOffset(nowMs, hourMs, offsetMs)
+				lastClosed = cur - hourMs
+				startMs = lastClosed - int64(hours)*hourMs
+			}
 
 			rows, err := d.CH.QueryTradeBuckets(ctx, "", symbol, nil, "1h", startMs, lastClosed, "asc", 0)
 			if err != nil {
@@ -292,7 +342,7 @@ func handleCoinFlows(d *Deps, bucket string) gin.HandlerFunc {
 			}
 
 			liveCutoffMs := (nowMs / minuteMs) * minuteMs
-			if liveCutoffMs-cur >= minuteMs {
+			if isToday && liveCutoffMs-cur >= minuteMs {
 				if liveRows, err := d.CH.QueryTradeBuckets(ctx, "", symbol, nil, "1m", cur, liveCutoffMs-1, "asc", 0); err == nil {
 					var spotNet, spotQuote, swapNet, swapQuote float64
 					for _, row := range liveRows {
@@ -316,7 +366,7 @@ func handleCoinFlows(d *Deps, bucket string) gin.HandlerFunc {
 				}
 			}
 
-			c.JSON(http.StatusOK, gin.H{"symbol": symbol, "hours": hours, "items": items})
+			c.JSON(http.StatusOK, gin.H{"symbol": symbol, "hours": hours, "day": selectedDay, "isToday": isToday, "items": items})
 			return
 		}
 
@@ -556,6 +606,254 @@ func handleCoinLSR(d *Deps) gin.HandlerFunc {
 	}
 }
 
+type srAlgoCandle struct {
+	High  float64
+	Low   float64
+	Close float64
+}
+
+type srAlgoBand struct {
+	Low  float64 `json:"low"`
+	High float64 `json:"high"`
+}
+
+func srIsPivotHigh(candles []srAlgoCandle, idx, prd int) bool {
+	if idx-prd < 0 || idx+prd >= len(candles) {
+		return false
+	}
+	v := candles[idx].High
+	for i := idx - prd; i <= idx+prd; i++ {
+		if i == idx {
+			continue
+		}
+		if candles[i].High >= v {
+			return false
+		}
+	}
+	return true
+}
+
+func srIsPivotLow(candles []srAlgoCandle, idx, prd int) bool {
+	if idx-prd < 0 || idx+prd >= len(candles) {
+		return false
+	}
+	v := candles[idx].Low
+	for i := idx - prd; i <= idx+prd; i++ {
+		if i == idx {
+			continue
+		}
+		if candles[i].Low <= v {
+			return false
+		}
+	}
+	return true
+}
+
+func srChannelFromPivot(pivotVals []float64, ind int, channelWidth float64) (float64, float64, float64) {
+	lo := pivotVals[ind]
+	hi := lo
+	strength := 0.0
+	for _, cpp := range pivotVals {
+		wdth := 0.0
+		if cpp <= hi {
+			wdth = hi - cpp
+		} else {
+			wdth = cpp - lo
+		}
+		if wdth > channelWidth {
+			continue
+		}
+		if cpp <= hi {
+			lo = math.Min(lo, cpp)
+		} else {
+			hi = math.Max(hi, cpp)
+		}
+		strength += 20
+	}
+	return hi, lo, strength
+}
+
+func computeShortSRFromPine(candles []srAlgoCandle, lastClose float64, limit int) ([]srAlgoBand, []srAlgoBand) {
+	const (
+		pivotPeriod       = 10
+		loopbackBars      = 290
+		highestLookback   = 300
+		channelWidthPct   = 5.0
+		minStrength       = 1
+		maxStoredChannels = 10
+	)
+
+	if len(candles) < pivotPeriod*2+1 {
+		return []srAlgoBand{}, []srAlgoBand{}
+	}
+	if limit < 1 {
+		limit = 1
+	}
+
+	start := len(candles) - highestLookback
+	if start < 0 {
+		start = 0
+	}
+	prdHighest := candles[start].High
+	prdLowest := candles[start].Low
+	for i := start; i < len(candles); i++ {
+		prdHighest = math.Max(prdHighest, candles[i].High)
+		prdLowest = math.Min(prdLowest, candles[i].Low)
+	}
+	channelWidth := (prdHighest - prdLowest) * channelWidthPct / 100.0
+	if channelWidth <= 0 {
+		return []srAlgoBand{}, []srAlgoBand{}
+	}
+
+	pivotVals := make([]float64, 0, 128)
+	pivotLocs := make([]int, 0, 128)
+	for bar := 0; bar < len(candles); bar++ {
+		pivotIdx := bar - pivotPeriod
+		if pivotIdx-pivotPeriod < 0 || pivotIdx+pivotPeriod >= len(candles) {
+			continue
+		}
+		hasPH := srIsPivotHigh(candles, pivotIdx, pivotPeriod)
+		hasPL := srIsPivotLow(candles, pivotIdx, pivotPeriod)
+		if !hasPH && !hasPL {
+			continue
+		}
+		pv := candles[pivotIdx].Low
+		if hasPH {
+			pv = candles[pivotIdx].High
+		}
+		pivotVals = append([]float64{pv}, pivotVals...)
+		pivotLocs = append([]int{bar}, pivotLocs...)
+		for len(pivotVals) > 0 {
+			tail := len(pivotVals) - 1
+			if bar-pivotLocs[tail] > loopbackBars {
+				pivotVals = pivotVals[:tail]
+				pivotLocs = pivotLocs[:tail]
+				continue
+			}
+			break
+		}
+	}
+	if len(pivotVals) == 0 {
+		return []srAlgoBand{}, []srAlgoBand{}
+	}
+
+	type supResRaw struct {
+		Strength float64
+		High     float64
+		Low      float64
+	}
+	supRes := make([]supResRaw, 0, len(pivotVals))
+	for x := 0; x < len(pivotVals); x++ {
+		hi, lo, strength := srChannelFromPivot(pivotVals, x, channelWidth)
+		supRes = append(supRes, supResRaw{Strength: strength, High: hi, Low: lo})
+	}
+	for x := range supRes {
+		h := supRes[x].High
+		l := supRes[x].Low
+		touches := 0.0
+		for y := 0; y <= loopbackBars; y++ {
+			idx := len(candles) - 1 - y
+			if idx < 0 {
+				break
+			}
+			if (candles[idx].High <= h && candles[idx].High >= l) || (candles[idx].Low <= h && candles[idx].Low >= l) {
+				touches += 1
+			}
+		}
+		supRes[x].Strength += touches
+	}
+
+	supportResistance := make([]float64, 20)
+	strengthArr := make([]float64, 10)
+	src := 0
+	for x := 0; x < len(pivotVals); x++ {
+		maxVal := -1.0
+		maxIdx := -1
+		for y := 0; y < len(pivotVals); y++ {
+			if supRes[y].Strength > maxVal && supRes[y].Strength >= float64(minStrength*20) {
+				maxVal = supRes[y].Strength
+				maxIdx = y
+			}
+		}
+		if maxIdx < 0 {
+			continue
+		}
+		hh := supRes[maxIdx].High
+		ll := supRes[maxIdx].Low
+		supportResistance[src*2] = hh
+		supportResistance[src*2+1] = ll
+		strengthArr[src] = supRes[maxIdx].Strength
+		for y := 0; y < len(pivotVals); y++ {
+			if (supRes[y].High <= hh && supRes[y].High >= ll) || (supRes[y].Low <= hh && supRes[y].Low >= ll) {
+				supRes[y].Strength = -1
+			}
+		}
+		src++
+		if src >= maxStoredChannels {
+			break
+		}
+	}
+
+	swapChannel := func(i, j int) {
+		supportResistance[i*2], supportResistance[j*2] = supportResistance[j*2], supportResistance[i*2]
+		supportResistance[i*2+1], supportResistance[j*2+1] = supportResistance[j*2+1], supportResistance[i*2+1]
+	}
+	for x := 0; x <= 8; x++ {
+		for y := x + 1; y <= 9; y++ {
+			if strengthArr[y] > strengthArr[x] {
+				strengthArr[x], strengthArr[y] = strengthArr[y], strengthArr[x]
+				swapChannel(x, y)
+			}
+		}
+	}
+
+	type candidate struct {
+		Band srAlgoBand
+		Dist float64
+	}
+	supports := make([]candidate, 0, maxStoredChannels)
+	resistances := make([]candidate, 0, maxStoredChannels)
+	for i := 0; i < maxStoredChannels; i++ {
+		hi := supportResistance[i*2]
+		lo := supportResistance[i*2+1]
+		if hi == 0 && lo == 0 {
+			continue
+		}
+		if lo > hi {
+			lo, hi = hi, lo
+		}
+		if hi < lastClose && lo < lastClose {
+			supports = append(supports, candidate{
+				Band: srAlgoBand{Low: lo, High: hi},
+				Dist: lastClose - hi,
+			})
+		} else if hi > lastClose && lo > lastClose {
+			resistances = append(resistances, candidate{
+				Band: srAlgoBand{Low: lo, High: hi},
+				Dist: lo - lastClose,
+			})
+		}
+	}
+	sort.Slice(supports, func(i, j int) bool { return supports[i].Dist < supports[j].Dist })
+	sort.Slice(resistances, func(i, j int) bool { return resistances[i].Dist < resistances[j].Dist })
+	if len(supports) > limit {
+		supports = supports[:limit]
+	}
+	if len(resistances) > limit {
+		resistances = resistances[:limit]
+	}
+
+	outSupports := make([]srAlgoBand, 0, len(supports))
+	for _, it := range supports {
+		outSupports = append(outSupports, it.Band)
+	}
+	outResistances := make([]srAlgoBand, 0, len(resistances))
+	for _, it := range resistances {
+		outResistances = append(outResistances, it.Band)
+	}
+	return outSupports, outResistances
+}
+
 func handleCoinSR(d *Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		requestedMarket := queryMarket(c)
@@ -572,67 +870,31 @@ func handleCoinSR(d *Deps) gin.HandlerFunc {
 
 		effectiveMarket, marketFallback := resolveEffectiveMarket(d, ctx, requestedMarket, symbol)
 
-		var levels []model.SRLevel
-		q := `SELECT * FROM sr_levels WHERE market = ? AND symbol = ? AND timeframe = ? ORDER BY strength_score DESC LIMIT 30`
-		d.Store.SelectContext(ctx, &levels, q, effectiveMarket, symbol, timeframe)
-		if levels == nil {
-			levels = []model.SRLevel{}
-		}
-
-		var lastClose *float64
+		supportBands := make([]srAlgoBand, 0)
+		resistanceBands := make([]srAlgoBand, 0)
 		if d.CH != nil {
-			if rows, err := d.CH.QueryTradeBuckets(ctx, effectiveMarket, symbol, nil, timeframe, 0, 0, "desc", 1); err == nil && len(rows) > 0 && rows[0].ClosePrice != nil {
-				lastClose = rows[0].ClosePrice
+			rows, err := d.CH.QueryTradeBuckets(ctx, effectiveMarket, symbol, nil, timeframe, 0, 0, "desc", 520)
+			if err == nil && len(rows) > 0 {
+				candles := make([]srAlgoCandle, 0, len(rows))
+				for i := len(rows) - 1; i >= 0; i-- {
+					r := rows[i]
+					if r.HighPrice == nil || r.LowPrice == nil || r.ClosePrice == nil {
+						continue
+					}
+					if *r.HighPrice <= 0 || *r.LowPrice <= 0 || *r.ClosePrice <= 0 {
+						continue
+					}
+					candles = append(candles, srAlgoCandle{
+						High:  *r.HighPrice,
+						Low:   *r.LowPrice,
+						Close: *r.ClosePrice,
+					})
+				}
+				if len(candles) > 0 {
+					lastClose := candles[len(candles)-1].Close
+					supportBands, resistanceBands = computeShortSRFromPine(candles, lastClose, limit)
+				}
 			}
-		}
-
-		type srBand struct {
-			Low  float64 `json:"low"`
-			High float64 `json:"high"`
-		}
-		type srCandidate struct {
-			Band srBand
-			Dist float64
-		}
-		supports := make([]srCandidate, 0, len(levels))
-		resistances := make([]srCandidate, 0, len(levels))
-		bandPct := 0.003
-		if timeframe == "15m" {
-			bandPct = 0.0015
-		}
-
-		for _, lv := range levels {
-			if lv.LevelPrice <= 0 {
-				continue
-			}
-			half := lv.LevelPrice * bandPct
-			b := srBand{Low: lv.LevelPrice - half, High: lv.LevelPrice + half}
-			if lastClose == nil {
-				continue
-			}
-			dist := math.Abs(lv.LevelPrice - *lastClose)
-			if lv.LevelPrice <= *lastClose {
-				supports = append(supports, srCandidate{Band: b, Dist: dist})
-			} else {
-				resistances = append(resistances, srCandidate{Band: b, Dist: dist})
-			}
-		}
-
-		sort.Slice(supports, func(i, j int) bool { return supports[i].Dist < supports[j].Dist })
-		sort.Slice(resistances, func(i, j int) bool { return resistances[i].Dist < resistances[j].Dist })
-		if len(supports) > limit {
-			supports = supports[:limit]
-		}
-		if len(resistances) > limit {
-			resistances = resistances[:limit]
-		}
-		supportBands := make([]srBand, 0, len(supports))
-		for _, it := range supports {
-			supportBands = append(supportBands, it.Band)
-		}
-		resistanceBands := make([]srBand, 0, len(resistances))
-		for _, it := range resistances {
-			resistanceBands = append(resistanceBands, it.Band)
 		}
 
 		c.JSON(http.StatusOK, gin.H{
@@ -663,6 +925,13 @@ func handleFundSnapshots(d *Deps) gin.HandlerFunc {
 			timeMode = "utc"
 		}
 		tzOffsetMin := queryInt(c, "tzOffsetMin", 0, -720, 720)
+		dayParam := strings.TrimSpace(c.Query("day"))
+		if dayParam != "" {
+			if _, err := time.Parse("2006-01-02", dayParam); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid day, use YYYY-MM-DD"})
+				return
+			}
+		}
 
 		nowMs := time.Now().UnixMilli()
 		offsetMs := int64(0)
@@ -671,10 +940,26 @@ func handleFundSnapshots(d *Deps) gin.HandlerFunc {
 		}
 		const hourMs int64 = 60 * 60 * 1000
 		const dayMs int64 = 24 * 60 * 60 * 1000
-		dayStartMs := floorBucketStartWithOffset(nowMs, dayMs, offsetMs)
-		currentHourStartMs := floorBucketStartWithOffset(nowMs, hourMs, offsetMs)
+		todayStartMs := floorBucketStartWithOffset(nowMs, dayMs, offsetMs)
+		dayStartMs := todayStartMs
+		if dayParam != "" {
+			dayParsed, _ := time.Parse("2006-01-02", dayParam)
+			dayStartMs = dayParsed.UnixMilli() + offsetMs
+			if dayStartMs > todayStartMs {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "day cannot be in the future"})
+				return
+			}
+		}
+		isToday := dayStartMs == todayStartMs
+		dayEndMs := dayStartMs + dayMs
+		queryEndMs := dayEndMs - 1
+		currentHourStartMs := dayEndMs - hourMs
+		if isToday {
+			queryEndMs = nowMs
+			currentHourStartMs = floorBucketStartWithOffset(nowMs, hourMs, offsetMs)
+		}
 
-		rows, err := d.CH.QueryTradeBuckets(ctx, "", symbol, nil, "1m", dayStartMs, nowMs, "asc", 0)
+		rows, err := d.CH.QueryTradeBuckets(ctx, "", symbol, nil, "1m", dayStartMs, queryEndMs, "asc", 0)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -746,7 +1031,7 @@ func handleFundSnapshots(d *Deps) gin.HandlerFunc {
 				SpotValue: spotVal,
 			})
 		}
-		if nowMs-currentHourStartMs >= 60*1000 {
+		if isToday && nowMs-currentHourStartMs >= 60*1000 {
 			swapVal := 0.0
 			spotVal := 0.0
 			if len(swapNow) > 0 {
@@ -767,11 +1052,14 @@ func handleFundSnapshots(d *Deps) gin.HandlerFunc {
 		if timeMode == "local" {
 			timezone = "LOCAL"
 		}
+		selectedDay := time.UnixMilli(dayStartMs - offsetMs).UTC().Format("2006-01-02")
 		c.JSON(http.StatusOK, gin.H{
 			"symbol":      symbol,
 			"timezone":    timezone,
 			"timeMode":    timeMode,
 			"tzOffsetMin": tzOffsetMin,
+			"day":         selectedDay,
+			"isToday":     isToday,
 			"source":      "trade_buckets_1m",
 			"items":       items,
 		})

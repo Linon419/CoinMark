@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -14,6 +15,7 @@ import (
 	"coinmark/api-go/internal/model"
 	redisrepo "coinmark/api-go/internal/repo/redis"
 	"coinmark/api-go/internal/repo/sqlite"
+	"github.com/jmoiron/sqlx"
 )
 
 type AnomalyNotifier struct {
@@ -30,9 +32,16 @@ type AnomalyNotifier struct {
 	batchWindowSec  int
 	batchMaxItems   int
 	lastID          int64
+	chatIDInt       int64
 }
 
-const tgNotifyWhaleWallFar = "whale_wall_far"
+type tgNotifyPrefs struct {
+	ChatID               int64 `db:"chat_id"`
+	MarketAnomalyEnabled bool  `db:"market_anomaly_enabled"`
+	WhaleWallEnabled     bool  `db:"whale_wall_enabled"`
+	SignalLabEnabled     bool  `db:"signal_lab_enabled"`
+	MuteAll              bool  `db:"mute_all"`
+}
 
 func NewAnomalyNotifier(store *sqlite.Store, redis *redisrepo.Store, chatID, market, minLevel, prefix string, pollSec, batchWin, batchMax int) *AnomalyNotifier {
 	if pollSec < 2 {
@@ -95,13 +104,14 @@ func (n *AnomalyNotifier) poll(ctx context.Context) []model.AnomalyEvent {
 	if err := n.store.SelectContext(ctx, &rows, q, n.lastID, n.market); err != nil {
 		return nil
 	}
+	prefs := n.mustLoadPrefs(ctx)
 
 	var filtered []model.AnomalyEvent
 	for _, r := range rows {
 		if r.ID > n.lastID {
 			n.lastID = r.ID
 		}
-		if !shouldTgNotifyEventType(r.EventType) {
+		if !n.isEventEnabledByPrefs(r.EventType, prefs) {
 			continue
 		}
 		if binance.IsExcludedSymbol(r.Symbol) {
@@ -121,8 +131,89 @@ func (n *AnomalyNotifier) poll(ctx context.Context) []model.AnomalyEvent {
 	return filtered
 }
 
-func shouldTgNotifyEventType(eventType string) bool {
-	return strings.EqualFold(strings.TrimSpace(eventType), tgNotifyWhaleWallFar)
+func notifyEventCategory(eventType string) string {
+	et := strings.ToLower(strings.TrimSpace(eventType))
+	switch et {
+	case "whale_wall_far", "anomaly_whale_wall_far", "whale_wall_filled", "whale_wall_canceled":
+		return "whale_wall"
+	}
+	if strings.HasPrefix(et, "signal_lab_") {
+		return "signal_lab"
+	}
+	return "market_anomaly"
+}
+
+func (n *AnomalyNotifier) isEventEnabledByPrefs(eventType string, p tgNotifyPrefs) bool {
+	if p.MuteAll {
+		return false
+	}
+	switch notifyEventCategory(eventType) {
+	case "whale_wall":
+		return p.WhaleWallEnabled
+	case "signal_lab":
+		return p.SignalLabEnabled
+	default:
+		return p.MarketAnomalyEnabled
+	}
+}
+
+func (n *AnomalyNotifier) defaultPrefs() tgNotifyPrefs {
+	return tgNotifyPrefs{
+		ChatID:               n.chatIDInt,
+		MarketAnomalyEnabled: true,
+		WhaleWallEnabled:     false,
+		SignalLabEnabled:     false,
+		MuteAll:              false,
+	}
+}
+
+func (n *AnomalyNotifier) mustLoadPrefs(ctx context.Context) tgNotifyPrefs {
+	p, err := n.loadPrefs(ctx)
+	if err != nil {
+		return n.defaultPrefs()
+	}
+	return p
+}
+
+func (n *AnomalyNotifier) loadPrefs(ctx context.Context) (tgNotifyPrefs, error) {
+	def := n.defaultPrefs()
+	if n.chatIDInt == 0 {
+		return def, nil
+	}
+	var row tgNotifyPrefs
+	err := n.store.GetContext(ctx, &row, `SELECT chat_id, market_anomaly_enabled, whale_wall_enabled, signal_lab_enabled, mute_all
+FROM tg_notify_prefs WHERE chat_id = ? LIMIT 1`, n.chatIDInt)
+	if err == nil {
+		return row, nil
+	}
+	if err != sql.ErrNoRows {
+		return def, err
+	}
+	if err := n.savePrefs(ctx, def); err != nil {
+		return def, err
+	}
+	return def, nil
+}
+
+func (n *AnomalyNotifier) savePrefs(ctx context.Context, p tgNotifyPrefs) error {
+	if n.chatIDInt == 0 {
+		return nil
+	}
+	p.ChatID = n.chatIDInt
+	return n.store.Write(ctx, func(_ context.Context, tx *sqlx.Tx) error {
+		_, err := tx.Exec(`INSERT INTO tg_notify_prefs
+(chat_id, market_anomaly_enabled, whale_wall_enabled, signal_lab_enabled, mute_all, updated_at)
+VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+ON CONFLICT(chat_id) DO UPDATE SET
+ market_anomaly_enabled = excluded.market_anomaly_enabled,
+ whale_wall_enabled = excluded.whale_wall_enabled,
+ signal_lab_enabled = excluded.signal_lab_enabled,
+ mute_all = excluded.mute_all,
+ updated_at = CURRENT_TIMESTAMP`,
+			p.ChatID, p.MarketAnomalyEnabled, p.WhaleWallEnabled, p.SignalLabEnabled, p.MuteAll,
+		)
+		return err
+	})
 }
 
 func (n *AnomalyNotifier) bootstrapLastID(ctx context.Context) {

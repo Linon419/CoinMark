@@ -653,8 +653,8 @@ func initClickHouseSchema(ctx context.Context, conn clickhouse.Conn) error {
 		) ENGINE = ReplacingMergeTree(version)
 		ORDER BY (symbol);`,
 
-		// TTL: 1m 分桶保留 7 天
-		`ALTER TABLE trade_buckets MODIFY TTL toDateTime(bucket_start_ms / 1000) + INTERVAL 7 DAY;`,
+		// TTL: 1m 分桶保留 31 天
+		`ALTER TABLE trade_buckets MODIFY TTL toDateTime(bucket_start_ms / 1000) + INTERVAL 31 DAY;`,
 		`ALTER TABLE orderbook_feature_buckets MODIFY TTL toDateTime(bucket_start_ms / 1000) + INTERVAL 7 DAY;`,
 	}
 	for _, stmt := range stmts {

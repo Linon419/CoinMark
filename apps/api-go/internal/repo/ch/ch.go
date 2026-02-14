@@ -347,14 +347,30 @@ func (c *Client) QueryTradeFlowAgg(ctx context.Context, market string, symbols [
 	BuySum  float64
 	SellSum float64
 }, error) {
+	return c.QueryTradeFlowAggRange(ctx, market, symbols, bucket, startMs, 0)
+}
+
+func (c *Client) QueryTradeFlowAggRange(ctx context.Context, market string, symbols []string, bucket string, startMs, endMs int64) ([]struct {
+	Symbol  string
+	BuySum  float64
+	SellSum float64
+}, error) {
 	if len(symbols) == 0 {
 		return nil, nil
 	}
+	where := []string{
+		fmt.Sprintf("market = '%s'", esc(market)),
+		fmt.Sprintf("bucket = '%s'", esc(bucket)),
+		fmt.Sprintf("symbol IN (%s)", inClause(symbols)),
+		fmt.Sprintf("bucket_start_ms >= %d", startMs),
+	}
+	if endMs > 0 {
+		where = append(where, fmt.Sprintf("bucket_start_ms <= %d", endMs))
+	}
 	sql := fmt.Sprintf(
 		"SELECT symbol, sum(taker_buy_notional) AS buy_sum, sum(taker_sell_notional) AS sell_sum "+
-			"FROM (SELECT * FROM trade_buckets FINAL WHERE market = '%s' AND bucket = '1m' "+
-			"AND symbol IN (%s) AND bucket_start_ms >= %d) GROUP BY symbol",
-		esc(market), inClause(symbols), startMs,
+			"FROM (SELECT * FROM trade_buckets FINAL WHERE %s) GROUP BY symbol",
+		strings.Join(where, " AND "),
 	)
 	rows, err := c.QueryJSON(ctx, sql)
 	if err != nil {
