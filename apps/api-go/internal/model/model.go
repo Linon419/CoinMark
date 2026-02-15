@@ -4,7 +4,6 @@ import (
 	"database/sql/driver"
 	"encoding/json"
 	"fmt"
-	"time"
 )
 
 // JSONB handles SQLite TEXT ↔ Go []byte for JSON columns.
@@ -120,8 +119,8 @@ type CoinInfo struct {
 	ID          int64      `db:"id" json:"-"`
 	Symbol      string     `db:"symbol" json:"symbol"`
 	WhaleMinVal *float64   `db:"whale_min_val" json:"whale_min_val"`
-	CreatedAt   *time.Time `db:"created_at" json:"-"`
-	UpdatedAt   *time.Time `db:"updated_at" json:"-"`
+	CreatedAt   *string `db:"created_at" json:"-"`
+	UpdatedAt   *string `db:"updated_at" json:"-"`
 }
 
 type SRLevel struct {
@@ -133,8 +132,8 @@ type SRLevel struct {
 	Touches       int        `db:"touches" json:"touches"`
 	StrengthScore float64    `db:"strength_score" json:"strength_score"`
 	LastTouchMs   int64      `db:"last_touch_ms" json:"last_touch_ms"`
-	CreatedAt     *time.Time `db:"created_at" json:"-"`
-	UpdatedAt     *time.Time `db:"updated_at" json:"-"`
+	CreatedAt     *string `db:"created_at" json:"-"`
+	UpdatedAt     *string `db:"updated_at" json:"-"`
 }
 
 type AnomalyEvent struct {
@@ -147,7 +146,7 @@ type AnomalyEvent struct {
 	EventTimeMs int64           `db:"event_time_ms" json:"event_time_ms"`
 	Title       string          `db:"title" json:"title"`
 	Details     JSONB           `db:"details" json:"details"`
-	CreatedAt   *time.Time      `db:"created_at" json:"-"`
+	CreatedAt   *string         `db:"created_at" json:"-"`
 }
 
 type AbsorptionSignalSnapshot struct {
@@ -165,8 +164,8 @@ type AbsorptionSignalSnapshot struct {
 	Window3dPassed    bool            `db:"window_3d_passed" json:"window_3d_passed"`
 	Windows           JSONB           `db:"windows" json:"windows"`
 	Reasons           JSONB           `db:"reasons" json:"reasons"`
-	CreatedAt         *time.Time      `db:"created_at" json:"-"`
-	UpdatedAt         *time.Time      `db:"updated_at" json:"-"`
+	CreatedAt         *string         `db:"created_at" json:"-"`
+	UpdatedAt         *string         `db:"updated_at" json:"-"`
 }
 
 type OrderbookHeatmapSnapshot struct {
@@ -179,8 +178,8 @@ type OrderbookHeatmapSnapshot struct {
 	PriceStep     float64    `db:"price_step" json:"price_step"`
 	Intensity     float64    `db:"intensity" json:"intensity"`
 	LevelCount    int        `db:"level_count" json:"level_count"`
-	CreatedAt     *time.Time `db:"created_at" json:"-"`
-	UpdatedAt     *time.Time `db:"updated_at" json:"-"`
+	CreatedAt     *string `db:"created_at" json:"-"`
+	UpdatedAt     *string `db:"updated_at" json:"-"`
 }
 
 // ---------------------------------------------------------------------------
