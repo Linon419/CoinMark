@@ -241,6 +241,19 @@ type FundSnapshotHealthResp = {
   canTriggerRepair: boolean;
 };
 
+type FundRepairResp = {
+  symbol: string;
+  day: string;
+  startMs: number;
+  endMs: number;
+  insertedRows: number;
+  chunked?: boolean;
+  segmentCount?: number;
+  repairCooldownRemainingMs: number;
+  canTriggerRepair: boolean;
+  error?: string;
+};
+
 type RecentDailyResp = {
   market: Market;
   symbol: string;
@@ -452,6 +465,16 @@ function formatDateYmd(ts: number, mode: TimeDisplayMode) {
   return `${y}-${`${m}`.padStart(2, "0")}-${`${day}`.padStart(2, "0")}`;
 }
 
+function formatDateTimeLocalInput(ts: number) {
+  const d = new Date(ts);
+  const y = d.getFullYear();
+  const m = `${d.getMonth() + 1}`.padStart(2, "0");
+  const day = `${d.getDate()}`.padStart(2, "0");
+  const hh = `${d.getHours()}`.padStart(2, "0");
+  const mm = `${d.getMinutes()}`.padStart(2, "0");
+  return `${y}-${m}-${day}T${hh}:${mm}`;
+}
+
 export default function CoinPage() {
   const { Title, Text } = Typography;
   const { symbol } = useParams();
@@ -464,6 +487,10 @@ export default function CoinPage() {
   const [hourly, setHourly] = useState<FundSnapshotResp | null>(null);
   const [hourlyHealth, setHourlyHealth] = useState<FundSnapshotHealthResp | null>(null);
   const [hourlyFlow, setHourlyFlow] = useState<FlowResp | null>(null);
+  const [repairStartAt, setRepairStartAt] = useState<string>(() => `${formatDateYmd(Date.now(), "local")}T00:00`);
+  const [repairEndAt, setRepairEndAt] = useState<string>(() => `${formatDateYmd(Date.now(), "local")}T23:00`);
+  const [repairLoading, setRepairLoading] = useState(false);
+  const [repairMessage, setRepairMessage] = useState("");
   const [daily, setDaily] = useState<FlowResp | null>(null);
   const [dailyRecent, setDailyRecent] = useState<FlowResp | null>(null);
   const [recentDaily, setRecentDaily] = useState<RecentDailyResp | null>(null);
@@ -485,6 +512,16 @@ export default function CoinPage() {
   const hourlyMinDay = useMemo(() => formatDateYmd(nowTick - 29 * 24 * 60 * 60 * 1000, timeDisplayMode), [nowTick, timeDisplayMode]);
   const hideSpotSeries = market === "spot" && !!basic?.marketFallback;
   const whaleSourceText = formatWhaleSource(whaleRadar?.sourceMarkets);
+  const repairCooldownSec = hourlyHealth ? Math.max(0, Math.floor((hourlyHealth.repairCooldownRemainingMs || 0) / 1000)) : 0;
+  const repairStartMs = useMemo(() => {
+    const ms = new Date(repairStartAt).getTime();
+    return Number.isFinite(ms) ? ms : null;
+  }, [repairStartAt]);
+  const repairEndMs = useMemo(() => {
+    const ms = new Date(repairEndAt).getTime();
+    return Number.isFinite(ms) ? ms : null;
+  }, [repairEndAt]);
+  const repairRangeInvalid = repairStartMs == null || repairEndMs == null || repairEndMs < repairStartMs;
 
   useEffect(() => {
     if (hourlySnapshotDay > hourlyMaxDay) {
@@ -495,6 +532,12 @@ export default function CoinPage() {
       setHourlySnapshotDay(hourlyMinDay);
     }
   }, [hourlySnapshotDay, hourlyMinDay, hourlyMaxDay]);
+
+  useEffect(() => {
+    setRepairMessage("");
+    setRepairStartAt(`${hourlySnapshotDay}T00:00`);
+    setRepairEndAt(`${hourlySnapshotDay}T23:00`);
+  }, [sym, hourlySnapshotDay]);
 
   const load = async () => {
     if (!sym) return;
@@ -557,6 +600,45 @@ export default function CoinPage() {
     }
   };
 
+  const triggerFundRepair = async () => {
+    if (!sym) return;
+    if (repairRangeInvalid || repairStartMs == null || repairEndMs == null) {
+      setRepairMessage("回补失败：请选择有效的开始和结束日期时间");
+      return;
+    }
+    setRepairLoading(true);
+    setRepairMessage("");
+    try {
+      const repairRangeMs = Math.max(0, repairEndMs - repairStartMs);
+      const autoChunked = repairRangeMs > 6 * 60 * 60 * 1000;
+      const tzOffsetMin = new Date().getTimezoneOffset();
+      const resp = await fetch(`${API_BASE}/api/coin/detail/fund/repair`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          symbol: sym,
+          startAtMs: repairStartMs,
+          endAtMs: repairEndMs,
+          timeMode: timeDisplayMode,
+          tzOffsetMin,
+          chunked: autoChunked,
+        }),
+      });
+      const data = (await resp.json().catch(() => ({}))) as Partial<FundRepairResp>;
+      if (!resp.ok) {
+        throw new Error(data.error || `HTTP ${resp.status}`);
+      }
+      setRepairMessage(
+        `回补完成：写入 ${data.insertedRows ?? 0} 行${data.chunked ? `（自动分片 ${data.segmentCount ?? 0} 段）` : ""}`
+      );
+      await load();
+    } catch (err: any) {
+      setRepairMessage(`回补失败：${err?.message || "未知错误"}`);
+    } finally {
+      setRepairLoading(false);
+    }
+  };
+
   useEffect(() => {
     load();
   }, [sym, market, timeDisplayMode, quantBucket, hourlySnapshotDay]);
@@ -604,6 +686,7 @@ export default function CoinPage() {
 
     const axisTs = Array.from(axisTsSet).sort((a, b) => a - b);
     return {
+      axisTs,
       xs: axisTs.map((ts) => formatHour(ts, timeDisplayMode)),
       snapshotSpot: axisTs.map((ts) => (snapshotSpotMap.has(ts) ? snapshotSpotMap.get(ts)! : null)),
       snapshotSwap: axisTs.map((ts) => (snapshotSwapMap.has(ts) ? snapshotSwapMap.get(ts)! : null)),
@@ -928,8 +1011,17 @@ export default function CoinPage() {
 
   const oiLineOption = useMemo(() => {
     const items = oiHourly?.items || [];
-    const xs = items.map((x) => formatHour(x.bucketStartMs, timeDisplayMode));
-    const line = items.map((x) => (Number.isFinite(x.openInterest) ? x.openInterest : null));
+    const minuteMs = 60 * 1000;
+    const normalizeOiTs = (ts: number) => Math.floor(ts / minuteMs) * minuteMs;
+    const oiMap = new Map<number, number | null>();
+    for (const row of items) {
+      const ts = normalizeOiTs(row.bucketStartMs);
+      oiMap.set(ts, Number.isFinite(row.openInterest) ? row.openInterest : null);
+    }
+    const fallbackAxisTs = Array.from(oiMap.keys()).sort((a, b) => a - b);
+    const axisTs = hourlyAligned.axisTs.length ? hourlyAligned.axisTs : fallbackAxisTs;
+    const xs = axisTs.map((ts) => formatHour(ts, timeDisplayMode));
+    const line = axisTs.map((ts) => (oiMap.has(ts) ? oiMap.get(ts)! : null));
     return {
       tooltip: {
         trigger: "axis",
@@ -974,12 +1066,21 @@ export default function CoinPage() {
         },
       ],
     };
-  }, [oiHourly, timeDisplayMode]);
+  }, [oiHourly, timeDisplayMode, hourlyAligned]);
 
   const oiPriceOption = useMemo(() => {
     const items = oiHourly?.items || [];
-    const xs = items.map((x) => formatHour(x.bucketStartMs, timeDisplayMode));
-    const bars = items.map((x) => (Number.isFinite(x.closePrice as number) ? x.closePrice : null));
+    const minuteMs = 60 * 1000;
+    const normalizeOiTs = (ts: number) => Math.floor(ts / minuteMs) * minuteMs;
+    const priceMap = new Map<number, number | null>();
+    for (const row of items) {
+      const ts = normalizeOiTs(row.bucketStartMs);
+      priceMap.set(ts, Number.isFinite(row.closePrice as number) ? (row.closePrice as number) : null);
+    }
+    const fallbackAxisTs = Array.from(priceMap.keys()).sort((a, b) => a - b);
+    const axisTs = hourlyAligned.axisTs.length ? hourlyAligned.axisTs : fallbackAxisTs;
+    const xs = axisTs.map((ts) => formatHour(ts, timeDisplayMode));
+    const bars = axisTs.map((ts) => (priceMap.has(ts) ? priceMap.get(ts)! : null));
     return {
       tooltip: {
         trigger: "axis",
@@ -1017,7 +1118,7 @@ export default function CoinPage() {
         },
       ],
     };
-  }, [oiHourly, timeDisplayMode]);
+  }, [oiHourly, timeDisplayMode, hourlyAligned]);
 
   const recentFundOption = useMemo(() => {
     const items = dailyRecent?.items || daily?.items || [];
@@ -1716,6 +1817,56 @@ export default function CoinPage() {
                       </div>
                     </div>
                   )}
+                  <div className="cm-card" style={{ padding: 10, marginBottom: 8 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                      <Text style={{ fontWeight: 600 }}>手动回补（起止区间）</Text>
+                      <Text className="cm-muted">支持跨天，超 6 小时自动分片</Text>
+                    </div>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                      <label className="cm-muted" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        开始时间
+                        <input
+                          type="datetime-local"
+                          step={60}
+                          value={repairStartAt}
+                          onChange={(e) => setRepairStartAt(e.target.value || formatDateTimeLocalInput(Date.now() - 60 * 60 * 1000))}
+                        />
+                      </label>
+                      <label className="cm-muted" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        结束时间
+                        <input
+                          type="datetime-local"
+                          step={60}
+                          value={repairEndAt}
+                          onChange={(e) => setRepairEndAt(e.target.value || formatDateTimeLocalInput(Date.now()))}
+                        />
+                      </label>
+                      <Button
+                        size="small"
+                        type="primary"
+                        loading={repairLoading}
+                        disabled={repairLoading || repairRangeInvalid || (!!hourlyHealth && !hourlyHealth.canTriggerRepair)}
+                        onClick={() => {
+                          void triggerFundRepair();
+                        }}
+                      >
+                        执行回补
+                      </Button>
+                    </div>
+                    <div className="cm-muted" style={{ marginTop: 6 }}>
+                      冷却剩余：{repairCooldownSec}s；仅会写入已闭合的 1m 数据桶。
+                    </div>
+                    {repairRangeInvalid && (
+                      <div style={{ marginTop: 4 }}>
+                        <Text style={{ color: "#d46b08" }}>结束日期时间不能早于开始日期时间。</Text>
+                      </div>
+                    )}
+                    {repairMessage && (
+                      <div style={{ marginTop: 4 }}>
+                        <Text style={{ color: repairMessage.startsWith("回补失败") ? "#d03050" : "#0f766e" }}>{repairMessage}</Text>
+                      </div>
+                    )}
+                  </div>
                   <EChart option={hourlyOption} height={260} />
                   <div style={{ marginTop: 12 }}>
                     <div className="cm-snapshotHeader">

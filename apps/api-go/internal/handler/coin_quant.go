@@ -14,6 +14,181 @@ import (
 	"coinmark/api-go/internal/model"
 )
 
+const (
+	fundRepairCooldownMs int64 = 90 * 1000
+	fundRepairMaxRangeMs int64 = 6 * 60 * 60 * 1000
+)
+
+var fundRepairState = struct {
+	mu           sync.Mutex
+	lastBySymbol map[string]int64
+}{
+	lastBySymbol: map[string]int64{},
+}
+
+func getFundRepairState(symbol string, nowMs int64) (int64, int64, bool) {
+	key := strings.ToUpper(strings.TrimSpace(symbol))
+	fundRepairState.mu.Lock()
+	last := fundRepairState.lastBySymbol[key]
+	fundRepairState.mu.Unlock()
+
+	remaining := int64(0)
+	if last > 0 {
+		remaining = fundRepairCooldownMs - (nowMs - last)
+		if remaining < 0 {
+			remaining = 0
+		}
+	}
+	return last, remaining, remaining == 0
+}
+
+func markFundRepair(symbol string, ts int64) {
+	key := strings.ToUpper(strings.TrimSpace(symbol))
+	if key == "" {
+		return
+	}
+	fundRepairState.mu.Lock()
+	fundRepairState.lastBySymbol[key] = ts
+	fundRepairState.mu.Unlock()
+}
+
+func parseHHMM(v string) (int, bool) {
+	s := strings.TrimSpace(v)
+	parts := strings.Split(s, ":")
+	if len(parts) != 2 {
+		return 0, false
+	}
+	hh, err1 := strconv.Atoi(parts[0])
+	mm, err2 := strconv.Atoi(parts[1])
+	if err1 != nil || err2 != nil || hh < 0 || hh > 23 || mm < 0 || mm > 59 {
+		return 0, false
+	}
+	return hh*60 + mm, true
+}
+
+func parseKlineFloat(v interface{}) (float64, bool) {
+	switch t := v.(type) {
+	case float64:
+		return t, true
+	case int64:
+		return float64(t), true
+	case int:
+		return float64(t), true
+	case string:
+		f, err := strconv.ParseFloat(strings.TrimSpace(t), 64)
+		if err != nil {
+			return 0, false
+		}
+		return f, true
+	default:
+		return 0, false
+	}
+}
+
+func parseKlineInt64(v interface{}) (int64, bool) {
+	switch t := v.(type) {
+	case int64:
+		return t, true
+	case int:
+		return int64(t), true
+	case float64:
+		return int64(t), true
+	case string:
+		s := strings.TrimSpace(t)
+		if s == "" {
+			return 0, false
+		}
+		n, err := strconv.ParseInt(s, 10, 64)
+		if err == nil {
+			return n, true
+		}
+		f, err := strconv.ParseFloat(s, 64)
+		if err != nil {
+			return 0, false
+		}
+		return int64(f), true
+	default:
+		return 0, false
+	}
+}
+
+func normalizeRepairMarkets(items []string) []string {
+	if len(items) == 0 {
+		return []string{"spot", "swap"}
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, 2)
+	for _, it := range items {
+		v := strings.ToLower(strings.TrimSpace(it))
+		if v != "spot" && v != "swap" {
+			continue
+		}
+		if seen[v] {
+			continue
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+	if len(out) == 0 {
+		return []string{"spot", "swap"}
+	}
+	return out
+}
+
+func buildRepairTradeRows(market, symbol string, klines [][]interface{}, startMs, endMs, lastClosedStartMs int64) []map[string]interface{} {
+	rows := make([]map[string]interface{}, 0, len(klines))
+	for _, k := range klines {
+		if len(k) < 11 {
+			continue
+		}
+		openTime, ok := parseKlineInt64(k[0])
+		if !ok {
+			continue
+		}
+		if openTime < startMs || openTime > endMs || openTime > lastClosedStartMs {
+			continue
+		}
+		closeTime, ok := parseKlineInt64(k[6])
+		if !ok {
+			continue
+		}
+		openPrice, ok1 := parseKlineFloat(k[1])
+		highPrice, ok2 := parseKlineFloat(k[2])
+		lowPrice, ok3 := parseKlineFloat(k[3])
+		closePrice, ok4 := parseKlineFloat(k[4])
+		quoteNotional, ok5 := parseKlineFloat(k[7])
+		tradeCount, ok6 := parseKlineInt64(k[8])
+		takerBuyNotional, ok7 := parseKlineFloat(k[10])
+		if !(ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7) {
+			continue
+		}
+		if quoteNotional <= 0 || tradeCount <= 0 {
+			continue
+		}
+		takerSellNotional := quoteNotional - takerBuyNotional
+		if takerSellNotional < 0 {
+			takerSellNotional = 0
+		}
+		rows = append(rows, map[string]interface{}{
+			"market":              market,
+			"symbol":              symbol,
+			"bucket":              "1m",
+			"bucket_start_ms":     openTime,
+			"taker_buy_notional":  takerBuyNotional,
+			"taker_sell_notional": takerSellNotional,
+			"quote_notional":      quoteNotional,
+			"trade_count":         tradeCount,
+			"first_trade_ms":      openTime,
+			"last_trade_ms":       closeTime,
+			"open_price":          openPrice,
+			"close_price":         closePrice,
+			"high_price":          highPrice,
+			"low_price":           lowPrice,
+		})
+	}
+	return rows
+}
+
 // ---------------------------------------------------------------------------
 // /api/coin/detail/fund/snapshot-health
 // ---------------------------------------------------------------------------
@@ -76,6 +251,11 @@ func handleFundSnapshotHealth(d *Deps) gin.HandlerFunc {
 		if timeMode == "local" {
 			timezone = "LOCAL"
 		}
+		lastRepairAtMs, repairCooldownRemainingMs, canTriggerRepair := getFundRepairState(symbol, nowMs)
+		var lastRepairValue interface{} = nil
+		if lastRepairAtMs > 0 {
+			lastRepairValue = lastRepairAtMs
+		}
 
 		c.JSON(http.StatusOK, gin.H{
 			"timezone":         timezone,
@@ -91,10 +271,244 @@ func handleFundSnapshotHealth(d *Deps) gin.HandlerFunc {
 				"compared": 0,
 				"mismatch": 0,
 			},
-			"lastRepairAtMs":            nil,
-			"repairCooldownMs":          90 * 1000,
-			"repairCooldownRemainingMs": 0,
-			"canTriggerRepair":          true,
+			"lastRepairAtMs":            lastRepairValue,
+			"repairCooldownMs":          fundRepairCooldownMs,
+			"repairCooldownRemainingMs": repairCooldownRemainingMs,
+			"canTriggerRepair":          canTriggerRepair,
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// /api/coin/detail/fund/repair
+// ---------------------------------------------------------------------------
+
+func handleFundRepair(d *Deps) gin.HandlerFunc {
+	type reqBody struct {
+		Symbol      string   `json:"symbol"`
+		Day         string   `json:"day"`
+		StartHM     string   `json:"startHm"`
+		EndHM       string   `json:"endHm"`
+		StartAtMs   *int64   `json:"startAtMs"`
+		EndAtMs     *int64   `json:"endAtMs"`
+		TimeMode    string   `json:"timeMode"`
+		TzOffsetMin int      `json:"tzOffsetMin"`
+		Markets     []string `json:"markets"`
+		Chunked     bool     `json:"chunked"`
+	}
+	type marketResult struct {
+		Market       string `json:"market"`
+		KlineCount   int    `json:"klineCount"`
+		InsertedRows int    `json:"insertedRows"`
+		Error        string `json:"error,omitempty"`
+	}
+
+	return func(c *gin.Context) {
+		if !requireClickHouse(c, d.CH) {
+			return
+		}
+		var req reqBody
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid json body"})
+			return
+		}
+
+		symbol := strings.ToUpper(strings.TrimSpace(req.Symbol))
+		if symbol == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "symbol required"})
+			return
+		}
+		timeMode := strings.ToLower(strings.TrimSpace(req.TimeMode))
+		if timeMode != "local" {
+			timeMode = "utc"
+		}
+		tzOffsetMin := req.TzOffsetMin
+		if tzOffsetMin < -720 {
+			tzOffsetMin = -720
+		}
+		if tzOffsetMin > 720 {
+			tzOffsetMin = 720
+		}
+		offsetMs := int64(0)
+		if timeMode == "local" {
+			offsetMs = int64(tzOffsetMin) * 60 * 1000
+		}
+
+		const minuteMs int64 = 60 * 1000
+		const dayMs int64 = 24 * 60 * 60 * 1000
+		nowMs := time.Now().UnixMilli()
+		todayStartMs := floorBucketStartWithOffset(nowMs, dayMs, offsetMs)
+		minAllowedDayStartMs := todayStartMs - 29*dayMs
+		day := strings.TrimSpace(req.Day)
+		startMs := int64(0)
+		endMs := int64(0)
+		if req.StartAtMs != nil || req.EndAtMs != nil {
+			if req.StartAtMs == nil || req.EndAtMs == nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "startAtMs and endAtMs must be provided together"})
+				return
+			}
+			startMs = *req.StartAtMs
+			endMs = *req.EndAtMs
+			if startMs <= 0 || endMs <= 0 {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid startAtMs/endAtMs"})
+				return
+			}
+			if endMs < startMs {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "endAtMs must be >= startAtMs"})
+				return
+			}
+			if startMs < minAllowedDayStartMs {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "startAtMs out of allowed range"})
+				return
+			}
+		} else {
+			if day == "" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "day required, use YYYY-MM-DD"})
+				return
+			}
+			dayParsed, err := time.Parse("2006-01-02", day)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid day, use YYYY-MM-DD"})
+				return
+			}
+			startMin, ok := parseHHMM(req.StartHM)
+			if !ok {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid startHm, use HH:MM"})
+				return
+			}
+			endMin, ok := parseHHMM(req.EndHM)
+			if !ok {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid endHm, use HH:MM"})
+				return
+			}
+			if endMin < startMin {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "endHm must be >= startHm"})
+				return
+			}
+			dayStartMs := dayParsed.UnixMilli() + offsetMs
+			if dayStartMs < minAllowedDayStartMs || dayStartMs > todayStartMs {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "day out of allowed range"})
+				return
+			}
+			startMs = dayStartMs + int64(startMin)*minuteMs
+			endMs = dayStartMs + int64(endMin)*minuteMs
+		}
+		if endMs-startMs > fundRepairMaxRangeMs && !req.Chunked {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "time range too large, max 6h"})
+			return
+		}
+		lastClosedStartMs := floorBucketStart(nowMs, minuteMs) - minuteMs
+		if endMs > lastClosedStartMs {
+			endMs = lastClosedStartMs
+		}
+		if startMs > endMs {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "selected range has no closed 1m buckets yet"})
+			return
+		}
+		if day == "" {
+			day = time.UnixMilli(startMs - offsetMs).UTC().Format("2006-01-02")
+		}
+		type repairSegment struct {
+			StartMs int64
+			EndMs   int64
+		}
+		segments := make([]repairSegment, 0, 4)
+		if req.Chunked && endMs-startMs > fundRepairMaxRangeMs {
+			for segStart := startMs; segStart <= endMs; {
+				segEnd := segStart + fundRepairMaxRangeMs
+				if segEnd > endMs {
+					segEnd = endMs
+				}
+				segments = append(segments, repairSegment{StartMs: segStart, EndMs: segEnd})
+				segStart = segEnd + minuteMs
+			}
+		} else {
+			segments = append(segments, repairSegment{StartMs: startMs, EndMs: endMs})
+		}
+
+		lastRepairAtMs, cooldownRemainingMs, canTriggerRepair := getFundRepairState(symbol, nowMs)
+		if !canTriggerRepair {
+			c.JSON(http.StatusTooManyRequests, gin.H{
+				"error":                     "repair in cooldown",
+				"symbol":                    symbol,
+				"lastRepairAtMs":            lastRepairAtMs,
+				"repairCooldownMs":          fundRepairCooldownMs,
+				"repairCooldownRemainingMs": cooldownRemainingMs,
+				"canTriggerRepair":          false,
+			})
+			return
+		}
+
+		markets := normalizeRepairMarkets(req.Markets)
+		results := make([]marketResult, 0, len(markets))
+		totalInserted := 0
+		ctx := c.Request.Context()
+		for _, market := range markets {
+			item := marketResult{Market: market}
+			errs := make([]string, 0, 2)
+			for _, seg := range segments {
+				klines, err := d.BN.GetKlinesRange(ctx, market, symbol, "1m", seg.StartMs, seg.EndMs, 1000)
+				if err != nil {
+					errs = append(errs, err.Error())
+					continue
+				}
+				item.KlineCount += len(klines)
+				repairRows := buildRepairTradeRows(market, symbol, klines, seg.StartMs, seg.EndMs, lastClosedStartMs)
+				if len(repairRows) == 0 {
+					continue
+				}
+				inserted, err := d.CH.InsertTradeBuckets(ctx, repairRows)
+				if err != nil {
+					errs = append(errs, err.Error())
+					continue
+				}
+				item.InsertedRows += inserted
+				totalInserted += inserted
+			}
+			if len(errs) > 0 {
+				item.Error = strings.Join(errs, " | ")
+			}
+			results = append(results, item)
+		}
+
+		if totalInserted > 0 {
+			markFundRepair(symbol, nowMs)
+		}
+		lastRepairAtMs, cooldownRemainingMs, canTriggerRepair = getFundRepairState(symbol, time.Now().UnixMilli())
+		var lastRepairValue interface{} = nil
+		if lastRepairAtMs > 0 {
+			lastRepairValue = lastRepairAtMs
+		}
+
+		statusCode := http.StatusOK
+		if totalInserted == 0 {
+			allFailed := true
+			for _, it := range results {
+				if it.Error == "" {
+					allFailed = false
+					break
+				}
+			}
+			if allFailed {
+				statusCode = http.StatusBadGateway
+			}
+		}
+		c.JSON(statusCode, gin.H{
+			"symbol":                    symbol,
+			"day":                       day,
+			"timeMode":                  timeMode,
+			"tzOffsetMin":               tzOffsetMin,
+			"startMs":                   startMs,
+			"endMs":                     endMs,
+			"chunked":                   len(segments) > 1,
+			"segmentCount":              len(segments),
+			"requestedMarkets":          markets,
+			"results":                   results,
+			"insertedRows":              totalInserted,
+			"lastRepairAtMs":            lastRepairValue,
+			"repairCooldownMs":          fundRepairCooldownMs,
+			"repairCooldownRemainingMs": cooldownRemainingMs,
+			"canTriggerRepair":          canTriggerRepair,
 		})
 	}
 }

@@ -31,6 +31,7 @@ func registerCoinRoutes(g *gin.RouterGroup, d *Deps) {
 	coin.GET("/orderbook/spot-heatmap", handleSpotHeatmap(d))
 	coin.GET("/orderbook/whale-radar", handleWhaleRadar(d))
 	coin.GET("/fund/snapshot-health", handleFundSnapshotHealth(d))
+	coin.POST("/fund/repair", handleFundRepair(d))
 	coin.GET("/quant-dashboard", handleQuantDashboard(d))
 	coin.GET("/quant-mlf-compare", handleQuantMLFCompare(d))
 	coin.GET("/recent", handleRecent(d))

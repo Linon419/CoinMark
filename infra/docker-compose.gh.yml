@@ -1,0 +1,139 @@
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    mem_limit: 2g
+    environment:
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-default}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-coinmark}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-coinmark}
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - coinmark_ch:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8123/ping | grep -q 'Ok'"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    mem_limit: 256m
+    ports:
+      - "6379:6379"
+    volumes:
+      - coinmark_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  nats:
+    image: nats:2.10-alpine
+    mem_limit: 768m
+    command: ["-js", "-m", "8222", "-sd", "/data"]
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    volumes:
+      - coinmark_nats:/data
+
+  api:
+    image: ghcr.io/linon419/coinmark-api:latest
+    mem_limit: 512m
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      TG_ENABLED: "true"
+    volumes:
+      - coinmark_appdata:/data
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+
+  ingest:
+    image: ghcr.io/linon419/coinmark-ingest:latest
+    mem_limit: 1024m
+    user: "0:0"
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    volumes:
+      - coinmark_appdata:/data
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      nats:
+        condition: service_started
+
+  web:
+    image: ghcr.io/linon419/coinmark-web:latest
+    mem_limit: 256m
+    environment:
+      VITE_API_BASE: http://localhost:8000
+      VITE_HUB_URL: ws://localhost:8000/api/hub/market
+    ports:
+      - "5173:80"
+    depends_on:
+      - api
+
+  collector-go:
+    image: ghcr.io/linon419/coinmark-collector:latest
+    mem_limit: 512m
+    restart: unless-stopped
+    environment:
+      COLLECTOR_MARKET: swap
+      COLLECTOR_BINANCE_WS_BASE_URL: wss://fstream.binance.com/stream
+      COLLECTOR_BINANCE_REST_BASE: https://fapi.binance.com
+      COLLECTOR_NATS_URL: nats://nats:4222
+      COLLECTOR_NATS_STREAM_RAW: COINMARK_RAW
+      COLLECTOR_NATS_SUBJECT_TRADE: coinmark.raw.trade
+      COLLECTOR_NATS_SUBJECT_DEPTH: coinmark.raw.depth
+      COLLECTOR_NATS_CLIENT_NAME: collector-go-swap
+      COLLECTOR_ENABLE_DEPTH: true
+      COLLECTOR_DEPTH_UPDATE_MS: ${COLLECTOR_DEPTH_UPDATE_MS_SWAP:-500}
+      COLLECTOR_DEPTH_LEVEL: 20
+      COLLECTOR_DEPTH_SAMPLE_EVERY: 2
+      COLLECTOR_SYMBOL_LIMIT: ${COLLECTOR_SYMBOL_LIMIT:-200}
+      COLLECTOR_STREAMS_PER_CONN: 200
+      COLLECTOR_LOG_INTERVAL_SEC: 15
+    depends_on:
+      nats:
+        condition: service_started
+
+  collector-go-spot:
+    image: ghcr.io/linon419/coinmark-collector:latest
+    mem_limit: 512m
+    restart: unless-stopped
+    environment:
+      COLLECTOR_MARKET: spot
+      COLLECTOR_BINANCE_WS_BASE_URL: wss://stream.binance.com:9443/stream
+      COLLECTOR_BINANCE_REST_BASE: https://api.binance.com
+      COLLECTOR_NATS_URL: nats://nats:4222
+      COLLECTOR_NATS_STREAM_RAW: COINMARK_RAW
+      COLLECTOR_NATS_SUBJECT_TRADE: coinmark.raw.trade
+      COLLECTOR_NATS_SUBJECT_DEPTH: coinmark.raw.depth
+      COLLECTOR_NATS_CLIENT_NAME: collector-go-spot
+      COLLECTOR_ENABLE_DEPTH: true
+      COLLECTOR_DEPTH_UPDATE_MS: ${COLLECTOR_DEPTH_UPDATE_MS_SPOT:-1000}
+      COLLECTOR_DEPTH_LEVEL: 20
+      COLLECTOR_DEPTH_SAMPLE_EVERY: 2
+      COLLECTOR_SYMBOL_LIMIT: ${COLLECTOR_SYMBOL_LIMIT:-200}
+      COLLECTOR_STREAMS_PER_CONN: 200
+      COLLECTOR_LOG_INTERVAL_SEC: 15
+    depends_on:
+      nats:
+        condition: service_started
+
+volumes:
+  coinmark_ch:
+  coinmark_appdata:
+  coinmark_redis:
+  coinmark_nats:

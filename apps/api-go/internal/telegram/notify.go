@@ -222,6 +222,14 @@ func (n *AnomalyNotifier) bootstrapLastID(ctx context.Context) {
 		if v, err := n.redis.Get(ctx, key); err == nil && v != "" {
 			if id, err := strconv.ParseInt(v, 10, 64); err == nil {
 				n.lastID = id
+				var dbMaxID int64
+				if err := n.store.GetContext(ctx, &dbMaxID, `SELECT coalesce(max(id),0) FROM anomaly_events WHERE market = ?`, n.market); err == nil {
+					if n.lastID > dbMaxID {
+						log.Printf("tg notify: self-heal last_id drift market=%s redis=%d db=%d", n.market, n.lastID, dbMaxID)
+						n.lastID = dbMaxID
+						n.persistLastID(ctx)
+					}
+				}
 				return
 			}
 		}
