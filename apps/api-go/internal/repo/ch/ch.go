@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -57,6 +58,7 @@ func normalizeBaseURL(raw string) string {
 }
 
 func (c *Client) QueryJSON(ctx context.Context, sql string) ([]map[string]json.RawMessage, error) {
+	start := time.Now()
 	params := url.Values{}
 	params.Set("query", sql+" FORMAT JSONEachRow")
 	params.Set("database", c.database)
@@ -95,6 +97,9 @@ func (c *Client) QueryJSON(ctx context.Context, sql string) ([]map[string]json.R
 			return nil, fmt.Errorf("ch: parse row: %w", err)
 		}
 		rows = append(rows, row)
+	}
+	if dur := time.Since(start); dur >= 800*time.Millisecond {
+		log.Printf("ch slow query dur=%s rows=%d sql=%s", dur.Truncate(time.Millisecond), len(rows), shortSQL(sql, 200))
 	}
 	return rows, nil
 }
@@ -142,6 +147,49 @@ func inClause(values []string) string {
 		parts[i] = "'" + esc(v) + "'"
 	}
 	return strings.Join(parts, ",")
+}
+
+func shortSQL(sql string, max int) string {
+	s := strings.Join(strings.Fields(strings.TrimSpace(sql)), " ")
+	if max <= 0 || len(s) <= max {
+		return s
+	}
+	return s[:max] + "..."
+}
+
+func tradeRowsDedupSubquery(where string) string {
+	return fmt.Sprintf(
+		"SELECT market, symbol, bucket_start_ms, "+
+			"argMax(taker_buy_notional, version) AS taker_buy_notional, "+
+			"argMax(taker_sell_notional, version) AS taker_sell_notional, "+
+			"argMax(quote_notional, version) AS quote_notional, "+
+			"toInt64(argMax(trade_count, version)) AS trade_count, "+
+			"argMax(first_trade_ms, version) AS first_trade_ms, "+
+			"argMax(last_trade_ms, version) AS last_trade_ms, "+
+			"argMax(open_price, version) AS open_price, "+
+			"argMax(close_price, version) AS close_price, "+
+			"argMax(high_price, version) AS high_price, "+
+			"argMax(low_price, version) AS low_price "+
+			"FROM trade_buckets WHERE %s GROUP BY market, symbol, bucket_start_ms",
+		where,
+	)
+}
+
+func obRowsDedupSubquery(where string) string {
+	return fmt.Sprintf(
+		"SELECT market, symbol, bucket, bucket_start_ms, "+
+			"argMax(spread_bps_sum, version) AS spread_bps_sum, "+
+			"argMax(microprice_shift_bps_sum, version) AS microprice_shift_bps_sum, "+
+			"argMax(depth_imbalance_l20_sum, version) AS depth_imbalance_l20_sum, "+
+			"argMax(wall_pressure_l20_sum, version) AS wall_pressure_l20_sum, "+
+			"toInt64(argMax(sample_count, version)) AS sample_count, "+
+			"argMax(taker_buy_notional, version) AS taker_buy_notional, "+
+			"argMax(taker_sell_notional, version) AS taker_sell_notional, "+
+			"toInt64(argMax(depletion_events, version)) AS depletion_events, "+
+			"toInt64(argMax(replenishment_events, version)) AS replenishment_events "+
+			"FROM orderbook_feature_buckets WHERE %s GROUP BY market, symbol, bucket, bucket_start_ms",
+		where,
+	)
 }
 
 func rawStr(r map[string]json.RawMessage, key string) string {
@@ -270,10 +318,17 @@ func (c *Client) QueryTradeBuckets(ctx context.Context, market, symbol string, s
 		dir = "DESC"
 	}
 	w := strings.Join(where, " AND ")
+	sub := tradeRowsDedupSubquery(w)
 
 	var sql string
 	if bucket == "1m" {
-		sql = fmt.Sprintf("SELECT * FROM trade_buckets FINAL WHERE %s ORDER BY symbol ASC, bucket_start_ms %s", w, dir)
+		sql = fmt.Sprintf(
+			"SELECT market, symbol, '1m' AS bucket, bucket_start_ms, "+
+				"taker_buy_notional, taker_sell_notional, quote_notional, "+
+				"trade_count, first_trade_ms, last_trade_ms, open_price, close_price, high_price, low_price "+
+				"FROM (%s) ORDER BY symbol ASC, bucket_start_ms %s",
+			sub, dir,
+		)
 	} else {
 		bms, ok := model.BucketMs[bucket]
 		if !ok {
@@ -281,9 +336,8 @@ func (c *Client) QueryTradeBuckets(ctx context.Context, market, symbol string, s
 		}
 		agg := fmt.Sprintf("intDiv(bucket_start_ms, %d) * %d", bms, bms)
 		sql = fmt.Sprintf(
-			"SELECT *, agg_start AS bucket_start_ms FROM ("+
-				"SELECT market, symbol, '%s' AS bucket, "+
-				"%s AS agg_start, "+
+			"SELECT market, symbol, '%s' AS bucket, "+
+				"agg_start AS bucket_start_ms, "+
 				"sum(taker_buy_notional) AS taker_buy_notional, "+
 				"sum(taker_sell_notional) AS taker_sell_notional, "+
 				"sum(quote_notional) AS quote_notional, "+
@@ -294,10 +348,15 @@ func (c *Client) QueryTradeBuckets(ctx context.Context, market, symbol string, s
 				"argMax(close_price, bucket_start_ms) AS close_price, "+
 				"max(high_price) AS high_price, "+
 				"min(low_price) AS low_price "+
-				"FROM (SELECT * FROM trade_buckets FINAL WHERE %s) "+
-				"GROUP BY market, symbol, agg_start) "+
+				"FROM ("+
+				"SELECT market, symbol, "+
+				"%s AS agg_start, "+
+				"taker_buy_notional, taker_sell_notional, quote_notional, trade_count, "+
+				"first_trade_ms, last_trade_ms, open_price, close_price, high_price, low_price "+
+				"FROM (%s)) "+
+				"GROUP BY market, symbol, agg_start "+
 				"ORDER BY symbol ASC, bucket_start_ms %s",
-			esc(bucket), agg, w, dir,
+			esc(bucket), agg, sub, dir,
 		)
 	}
 	if limit > 0 {
@@ -319,11 +378,11 @@ func (c *Client) QueryTradeAggVolume(ctx context.Context, market, bucket string,
 	Symbol string
 	QV     float64
 }, error) {
+	where := fmt.Sprintf("market = '%s' AND bucket = '1m' AND bucket_start_ms >= %d", esc(market), startMs)
 	sql := fmt.Sprintf(
-		"SELECT symbol, sum(quote_notional) AS qv FROM trade_buckets FINAL "+
-			"WHERE market = '%s' AND bucket = '1m' AND bucket_start_ms >= %d "+
+		"SELECT symbol, sum(quote_notional) AS qv FROM (%s) "+
 			"GROUP BY symbol ORDER BY qv DESC LIMIT %d",
-		esc(market), startMs, limit,
+		tradeRowsDedupSubquery(where), limit,
 	)
 	rows, err := c.QueryJSON(ctx, sql)
 	if err != nil {
@@ -369,8 +428,8 @@ func (c *Client) QueryTradeFlowAggRange(ctx context.Context, market string, symb
 	}
 	sql := fmt.Sprintf(
 		"SELECT symbol, sum(taker_buy_notional) AS buy_sum, sum(taker_sell_notional) AS sell_sum "+
-			"FROM (SELECT * FROM trade_buckets FINAL WHERE %s) GROUP BY symbol",
-		strings.Join(where, " AND "),
+			"FROM (%s) GROUP BY symbol",
+		tradeRowsDedupSubquery(strings.Join(where, " AND ")),
 	)
 	rows, err := c.QueryJSON(ctx, sql)
 	if err != nil {
@@ -409,8 +468,8 @@ func (c *Client) QueryOrderbookFeatures(ctx context.Context, market, symbol stri
 	if order == "desc" {
 		dir = "DESC"
 	}
-	sql := fmt.Sprintf("SELECT * FROM orderbook_feature_buckets FINAL WHERE %s ORDER BY symbol ASC, bucket_start_ms %s",
-		strings.Join(where, " AND "), dir)
+	sql := fmt.Sprintf("SELECT * FROM (%s) ORDER BY symbol ASC, bucket_start_ms %s",
+		obRowsDedupSubquery(strings.Join(where, " AND ")), dir)
 
 	rows, err := c.QueryJSON(ctx, sql)
 	if err != nil {

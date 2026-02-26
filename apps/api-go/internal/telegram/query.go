@@ -1985,7 +1985,13 @@ func (qb *QueryBot) intradayNetSnapshot(ctx context.Context, symbol string) []ne
 	currentHour := (nowMs / hourMs) * hourMs
 
 	rows, err := qb.ch.QueryTradeBuckets(ctx, "", symbol, nil, "1m", dayStart, nowMs, "asc", 0)
-	if err != nil || len(rows) == 0 {
+	if err != nil {
+		return nil
+	}
+	if len(rows) == 0 {
+		rows = qb.fetchIntradayFallbackRows(ctx, symbol, dayStart, nowMs)
+	}
+	if len(rows) == 0 {
 		return nil
 	}
 	type v struct {
@@ -2028,6 +2034,67 @@ func (qb *QueryBot) intradayNetSnapshot(ctx context.Context, symbol string) []ne
 		items = append(items, netPoint{Ts: nowMs, Swap: swapNow[0], Spot: spotNow[0]})
 	}
 	return items
+}
+
+func (qb *QueryBot) fetchIntradayFallbackRows(ctx context.Context, symbol string, startMs, endMs int64) []model.CHTradeRow {
+	if qb.bn == nil || endMs <= startMs {
+		return nil
+	}
+	out := make([]model.CHTradeRow, 0, 1500*2)
+	markets := []string{"swap", "spot"}
+	for _, market := range markets {
+		klines, err := qb.bn.GetKlinesRange(ctx, market, symbol, "1m", startMs, endMs, 1000)
+		if err != nil || len(klines) == 0 {
+			continue
+		}
+		out = append(out, tradeRowsFromKlines(market, symbol, klines, startMs, endMs)...)
+	}
+	return out
+}
+
+func tradeRowsFromKlines(market, symbol string, klines [][]interface{}, startMs, endMs int64) []model.CHTradeRow {
+	rows := make([]model.CHTradeRow, 0, len(klines))
+	for _, k := range klines {
+		if len(k) < 11 {
+			continue
+		}
+		openMs := toI64(k[0])
+		if openMs < startMs || openMs > endMs {
+			continue
+		}
+		quote := toF64(k[7])
+		takerBuy := toF64(k[10])
+		if quote <= 0 {
+			continue
+		}
+		takerSell := quote - takerBuy
+		if takerSell < 0 {
+			takerSell = 0
+		}
+		firstTradeMs := openMs
+		lastTradeMs := toI64(k[6])
+		openPrice := toF64(k[1])
+		closePrice := toF64(k[4])
+		highPrice := toF64(k[2])
+		lowPrice := toF64(k[3])
+		rows = append(rows, model.CHTradeRow{
+			Market:            market,
+			Symbol:            symbol,
+			Bucket:            "1m",
+			BucketStartMs:     openMs,
+			TakerBuyNotional:  takerBuy,
+			TakerSellNotional: takerSell,
+			QuoteNotional:     quote,
+			TradeCount:        toI64(k[8]),
+			FirstTradeMs:      &firstTradeMs,
+			LastTradeMs:       &lastTradeMs,
+			OpenPrice:         &openPrice,
+			ClosePrice:        &closePrice,
+			HighPrice:         &highPrice,
+			LowPrice:          &lowPrice,
+		})
+	}
+	return rows
 }
 
 func (qb *QueryBot) dailyNetSeries(ctx context.Context, symbol string, days int) []netPoint {

@@ -603,6 +603,7 @@ func initClickHouseSchema(ctx context.Context, conn clickhouse.Conn) error {
 			low_price Nullable(Float64),
 			version UInt64
 		) ENGINE = ReplacingMergeTree(version)
+		PARTITION BY toDate(toDateTime(bucket_start_ms / 1000))
 		ORDER BY (market, symbol, bucket, bucket_start_ms);`,
 		`CREATE TABLE IF NOT EXISTS orderbook_feature_buckets (
 			market String,
@@ -620,6 +621,7 @@ func initClickHouseSchema(ctx context.Context, conn clickhouse.Conn) error {
 			replenishment_events Int64,
 			version UInt64
 		) ENGINE = ReplacingMergeTree(version)
+		PARTITION BY toDate(toDateTime(bucket_start_ms / 1000))
 		ORDER BY (market, symbol, bucket, bucket_start_ms);`,
 		`ALTER TABLE orderbook_feature_buckets DROP COLUMN IF EXISTS depth_imbalance_l5_sum;`,
 		`ALTER TABLE orderbook_feature_buckets DROP COLUMN IF EXISTS wall_pressure_l5_sum;`,
