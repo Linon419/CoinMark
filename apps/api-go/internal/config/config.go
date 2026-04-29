@@ -73,16 +73,25 @@ type Config struct {
 	SRRefreshIntervalSec int
 
 	// Anomaly
-	AnomalyScanTopN              int
-	AnomalyScanIntervalSec       int
-	AnomalyHistory15m            int
-	AnomalyBreakoutMarginPct     float64
-	AnomalyVolumeSpikeFactory    float64
-	AnomalyAmplitudeSpikeFactory float64
+	AnomalyScanTopN               int
+	AnomalyScanIntervalSec        int
+	MarketYidongMinuteEnabled     bool
+	MarketYidongMinuteIntervalSec int
+	MarketYidongVolumeEnabled     bool
+	MarketYidongVolumeIntervalSec int
+	AbsorptionScanEnabled         bool
+	ClimaxScanEnabled             bool
+	AnomalyHistory15m             int
+	AnomalyBreakoutMarginPct      float64
+	AnomalyVolumeSpikeFactory     float64
+	AnomalyAmplitudeSpikeFactory  float64
 
 	// Absorption
 	AbsorptionSnapshotRetentionHours     int
 	AbsorptionSnapshotCleanupIntervalSec int
+	TradeBucketRetentionDays             int
+	OrderbookBucketRetentionDays         int
+	SQLiteVacuumIntervalSec              int
 
 	// Rank
 	RankBucket         string
@@ -181,15 +190,24 @@ func Load() (*Config, error) {
 		SRRefreshTopN:        getenvInt("SR_REFRESH_TOP_N", 200),
 		SRRefreshIntervalSec: getenvInt("SR_REFRESH_INTERVAL_SEC", 1800),
 
-		AnomalyScanTopN:              getenvInt("ANOMALY_SCAN_TOP_N", 200),
-		AnomalyScanIntervalSec:       getenvInt("ANOMALY_SCAN_INTERVAL_SEC", 60),
-		AnomalyHistory15m:            getenvInt("ANOMALY_HISTORY_15M", 96),
-		AnomalyBreakoutMarginPct:     getenvFloat("ANOMALY_BREAKOUT_MARGIN_PCT", 0.001),
-		AnomalyVolumeSpikeFactory:    getenvFloat("ANOMALY_VOLUME_SPIKE_FACTOR", 3.0),
-		AnomalyAmplitudeSpikeFactory: getenvFloat("ANOMALY_AMPLITUDE_SPIKE_FACTOR", 2.5),
+		AnomalyScanTopN:               getenvInt("ANOMALY_SCAN_TOP_N", 200),
+		AnomalyScanIntervalSec:        getenvInt("ANOMALY_SCAN_INTERVAL_SEC", 60),
+		MarketYidongMinuteEnabled:     getenvBool("MARKET_YIDONG_MINUTE_ENABLED", true),
+		MarketYidongMinuteIntervalSec: getenvInt("MARKET_YIDONG_MINUTE_INTERVAL_SEC", 60),
+		MarketYidongVolumeEnabled:     getenvBool("MARKET_YIDONG_VOLUME_ENABLED", true),
+		MarketYidongVolumeIntervalSec: getenvInt("MARKET_YIDONG_VOLUME_INTERVAL_SEC", 60),
+		AbsorptionScanEnabled:         getenvBool("ABSORPTION_SCAN_ENABLED", true),
+		ClimaxScanEnabled:             getenvBool("CLIMAX_SCAN_ENABLED", true),
+		AnomalyHistory15m:             getenvInt("ANOMALY_HISTORY_15M", 96),
+		AnomalyBreakoutMarginPct:      getenvFloat("ANOMALY_BREAKOUT_MARGIN_PCT", 0.001),
+		AnomalyVolumeSpikeFactory:     getenvFloat("ANOMALY_VOLUME_SPIKE_FACTOR", 3.0),
+		AnomalyAmplitudeSpikeFactory:  getenvFloat("ANOMALY_AMPLITUDE_SPIKE_FACTOR", 2.5),
 
 		AbsorptionSnapshotRetentionHours:     getenvInt("ABSORPTION_SNAPSHOT_RETENTION_HOURS", 24),
 		AbsorptionSnapshotCleanupIntervalSec: getenvInt("ABSORPTION_SNAPSHOT_CLEANUP_INTERVAL_SEC", 900),
+		TradeBucketRetentionDays:             getenvInt("TRADE_BUCKET_RETENTION_DAYS", 7),
+		OrderbookBucketRetentionDays:         getenvInt("ORDERBOOK_BUCKET_RETENTION_DAYS", 3),
+		SQLiteVacuumIntervalSec:              getenvInt("SQLITE_VACUUM_INTERVAL_SEC", 21600),
 
 		RankBucket:         getenv("RANK_BUCKET", "15m"),
 		RankHistoryBuckets: getenvInt("RANK_HISTORY_BUCKETS", 96),

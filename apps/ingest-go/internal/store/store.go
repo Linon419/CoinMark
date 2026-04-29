@@ -658,6 +658,9 @@ func initClickHouseSchema(ctx context.Context, conn clickhouse.Conn) error {
 		// TTL: 1m 分桶保留 31 天
 		`ALTER TABLE trade_buckets MODIFY TTL toDateTime(bucket_start_ms / 1000) + INTERVAL 31 DAY;`,
 		`ALTER TABLE orderbook_feature_buckets MODIFY TTL toDateTime(bucket_start_ms / 1000) + INTERVAL 7 DAY;`,
+		`ALTER TABLE asset_market_caps MODIFY TTL toDateTime(event_time_ms / 1000) + INTERVAL 31 DAY;`,
+		`ALTER TABLE funding_rate_snapshots MODIFY TTL toDateTime(event_time_ms / 1000) + INTERVAL 31 DAY;`,
+		`ALTER TABLE open_interest_snapshots MODIFY TTL toDateTime(event_time_ms / 1000) + INTERVAL 31 DAY;`,
 	}
 	for _, stmt := range stmts {
 		if err := conn.Exec(ctx, stmt); err != nil {

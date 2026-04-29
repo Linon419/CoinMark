@@ -13,14 +13,15 @@ import (
 )
 
 type Runtime struct {
-	Manager *Manager
-	Pub     *Publisher
-	Stream  *AnomalyStream
-	cfg     *config.Config
-	store   *sqlite.Store
-	ch      *chrepo.Client
-	bn      *binance.Client
-	stopCh  chan struct{}
+	Manager          *Manager
+	Pub              *Publisher
+	Stream           *AnomalyStream
+	cfg              *config.Config
+	store            *sqlite.Store
+	ch               *chrepo.Client
+	bn               *binance.Client
+	stopCh           chan struct{}
+	lastSQLiteVacuum time.Time
 }
 
 func NewRuntime(cfg *config.Config, store *sqlite.Store, ch *chrepo.Client, bn *binance.Client) *Runtime {
@@ -36,6 +37,9 @@ func NewRuntime(cfg *config.Config, store *sqlite.Store, ch *chrepo.Client, bn *
 }
 
 func (rt *Runtime) Start(ctx context.Context) {
+	// periodic cleanup
+	go rt.cleanupLoop(ctx)
+
 	if !rt.cfg.HubEnabled {
 		log.Println("hub: disabled")
 		return
@@ -50,10 +54,16 @@ func (rt *Runtime) Start(ctx context.Context) {
 
 	// climax scan loop
 	if rt.ch != nil {
-		go rt.climaxLoop(ctx)
-		go rt.marketYidongMinuteLoop(ctx)
-		go rt.marketYidongVolumeLoop(ctx)
-		if rt.bn != nil {
+		if rt.cfg.ClimaxScanEnabled {
+			go rt.climaxLoop(ctx)
+		}
+		if rt.cfg.MarketYidongMinuteEnabled {
+			go rt.marketYidongMinuteLoop(ctx)
+		}
+		if rt.cfg.MarketYidongVolumeEnabled {
+			go rt.marketYidongVolumeLoop(ctx)
+		}
+		if rt.cfg.AbsorptionScanEnabled && rt.bn != nil {
 			go rt.absorptionLoop(ctx)
 		}
 	}
@@ -70,9 +80,6 @@ func (rt *Runtime) Start(ctx context.Context) {
 			}
 		}()
 	}
-
-	// periodic cleanup
-	go rt.cleanupLoop(ctx)
 }
 
 func (rt *Runtime) Stop() {
@@ -135,8 +142,8 @@ func (rt *Runtime) cleanupLoop(ctx context.Context) {
 }
 
 func (rt *Runtime) marketYidongMinuteLoop(ctx context.Context) {
-	interval := rt.cfg.AnomalyScanIntervalSec
-	if interval < 10 {
+	interval := rt.cfg.MarketYidongMinuteIntervalSec
+	if interval < 30 {
 		interval = 60
 	}
 	ticker := time.NewTicker(time.Duration(interval) * time.Second)
@@ -160,7 +167,11 @@ func (rt *Runtime) marketYidongMinuteLoop(ctx context.Context) {
 }
 
 func (rt *Runtime) marketYidongVolumeLoop(ctx context.Context) {
-	ticker := time.NewTicker(10 * time.Second)
+	interval := rt.cfg.MarketYidongVolumeIntervalSec
+	if interval < 30 {
+		interval = 60
+	}
+	ticker := time.NewTicker(time.Duration(interval) * time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -202,13 +213,19 @@ func (rt *Runtime) absorptionLoop(ctx context.Context) {
 }
 
 func (rt *Runtime) doCleanup(ctx context.Context) {
+	rt.cleanupSQLiteHistoryBuckets(ctx)
+
 	// heatmap: 24h
 	cutoff24h := time.Now().UnixMilli() - 24*60*60*1000
-	rt.store.DB.ExecContext(ctx, "DELETE FROM orderbook_heatmap_1m WHERE bucket_start_ms < ?", cutoff24h)
+	if _, err := rt.store.DB.ExecContext(ctx, "DELETE FROM orderbook_heatmap_1m WHERE bucket_start_ms < ?", cutoff24h); err != nil {
+		log.Printf("hub: heatmap cleanup error: %v", err)
+	}
 
 	// anomaly events: 30d
 	cutoff30d := time.Now().UnixMilli() - 30*24*60*60*1000
-	rt.store.DB.ExecContext(ctx, "DELETE FROM anomaly_events WHERE event_time_ms < ?", cutoff30d)
+	if _, err := rt.store.DB.ExecContext(ctx, "DELETE FROM anomaly_events WHERE event_time_ms < ?", cutoff30d); err != nil {
+		log.Printf("hub: anomaly cleanup error: %v", err)
+	}
 
 	// absorption snapshots
 	hours := rt.cfg.AbsorptionSnapshotRetentionHours
@@ -221,4 +238,56 @@ func (rt *Runtime) doCleanup(ctx context.Context) {
 	} else if n > 0 {
 		log.Printf("hub: cleaned %d absorption snapshots", n)
 	}
+}
+
+func (rt *Runtime) cleanupSQLiteHistoryBuckets(ctx context.Context) {
+	tradeDays := rt.cfg.TradeBucketRetentionDays
+	if tradeDays < 1 {
+		tradeDays = 7
+	}
+	orderbookDays := rt.cfg.OrderbookBucketRetentionDays
+	if orderbookDays < 1 {
+		orderbookDays = 3
+	}
+
+	nowMs := time.Now().UnixMilli()
+	tradeCutoff := nowMs - int64(tradeDays)*24*60*60*1000
+	orderbookCutoff := nowMs - int64(orderbookDays)*24*60*60*1000
+
+	if res, err := rt.store.DB.ExecContext(ctx, "DELETE FROM trade_buckets WHERE bucket_start_ms < ?", tradeCutoff); err != nil {
+		log.Printf("hub: trade bucket cleanup error: %v", err)
+	} else if n, _ := res.RowsAffected(); n > 0 {
+		log.Printf("hub: cleaned %d sqlite trade buckets", n)
+	}
+
+	if res, err := rt.store.DB.ExecContext(ctx, "DELETE FROM orderbook_feature_buckets WHERE bucket_start_ms < ?", orderbookCutoff); err != nil {
+		log.Printf("hub: orderbook bucket cleanup error: %v", err)
+	} else if n, _ := res.RowsAffected(); n > 0 {
+		log.Printf("hub: cleaned %d sqlite orderbook buckets", n)
+	}
+
+	rt.reclaimSQLiteSpace(ctx)
+}
+
+func (rt *Runtime) reclaimSQLiteSpace(ctx context.Context) {
+	if _, err := rt.store.DB.ExecContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+		log.Printf("hub: sqlite wal checkpoint error: %v", err)
+	}
+
+	interval := rt.cfg.SQLiteVacuumIntervalSec
+	if interval < 1 {
+		return
+	}
+	if interval < 3600 {
+		interval = 3600
+	}
+	if !rt.lastSQLiteVacuum.IsZero() && time.Since(rt.lastSQLiteVacuum) < time.Duration(interval)*time.Second {
+		return
+	}
+	if _, err := rt.store.DB.ExecContext(ctx, "VACUUM"); err != nil {
+		log.Printf("hub: sqlite vacuum error: %v", err)
+		return
+	}
+	rt.lastSQLiteVacuum = time.Now()
+	log.Printf("hub: sqlite vacuum completed")
 }
