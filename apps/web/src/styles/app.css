@@ -737,6 +737,51 @@ body {
   flex-wrap: wrap;
 }
 
+.cm-notifyTelegramPrefs {
+  padding: 10px;
+  margin-bottom: 10px;
+  border: 1px solid var(--cm-border);
+  border-radius: 10px;
+  background: rgba(148, 163, 184, 0.06);
+}
+
+.cm-notifyTelegramHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.cm-notifyTelegramSwitches {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.cm-notifySwitchRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 30px;
+  padding: 6px 8px;
+  border: 1px solid var(--cm-border);
+  border-radius: 8px;
+  background: var(--cm-surface);
+}
+
+.cm-notifySwitchRow span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 520px) {
+  .cm-notifyTelegramSwitches {
+    grid-template-columns: 1fr;
+  }
+}
+
 .cm-notifyList {
   display: flex;
   flex-direction: column;

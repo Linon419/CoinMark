@@ -1112,6 +1112,8 @@ export default function HomePage() {
     volume_fall_medium_15m: "放量中跌",
     volume_fall_large_15m: "放量大跌",
     signal_lab_persistent_buy: "持续吸筹",
+    absorption_signal_long: "吸筹扫描看多",
+    absorption_signal_short: "吸筹扫描看空",
     signal_lab_bid_wall: "买盘墙",
     signal_lab_ask_wall: "卖盘墙",
   };

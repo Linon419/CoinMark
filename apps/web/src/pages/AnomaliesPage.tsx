@@ -65,6 +65,39 @@ function isWhaleWallEventType(et: string): boolean {
   return n === "whale_wall_far" || n === "anomaly_whale_wall_far" || n === "whale_wall_filled" || n === "whale_wall_canceled";
 }
 
+function toPositiveMs(...values: unknown[]): number {
+  for (const value of values) {
+    const ts = Number(value);
+    if (Number.isFinite(ts) && ts > 0) return ts;
+  }
+  return 0;
+}
+
+function formatDateTime(ts: number): string {
+  return ts > 0 ? new Date(ts).toLocaleString() : "-";
+}
+
+function normalizeAbsorptionItems(items: any[]): AbsorptionSignalItem[] {
+  return (items || [])
+    .map((e: any) => {
+      const score = Number(e?.score ?? 0);
+      const direction = String(e?.direction ?? "LONG_BIAS");
+      const signalState = String(e?.signalState ?? e?.signal_state ?? "NONE");
+      const reasons = Array.isArray(e?.reasons) ? e.reasons.map((x: any) => String(x)) : [];
+
+      return {
+        symbol: String(e?.symbol ?? ""),
+        signalState: signalState as AbsorptionSignalItem["signalState"],
+        direction: direction as AbsorptionSignalItem["direction"],
+        score: Number.isFinite(score) ? score : 0,
+        windows: e?.windows && typeof e.windows === "object" ? e.windows : {},
+        reasons,
+        ts: toPositiveMs(e?.ts, e?.bucketStartMs, e?.bucket_start_ms),
+      };
+    })
+    .filter((e: AbsorptionSignalItem) => e.symbol && e.ts > 0);
+}
+
 export default function AnomaliesPage() {
   const { Title, Text } = Typography;
   const [market, setMarket] = useState<Market>("swap");
@@ -135,7 +168,7 @@ export default function AnomaliesPage() {
           .filter((e) => isWhaleWallEventType(e.eventType))
           .sort((a, b) => b.eventTimeMs - a.eventTimeMs)
       );
-      setAbsorptionItems(absorption.items || []);
+      setAbsorptionItems(normalizeAbsorptionItems(absorption.items || []));
     } finally {
       setLoading(false);
     }
@@ -156,7 +189,7 @@ export default function AnomaliesPage() {
 
   const absorptionColumns = useMemo(
     () => [
-      { title: "时间", render: (_: any, r: AbsorptionSignalItem) => new Date(r.ts).toLocaleString() },
+      { title: "时间", render: (_: any, r: AbsorptionSignalItem) => formatDateTime(r.ts) },
       { title: "Symbol", render: (_: any, r: AbsorptionSignalItem) => <Link to={`/coin/${r.symbol}`}>{r.symbol}</Link> },
       {
         title: "状态",
@@ -222,6 +255,8 @@ export default function AnomaliesPage() {
     volume_fall_medium_15m: "放量中跌",
     volume_fall_large_15m: "放量大跌",
     signal_lab_persistent_buy: "持续吸筹",
+    absorption_signal_long: "吸筹扫描看多",
+    absorption_signal_short: "吸筹扫描看空",
     signal_lab_bid_wall: "买盘墙",
     signal_lab_ask_wall: "卖盘墙",
     whale_wall_far: "类型提醒",

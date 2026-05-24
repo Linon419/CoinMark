@@ -17,8 +17,34 @@ func Migrate(ctx context.Context, store *sqlite.Store) error {
 				return err
 			}
 		}
+		if err := ensureColumn(tx, "tg_notify_prefs", "absorption_enabled", "BOOLEAN NOT NULL DEFAULT 0"); err != nil {
+			return err
+		}
 		return nil
 	})
+}
+
+func ensureColumn(tx *sqlx.Tx, table, column, definition string) error {
+	rows, err := tx.Queryx("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		row := make(map[string]interface{})
+		if err := rows.MapScan(row); err != nil {
+			return err
+		}
+		if name, ok := row["name"].(string); ok && name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = tx.Exec("ALTER TABLE " + table + " ADD COLUMN " + column + " " + definition)
+	return err
 }
 
 var schemaDDL = []string{
@@ -199,6 +225,7 @@ var schemaDDL = []string{
 		chat_id BIGINT PRIMARY KEY,
 		market_anomaly_enabled BOOLEAN NOT NULL DEFAULT 1,
 		whale_wall_enabled BOOLEAN NOT NULL DEFAULT 0,
+		absorption_enabled BOOLEAN NOT NULL DEFAULT 0,
 		signal_lab_enabled BOOLEAN NOT NULL DEFAULT 0,
 		mute_all BOOLEAN NOT NULL DEFAULT 0,
 		updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP

@@ -107,26 +107,74 @@ func normalizeSymbol(s string) string {
 
 func eventTypeLabel(et string) string {
 	labels := map[string]string{
-		"whale_wall_far":      "远离现价大挂单",
-		"whale_wall_filled":   "大挂单已成交",
-		"whale_wall_canceled": "大挂单已撤销",
-		"breakout_up":         "突破阻力",
-		"breakout_down":       "跌破支撑",
-		"volume_spike":        "量能异常",
-		"amplitude_spike":     "振幅异常",
-		"climax_reversal":     "高潮反转",
+		"whale_wall_far":            "远离现价大挂单",
+		"whale_wall_filled":         "大挂单已成交",
+		"whale_wall_canceled":       "大挂单已撤销",
+		"signal_lab_persistent_buy": "持续吸筹",
+		"signal_lab_single_large":   "大额主动成交",
+		"signal_lab_climax_long":    "天量反转看多",
+		"signal_lab_climax_short":   "天量反转看空",
+		"absorption_signal_long":    "吸筹扫描看多",
+		"absorption_signal_short":   "吸筹扫描看空",
+		"breakout_up":               "突破阻力",
+		"breakout_down":             "跌破支撑",
+		"volume_spike":              "量能异常",
+		"amplitude_spike":           "振幅异常",
+		"climax_reversal":           "高潮反转",
+		"new_high_1d":               "今日新高",
+		"new_high_7d":               "7日新高",
+		"new_high_30d":              "30日新高",
+		"new_low_1d":                "今日新低",
+		"new_low_7d":                "7日新低",
+		"new_low_30d":               "30日新低",
+		"intraday_peak_reversal":    "冲高回落",
+		"intraday_bottom_rebound":   "探底回升",
 	}
 	if l, ok := labels[et]; ok {
+		return l
+	}
+	if l, ok := marketMoveEventLabel(et); ok {
 		return l
 	}
 	return et
 }
 
+func marketMoveEventLabel(et string) (string, bool) {
+	parts := strings.Split(et, "_")
+	if len(parts) != 4 {
+		return "", false
+	}
+	kind, direction, size, interval := parts[0], parts[1], parts[2], parts[3]
+	kindLabels := map[string]string{"price": "价格", "volume": "放量"}
+	directionLabels := map[string]string{"rise": "上涨", "fall": "下跌"}
+	sizeLabels := map[string]string{"small": "小幅", "medium": "中幅", "large": "大幅"}
+	kindLabel, ok := kindLabels[kind]
+	if !ok {
+		return "", false
+	}
+	directionLabel, ok := directionLabels[direction]
+	if !ok {
+		return "", false
+	}
+	sizeLabel, ok := sizeLabels[size]
+	if !ok {
+		return "", false
+	}
+	return interval + " " + kindLabel + sizeLabel + directionLabel, true
+}
+
 func eventSeverityScore(et string, details map[string]interface{}) float64 {
 	base := 40.0
+	if score, ok := detailFloat(details, "score"); ok && score > 0 {
+		base = score
+	} else if score, ok := detailFloat(details, "strengthScore"); ok && score > 0 {
+		base = score
+	}
 	switch et {
 	case "breakout_up", "breakout_down":
-		base = 60
+		if base < 60 {
+			base = 60
+		}
 		if touches, ok := detailFloat(details, "touches"); ok && touches >= 5 {
 			base += 10
 		}

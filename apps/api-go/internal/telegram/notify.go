@@ -2,7 +2,6 @@ package telegram
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -15,7 +14,7 @@ import (
 	"coinmark/api-go/internal/model"
 	redisrepo "coinmark/api-go/internal/repo/redis"
 	"coinmark/api-go/internal/repo/sqlite"
-	"github.com/jmoiron/sqlx"
+	"coinmark/api-go/internal/service"
 )
 
 type AnomalyNotifier struct {
@@ -35,13 +34,7 @@ type AnomalyNotifier struct {
 	chatIDInt       int64
 }
 
-type tgNotifyPrefs struct {
-	ChatID               int64 `db:"chat_id"`
-	MarketAnomalyEnabled bool  `db:"market_anomaly_enabled"`
-	WhaleWallEnabled     bool  `db:"whale_wall_enabled"`
-	SignalLabEnabled     bool  `db:"signal_lab_enabled"`
-	MuteAll              bool  `db:"mute_all"`
-}
+type tgNotifyPrefs = service.TGNotifyPrefs
 
 func NewAnomalyNotifier(store *sqlite.Store, redis *redisrepo.Store, chatID, market, minLevel, prefix string, pollSec, batchWin, batchMax int) *AnomalyNotifier {
 	if pollSec < 2 {
@@ -132,39 +125,15 @@ func (n *AnomalyNotifier) poll(ctx context.Context) []model.AnomalyEvent {
 }
 
 func notifyEventCategory(eventType string) string {
-	et := strings.ToLower(strings.TrimSpace(eventType))
-	switch et {
-	case "whale_wall_far", "anomaly_whale_wall_far", "whale_wall_filled", "whale_wall_canceled":
-		return "whale_wall"
-	}
-	if strings.HasPrefix(et, "signal_lab_") {
-		return "signal_lab"
-	}
-	return "market_anomaly"
+	return service.TGNotifyEventCategory(eventType)
 }
 
 func (n *AnomalyNotifier) isEventEnabledByPrefs(eventType string, p tgNotifyPrefs) bool {
-	if p.MuteAll {
-		return false
-	}
-	switch notifyEventCategory(eventType) {
-	case "whale_wall":
-		return p.WhaleWallEnabled
-	case "signal_lab":
-		return p.SignalLabEnabled
-	default:
-		return p.MarketAnomalyEnabled
-	}
+	return service.IsTGNotifyEventEnabled(eventType, p)
 }
 
 func (n *AnomalyNotifier) defaultPrefs() tgNotifyPrefs {
-	return tgNotifyPrefs{
-		ChatID:               n.chatIDInt,
-		MarketAnomalyEnabled: true,
-		WhaleWallEnabled:     false,
-		SignalLabEnabled:     false,
-		MuteAll:              false,
-	}
+	return service.DefaultTGNotifyPrefs(n.chatIDInt)
 }
 
 func (n *AnomalyNotifier) mustLoadPrefs(ctx context.Context) tgNotifyPrefs {
@@ -176,44 +145,12 @@ func (n *AnomalyNotifier) mustLoadPrefs(ctx context.Context) tgNotifyPrefs {
 }
 
 func (n *AnomalyNotifier) loadPrefs(ctx context.Context) (tgNotifyPrefs, error) {
-	def := n.defaultPrefs()
-	if n.chatIDInt == 0 {
-		return def, nil
-	}
-	var row tgNotifyPrefs
-	err := n.store.GetContext(ctx, &row, `SELECT chat_id, market_anomaly_enabled, whale_wall_enabled, signal_lab_enabled, mute_all
-FROM tg_notify_prefs WHERE chat_id = ? LIMIT 1`, n.chatIDInt)
-	if err == nil {
-		return row, nil
-	}
-	if err != sql.ErrNoRows {
-		return def, err
-	}
-	if err := n.savePrefs(ctx, def); err != nil {
-		return def, err
-	}
-	return def, nil
+	return service.LoadTGNotifyPrefs(ctx, n.store, n.chatIDInt)
 }
 
 func (n *AnomalyNotifier) savePrefs(ctx context.Context, p tgNotifyPrefs) error {
-	if n.chatIDInt == 0 {
-		return nil
-	}
 	p.ChatID = n.chatIDInt
-	return n.store.Write(ctx, func(_ context.Context, tx *sqlx.Tx) error {
-		_, err := tx.Exec(`INSERT INTO tg_notify_prefs
-(chat_id, market_anomaly_enabled, whale_wall_enabled, signal_lab_enabled, mute_all, updated_at)
-VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-ON CONFLICT(chat_id) DO UPDATE SET
- market_anomaly_enabled = excluded.market_anomaly_enabled,
- whale_wall_enabled = excluded.whale_wall_enabled,
- signal_lab_enabled = excluded.signal_lab_enabled,
- mute_all = excluded.mute_all,
- updated_at = CURRENT_TIMESTAMP`,
-			p.ChatID, p.MarketAnomalyEnabled, p.WhaleWallEnabled, p.SignalLabEnabled, p.MuteAll,
-		)
-		return err
-	})
+	return service.SaveTGNotifyPrefs(ctx, n.store, p)
 }
 
 func (n *AnomalyNotifier) bootstrapLastID(ctx context.Context) {
@@ -286,38 +223,202 @@ func (n *AnomalyNotifier) formatBatch(events []model.AnomalyEvent) string {
 	loc := time.UTC
 	now := time.Now().In(loc)
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("【市场异动快讯】%s\n", now.Format("01-02 15:04")))
+	b.WriteString(fmt.Sprintf("%s %s UTC\n", notifyBatchTitle(events), now.Format("01-02 15:04")))
 
 	type scored struct {
-		evt   model.AnomalyEvent
-		score float64
+		evt     model.AnomalyEvent
+		details map[string]interface{}
+		score   float64
 	}
 	items := make([]scored, 0, len(events))
 	for _, e := range events {
 		var details map[string]interface{}
 		_ = json.Unmarshal(e.Details, &details)
 		s := eventSeverityScore(e.EventType, details)
-		items = append(items, scored{e, s})
+		items = append(items, scored{e, details, s})
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].score > items[j].score })
 
 	for i, it := range items {
 		e := it.evt
 		lvl := eventLevel(it.score)
-		b.WriteString(fmt.Sprintf("%d. %s | %s | %s/%s | %s %.0f\n",
-			i+1, e.Symbol, eventTypeLabel(e.EventType),
-			e.TfSignal, ptrStr(e.TfLevel), lvl, it.score))
-		if strings.TrimSpace(e.Title) != "" {
-			b.WriteString(fmt.Sprintf("   %s\n", e.Title))
+		b.WriteString(fmt.Sprintf("%d. %s｜%s｜%s %.0f\n",
+			i+1, e.Symbol, eventTypeLabel(e.EventType), lvl, it.score))
+		if tf := timeframeText(e); tf != "" {
+			b.WriteString(fmt.Sprintf("   周期: %s\n", tf))
 		}
-		b.WriteString(fmt.Sprintf("   时间: %s\n", fmtTs(e.EventTimeMs, loc)))
+		if strings.TrimSpace(e.Title) != "" {
+			b.WriteString(fmt.Sprintf("   内容: %s\n", e.Title))
+		}
+		if detail := notifyDetailLine(e.EventType, it.details); detail != "" {
+			b.WriteString(fmt.Sprintf("   %s\n", detail))
+		}
+		b.WriteString(fmt.Sprintf("   时间: %s UTC\n", fmtTs(e.EventTimeMs, loc)))
 	}
 	return b.String()
 }
 
+func notifyBatchTitle(events []model.AnomalyEvent) string {
+	if len(events) == 0 {
+		return "【CoinMark 信号快讯】"
+	}
+	category := notifyEventCategory(events[0].EventType)
+	for _, e := range events[1:] {
+		if notifyEventCategory(e.EventType) != category {
+			return "【CoinMark 信号快讯】"
+		}
+	}
+	switch category {
+	case service.TGNotifyCategoryWhaleWall:
+		return "【大户挂单提醒】"
+	case service.TGNotifyCategoryAbsorption:
+		return "【吸筹提醒】"
+	default:
+		return "【Abnormal Events】"
+	}
+}
+
+func timeframeText(e model.AnomalyEvent) string {
+	tf := strings.TrimSpace(e.TfSignal)
+	level := ptrStr(e.TfLevel)
+	if level == "-" {
+		return tf
+	}
+	if tf == "" {
+		return level
+	}
+	return tf + " / " + level
+}
+
+func notifyDetailLine(eventType string, details map[string]interface{}) string {
+	category := notifyEventCategory(eventType)
+	parts := make([]string, 0, 4)
+
+	switch category {
+	case service.TGNotifyCategoryWhaleWall:
+		side := detailString(details, "side")
+		if side == "" {
+			side = "-"
+		}
+		if wallPrice, ok := detailFloat(details, "wallPrice"); ok {
+			parts = append(parts, fmt.Sprintf("挂单: %s %.2f", side, wallPrice))
+		}
+		if distancePct, ok := detailFloat(details, "distancePct"); ok {
+			parts = append(parts, "距离: "+fmtPct(distancePct))
+		}
+		if valueUSDT, ok := detailFloat(details, "valueUSDT"); ok {
+			parts = append(parts, "规模: "+fmtBigUSD(valueUSDT)+" USDT")
+		}
+	case service.TGNotifyCategoryAbsorption:
+		if direction := detailString(details, "direction"); direction != "" {
+			parts = append(parts, "方向: "+direction)
+		}
+		if score, ok := detailFloat(details, "strengthScore"); ok {
+			parts = append(parts, fmt.Sprintf("强度: %.0f", score))
+		} else if score, ok := detailFloat(details, "score"); ok {
+			parts = append(parts, fmt.Sprintf("强度: %.0f", score))
+		}
+		if netFlow, ok := detailFloat(details, "netFlowStrength"); ok {
+			parts = append(parts, "净流: "+fmtBigUSD(netFlow)+" USDT")
+		}
+		if buyRatio, ok := detailFloat(details, "buyRatio"); ok {
+			parts = append(parts, fmt.Sprintf("主动买占比: %.1f%%", buyRatio*100))
+		}
+		if span, ok := detailFloat(details, "persistentSpanMinutes"); ok {
+			parts = append(parts, fmt.Sprintf("持续: %.0f分钟", span))
+		}
+		if windows := passedWindowText(details); windows != "" {
+			parts = append(parts, "窗口: "+windows)
+		}
+	default:
+		if retPct, ok := detailFloat(details, "retPct"); ok {
+			parts = append(parts, "涨跌: "+fmtSignedPct(retPct))
+		}
+		if volumeFactor, ok := detailFloat(details, "volumeFactor"); ok {
+			parts = append(parts, "量能: "+fmtFactor(volumeFactor))
+		}
+		if latestHigh, ok := detailFloat(details, "latestHigh"); ok {
+			parts = append(parts, fmt.Sprintf("高点: %.6g", latestHigh))
+		}
+		if latestLow, ok := detailFloat(details, "latestLow"); ok {
+			parts = append(parts, fmt.Sprintf("低点: %.6g", latestLow))
+		}
+		if pullbackPct, ok := detailFloat(details, "pullbackPct"); ok {
+			parts = append(parts, "回撤: "+fmtSignedPct(pullbackPct))
+		}
+		if reboundPct, ok := detailFloat(details, "reboundPct"); ok {
+			parts = append(parts, "反弹: "+fmtSignedPct(reboundPct))
+		}
+	}
+
+	return strings.Join(parts, " | ")
+}
+
+func detailString(details map[string]interface{}, key string) string {
+	if details == nil {
+		return ""
+	}
+	v, ok := details[key]
+	if !ok || v == nil {
+		return ""
+	}
+	switch x := v.(type) {
+	case string:
+		return strings.TrimSpace(x)
+	default:
+		return strings.TrimSpace(fmt.Sprint(x))
+	}
+}
+
+func passedWindowText(details map[string]interface{}) string {
+	passed := make([]string, 0, 3)
+	if detailBool(details, "window4hPassed") {
+		passed = append(passed, "4h")
+	}
+	if detailBool(details, "window1dPassed") {
+		passed = append(passed, "1d")
+	}
+	if detailBool(details, "window3dPassed") {
+		passed = append(passed, "3d")
+	}
+	return strings.Join(passed, "/")
+}
+
+func detailBool(details map[string]interface{}, key string) bool {
+	if details == nil {
+		return false
+	}
+	v, ok := details[key]
+	if !ok || v == nil {
+		return false
+	}
+	switch x := v.(type) {
+	case bool:
+		return x
+	case string:
+		switch strings.ToLower(strings.TrimSpace(x)) {
+		case "true", "1", "yes":
+			return true
+		}
+	}
+	return false
+}
+
 func levelGTE(a, threshold string) bool {
-	order := map[string]int{"info": 0, "warning": 1, "critical": 2}
-	return order[a] >= order[threshold]
+	return levelRank(a, 0) >= levelRank(threshold, 1)
+}
+
+func levelRank(level string, fallback int) int {
+	switch strings.ToLower(strings.TrimSpace(level)) {
+	case "info":
+		return 0
+	case "warn", "warning":
+		return 1
+	case "error", "critical":
+		return 2
+	default:
+		return fallback
+	}
 }
 
 func ptrStr(s *string) string {

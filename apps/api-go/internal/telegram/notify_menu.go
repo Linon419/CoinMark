@@ -60,8 +60,8 @@ func registerNotifyMenuHandlers(b *tele.Bot, notifier *AnomalyNotifier, manageCh
 			p.MarketAnomalyEnabled = !p.MarketAnomalyEnabled
 		case "whale":
 			p.WhaleWallEnabled = !p.WhaleWallEnabled
-		case "signal":
-			p.SignalLabEnabled = !p.SignalLabEnabled
+		case "absorption":
+			p.AbsorptionEnabled = !p.AbsorptionEnabled
 		case "mute":
 			p.MuteAll = !p.MuteAll
 		default:
@@ -98,22 +98,22 @@ func renderNotifyPrefsMessage(p tgNotifyPrefs) (string, *tele.ReplyMarkup) {
 		fmt.Sprintf("目标 chat_id: `%d`", p.ChatID),
 		fmt.Sprintf("%s 市场异动", mark(p.MarketAnomalyEnabled)),
 		fmt.Sprintf("%s 大户挂单", mark(p.WhaleWallEnabled)),
-		fmt.Sprintf("%s signal_lab", mark(p.SignalLabEnabled)),
+		fmt.Sprintf("%s 吸筹", mark(p.AbsorptionEnabled)),
 		fmt.Sprintf("%s 全部静音", mark(p.MuteAll)),
 		"",
-		"建议：默认只开“市场异动”。",
+		"建议：只打开真正需要打断你的类型。",
 	}, "\n")
 
 	menu := &tele.ReplyMarkup{}
 	btnMarket := menu.Data(mark(p.MarketAnomalyEnabled)+" 市场异动", notifyPrefCallbackUnique, "toggle", "market")
 	btnWhale := menu.Data(mark(p.WhaleWallEnabled)+" 大户挂单", notifyPrefCallbackUnique, "toggle", "whale")
-	btnSignal := menu.Data(mark(p.SignalLabEnabled)+" signal_lab", notifyPrefCallbackUnique, "toggle", "signal")
+	btnAbsorption := menu.Data(mark(p.AbsorptionEnabled)+" 吸筹", notifyPrefCallbackUnique, "toggle", "absorption")
 	btnMute := menu.Data(mark(p.MuteAll)+" 全部静音", notifyPrefCallbackUnique, "toggle", "mute")
 	btnRefresh := menu.Data("刷新状态", notifyPrefCallbackUnique, "refresh", strconv.FormatInt(p.ChatID, 10))
 
 	menu.Inline(
 		menu.Row(btnMarket, btnWhale),
-		menu.Row(btnSignal, btnMute),
+		menu.Row(btnAbsorption, btnMute),
 		menu.Row(btnRefresh),
 	)
 	return text, menu

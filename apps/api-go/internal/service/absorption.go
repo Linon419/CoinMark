@@ -2,9 +2,12 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -153,6 +156,8 @@ func scoreWindow(w windowResult, side string) float64 {
 // ---------------------------------------------------------------------------
 // RefreshAbsorptionSignalSnapshots
 // ---------------------------------------------------------------------------
+
+const absorptionSnapshotEventCooldownMinutes = 720
 
 func RefreshAbsorptionSignalSnapshots(ctx context.Context, ch *chrepo.Client, bn *binance.Client, store *sqlite.Store, market string, topN int) error {
 	if ch == nil || bn == nil || store == nil {
@@ -544,7 +549,11 @@ func RefreshAbsorptionSignalSnapshots(ctx context.Context, ch *chrepo.Client, bn
 	if len(values) == 0 {
 		return nil
 	}
-	return upsertAbsorptionSnapshots(ctx, store, values)
+	if err := upsertAbsorptionSnapshots(ctx, store, values); err != nil {
+		return err
+	}
+	_, err = syncAbsorptionSnapshotEvents(ctx, store, values, absorptionSnapshotEventCooldownMinutes)
+	return err
 }
 
 func percentileValue(values []float64, p float64) float64 {
@@ -638,6 +647,100 @@ func negSeries(vals []float64) []float64 {
 	}
 	return out
 }
+
+func syncAbsorptionSnapshotEvents(ctx context.Context, store *sqlite.Store, values []absValue, cooldownMinutes int) (int, error) {
+	if store == nil || len(values) == 0 {
+		return 0, nil
+	}
+	if cooldownMinutes < 1 {
+		cooldownMinutes = absorptionSnapshotEventCooldownMinutes
+	}
+	cooldownMs := int64(cooldownMinutes) * 60 * 1000
+
+	events := make([]map[string]interface{}, 0, len(values))
+	for _, v := range values {
+		state := strings.ToUpper(strings.TrimSpace(v.SignalState))
+		if state != "CONFIRM" && state != "STRONG" && state != "HIGH" {
+			continue
+		}
+		if v.BucketStartMs <= 0 || v.Symbol == "" || binance.IsExcludedSymbol(v.Symbol) {
+			continue
+		}
+		eventType, directionLabel, ok := absorptionSnapshotEventType(v.Direction)
+		if !ok {
+			continue
+		}
+		hasRecent, err := hasRecentAbsorptionSnapshotEvent(ctx, store, v, eventType, cooldownMs)
+		if err != nil {
+			return 0, err
+		}
+		if hasRecent {
+			continue
+		}
+
+		detailBytes, _ := json.Marshal(map[string]interface{}{
+			"signalState":       state,
+			"score":             v.Score,
+			"strengthScore":     v.Score,
+			"direction":         v.Direction,
+			"netFlowStrength":   ptrFloatValue(v.NetFlowStrength),
+			"impactPerNotional": ptrFloatValue(v.ImpactPerNot),
+			"window4hPassed":    v.W4h,
+			"window1dPassed":    v.W1d,
+			"window3dPassed":    v.W3d,
+			"windows":           v.Windows,
+			"reasons":           v.Reasons,
+		})
+		events = append(events, map[string]interface{}{
+			"market":        v.Market,
+			"symbol":        v.Symbol,
+			"event_type":    eventType,
+			"tf_signal":     "4h",
+			"tf_level":      v.Direction,
+			"event_time_ms": v.BucketStartMs,
+			"title":         fmt.Sprintf("%s 吸筹扫描%s %s (%.0f)", v.Symbol, directionLabel, state, v.Score),
+			"details":       string(detailBytes),
+		})
+	}
+	if len(events) == 0 {
+		return 0, nil
+	}
+	return insertAnomalyEvents(ctx, store, events)
+}
+
+func hasRecentAbsorptionSnapshotEvent(ctx context.Context, store *sqlite.Store, v absValue, eventType string, cooldownMs int64) (bool, error) {
+	var id int64
+	err := store.GetContext(ctx, &id, `SELECT id FROM anomaly_events
+WHERE market = ? AND symbol = ? AND event_type = ? AND event_time_ms >= ? AND event_time_ms <= ?
+ORDER BY event_time_ms DESC LIMIT 1`,
+		v.Market, v.Symbol, eventType, v.BucketStartMs-cooldownMs, v.BucketStartMs)
+	if err == nil {
+		return true, nil
+	}
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	return false, err
+}
+
+func absorptionSnapshotEventType(direction string) (string, string, bool) {
+	switch strings.ToUpper(strings.TrimSpace(direction)) {
+	case "LONG_BIAS":
+		return "absorption_signal_long", "看多", true
+	case "SHORT_BIAS":
+		return "absorption_signal_short", "看空", true
+	default:
+		return "", "", false
+	}
+}
+
+func ptrFloatValue(v *float64) interface{} {
+	if v == nil {
+		return nil
+	}
+	return *v
+}
+
 func upsertAbsorptionSnapshots(ctx context.Context, store *sqlite.Store, values []absValue) error {
 	sql := `INSERT INTO absorption_signal_snapshots
 (market, symbol, bucket_start_ms, direction, signal_state, score, net_flow_strength, impact_per_notional,
