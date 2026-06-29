@@ -70,6 +70,9 @@ export default function App() {
             <NavLink to="/signal-lab" className={({ isActive }) => `cm-navLink ${isActive ? "cm-navLink--active" : ""}`}>
               SignalLab
             </NavLink>
+            <NavLink to="/boll-pump" className={({ isActive }) => `cm-navLink ${isActive ? "cm-navLink--active" : ""}`}>
+              BOLL扫描
+            </NavLink>
           </Space>
 
           <Space>

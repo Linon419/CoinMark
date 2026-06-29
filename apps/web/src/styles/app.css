@@ -252,6 +252,34 @@ body {
   font-weight: 600;
 }
 
+.cm-bollStats {
+  padding: 12px;
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.cm-bollStatItem {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--cm-border);
+  border-radius: 10px;
+  background: rgba(148, 163, 184, 0.06);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.cm-bollPanel {
+  padding: 12px;
+  min-width: 0;
+}
+
+.cm-bollPanel .arco-table {
+  font-size: 12px;
+}
+
 @media (max-width: 900px) {
   .cm-grid-2 {
     grid-template-columns: 1fr;
@@ -259,6 +287,14 @@ body {
 
   .cm-homeSummary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .cm-bollStats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .cm-bollPanel {
+    overflow-x: auto;
   }
 }
 
