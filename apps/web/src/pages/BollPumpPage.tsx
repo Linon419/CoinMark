@@ -66,6 +66,20 @@ function fmtNum(v: number, digits = 2) {
   return v.toFixed(digits);
 }
 
+function fmtTime(ms: number) {
+  if (!Number.isFinite(ms)) return "-";
+  const d = new Date(ms);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function fmtPrice(v: number) {
+  if (!Number.isFinite(v)) return "-";
+  if (v >= 100) return v.toFixed(2);
+  if (v >= 1) return v.toFixed(4);
+  return v.toPrecision(5);
+}
+
 export default function BollPumpPage() {
   const { Title, Text } = Typography;
   const [signals, setSignals] = useState<BollPumpSignal[]>([]);
@@ -176,16 +190,18 @@ export default function BollPumpPage() {
 
   const signalColumns = useMemo(
     () => [
-      { title: "时间", render: (_: any, r: BollPumpSignal) => new Date(r.signal_time_ms).toLocaleString() },
-      { title: "Symbol", dataIndex: "symbol" },
-      { title: "周期", dataIndex: "timeframe" },
-      { title: "等级", render: (_: any, r: BollPumpSignal) => <Tag color={levelColor(r.signal_level)}>{r.signal_level}</Tag> },
-      { title: "价格", render: (_: any, r: BollPumpSignal) => Number(r.price).toPrecision(6) },
-      { title: "量能", render: (_: any, r: BollPumpSignal) => `${fmtNum(Number(r.volume_ratio || 0))}x` },
-      { title: "带宽", render: (_: any, r: BollPumpSignal) => fmtNum(Number(r.boll_bandwidth || 0), 4) },
-      { title: "分数", render: (_: any, r: BollPumpSignal) => fmtNum(Number(r.priority_score || r.score || 0), 0) },
+      { title: "时间", width: 124, render: (_: any, r: BollPumpSignal) => <span className="cm-mono">{fmtTime(r.signal_time_ms)}</span> },
+      { title: "Symbol", dataIndex: "symbol", width: 122, render: (v: string) => <strong className="cm-symbol">{v}</strong> },
+      { title: "周期", dataIndex: "timeframe", width: 70 },
+      { title: "等级", width: 108, render: (_: any, r: BollPumpSignal) => <Tag color={levelColor(r.signal_level)}>{r.signal_level}</Tag> },
+      { title: "价格", width: 112, align: "right", render: (_: any, r: BollPumpSignal) => <span className="cm-mono">{fmtPrice(Number(r.price || 0))}</span> },
+      { title: "量能", width: 92, align: "right", render: (_: any, r: BollPumpSignal) => <span className="cm-mono">{fmtNum(Number(r.volume_ratio || 0))}x</span> },
+      { title: "带宽", width: 96, align: "right", render: (_: any, r: BollPumpSignal) => <span className="cm-mono">{fmtNum(Number(r.boll_bandwidth || 0), 4)}</span> },
+      { title: "分数", width: 76, align: "right", render: (_: any, r: BollPumpSignal) => <strong className="cm-mono">{fmtNum(Number(r.priority_score || r.score || 0), 0)}</strong> },
       {
         title: "操作",
+        width: 86,
+        align: "right",
         render: (_: any, r: BollPumpSignal) => (
           <Button
             size="small"
@@ -204,12 +220,12 @@ export default function BollPumpPage() {
 
   const stateColumns = useMemo(
     () => [
-      { title: "Symbol", dataIndex: "symbol" },
-      { title: "周期", dataIndex: "timeframe" },
-      { title: "状态", render: (_: any, r: BollPumpState) => <Tag color={levelColor(r.status)}>{r.status}</Tag> },
-      { title: "反弹", dataIndex: "bounce_count" },
-      { title: "共振", render: (_: any, r: BollPumpState) => `+${fmtNum(Number(r.confluence_score || 0), 0)}` },
-      { title: "优先级", render: (_: any, r: BollPumpState) => fmtNum(Number(r.priority_score || 0), 0) },
+      { title: "Symbol", dataIndex: "symbol", width: 122, render: (v: string) => <strong className="cm-symbol">{v}</strong> },
+      { title: "周期", dataIndex: "timeframe", width: 66 },
+      { title: "状态", width: 126, render: (_: any, r: BollPumpState) => <Tag color={levelColor(r.status)}>{r.status}</Tag> },
+      { title: "反弹", dataIndex: "bounce_count", width: 70, align: "right" },
+      { title: "共振", width: 76, align: "right", render: (_: any, r: BollPumpState) => <span className="cm-mono">+{fmtNum(Number(r.confluence_score || 0), 0)}</span> },
+      { title: "优先级", width: 86, align: "right", render: (_: any, r: BollPumpState) => <strong className="cm-mono">{fmtNum(Number(r.priority_score || 0), 0)}</strong> },
     ],
     []
   );
@@ -218,8 +234,8 @@ export default function BollPumpPage() {
   const countsByTimeframe = stats?.countsByTimeframe || {};
 
   return (
-    <div className="cm-page">
-      <div className="cm-section">
+    <div className="cm-page cm-bollPage">
+      <div className="cm-section cm-bollHeader">
         <div className="cm-sectionHeader">
           <div>
             <Title heading={5} style={{ margin: 0 }}>
@@ -227,18 +243,20 @@ export default function BollPumpPage() {
             </Title>
             <Text className="cm-muted">swap | 1m / 3m / 5m / 15m / 30m / 1h</Text>
           </div>
-          <Button loading={loading} onClick={refresh}>
-            刷新
-          </Button>
-          <Button
-            type="primary"
-            onClick={() => {
-              setSettingsDraft(cloneSettings(settings));
-              setSettingsOpen(true);
-            }}
-          >
-            参数
-          </Button>
+          <Space>
+            <Button loading={loading} onClick={refresh}>
+              刷新
+            </Button>
+            <Button
+              type="primary"
+              onClick={() => {
+                setSettingsDraft(cloneSettings(settings));
+                setSettingsOpen(true);
+              }}
+            >
+              参数
+            </Button>
+          </Space>
         </div>
         <Space wrap>
           <Tag color={settings.enabled ? "green" : "gray"}>{settings.enabled ? "扫描开启" : "扫描暂停"}</Tag>
@@ -251,7 +269,7 @@ export default function BollPumpPage() {
         </Space>
       </div>
 
-      <div className="cm-card cm-bollStats">
+      <div className="cm-bollStats">
         {["1m", "3m", "5m", "15m", "30m", "1h"].map((tf) => (
           <div key={tf} className="cm-bollStatItem">
             <span className="cm-muted">{tf}</span>
@@ -260,14 +278,14 @@ export default function BollPumpPage() {
         ))}
       </div>
 
-      <div className="cm-grid-2">
+      <div className="cm-bollWorkbench">
         <div className="cm-card cm-bollPanel">
           <div className="cm-sectionHeader">
             <Title heading={6} style={{ margin: 0 }}>
               最近信号
             </Title>
           </div>
-          <Table rowKey="id" size="small" columns={signalColumns as any} data={signals as any} pagination={{ pageSize: 20 }} />
+          <Table className="cm-bollTable" rowKey="id" size="small" columns={signalColumns as any} data={signals as any} pagination={{ pageSize: 20 }} scroll={{ x: 886 }} />
         </div>
         <div className="cm-card cm-bollPanel">
           <div className="cm-sectionHeader">
@@ -275,7 +293,7 @@ export default function BollPumpPage() {
               活跃状态
             </Title>
           </div>
-          <Table rowKey="id" size="small" columns={stateColumns as any} data={states as any} pagination={{ pageSize: 20 }} />
+          <Table className="cm-bollTable" rowKey="id" size="small" columns={stateColumns as any} data={states as any} pagination={{ pageSize: 20 }} scroll={{ x: 546 }} />
         </div>
       </div>
 
