@@ -75,7 +75,7 @@ export default function App() {
             </NavLink>
           </Space>
 
-          <Space>
+          <Space className="cm-statusGroup">
             <span className="cm-pill" title="API 连通状态">
               <span className={`cm-dot ${apiOk === true ? "cm-dot--ok" : apiOk === false ? "cm-dot--bad" : ""}`} />
               <span className="cm-muted">API</span>

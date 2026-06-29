@@ -96,13 +96,24 @@ body {
 }
 
 .cm-nav {
-  flex: 1;
-  justify-content: center;
+  order: 3;
+  flex: 1 0 100%;
+  min-width: 0;
+  justify-content: flex-start;
+  overflow-x: auto;
+  padding-top: 2px;
+  white-space: nowrap;
+  scrollbar-width: none;
+}
+
+.cm-nav::-webkit-scrollbar {
+  display: none;
 }
 
 .cm-navLink {
   display: inline-flex;
   align-items: center;
+  flex: 0 0 auto;
   padding: 6px 12px;
   border-radius: 999px;
   text-decoration: none;
@@ -115,6 +126,12 @@ body {
   color: #fff;
   background: var(--cm-primary);
   border-color: var(--cm-primary);
+}
+
+.cm-statusGroup {
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  margin-left: auto;
 }
 
 .cm-card {
