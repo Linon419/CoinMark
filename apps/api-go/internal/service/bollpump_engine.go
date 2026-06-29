@@ -11,12 +11,14 @@ import (
 
 func DefaultBollPumpConfig() BollPumpConfig {
 	return BollPumpConfig{
-		Enabled:    true,
-		Market:     "swap",
-		Timeframes: []string{"1m", "3m", "5m", "15m", "30m", "1h"},
-		BollPeriod: 20,
-		BollStdDev: 2,
-		ATRPeriod:  14,
+		Enabled:        true,
+		Market:         "swap",
+		Timeframes:     []string{"1m", "3m", "5m", "15m", "30m", "1h"},
+		SymbolLimit:    200,
+		ScanTimeoutSec: 45,
+		BollPeriod:     20,
+		BollStdDev:     2,
+		ATRPeriod:      14,
 		StartupWindows: map[string]int{
 			"1m": 12, "3m": 10, "5m": 8, "15m": 6, "30m": 5, "1h": 4,
 		},

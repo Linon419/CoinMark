@@ -48,6 +48,8 @@ type BollPumpConfig struct {
 	Enabled                   bool
 	Market                    string
 	Timeframes                []string
+	SymbolLimit               int
+	ScanTimeoutSec            int
 	BollPeriod                int
 	BollStdDev                float64
 	ATRPeriod                 int

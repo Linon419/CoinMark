@@ -42,7 +42,10 @@ func NewBollPumpScanner(source BollPumpSource, store *sqlite.Store, cfg BollPump
 	if cfg.BollPeriod <= 0 {
 		cfg = DefaultBollPumpConfig()
 	}
-	return &BollPumpScanner{source: source, store: store, cfg: cfg, symbolLimit: 200}
+	if cfg.SymbolLimit <= 0 {
+		cfg.SymbolLimit = 200
+	}
+	return &BollPumpScanner{source: source, store: store, cfg: cfg, symbolLimit: cfg.SymbolLimit}
 }
 
 func (s *BollPumpScanner) ScanTimeframe(ctx context.Context, timeframe string) BollPumpScanResult {
@@ -114,7 +117,11 @@ func (s *BollPumpScanner) Run(ctx context.Context, stopCh <-chan struct{}) {
 					continue
 				}
 				lastRun[tf] = closed
-				scanCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+				timeoutSec := s.cfg.ScanTimeoutSec
+				if timeoutSec <= 0 {
+					timeoutSec = 45
+				}
+				scanCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
 				result := s.ScanTimeframe(scanCtx, tf)
 				cancel()
 				if result.Errors > 0 || result.SignalsFound > 0 {
@@ -136,6 +143,8 @@ func BollPumpConfigFromRuntime(cfg *config.Config) BollPumpConfig {
 	}
 	out.Enabled = cfg.BollPumpEnabled
 	out.Market = normalizeBollPumpMarket(cfg.BollPumpMarket)
+	out.SymbolLimit = cfg.BollPumpSymbolLimit
+	out.ScanTimeoutSec = cfg.BollPumpScanTimeoutSec
 	if tfs := splitBollPumpCSV(cfg.BollPumpTimeframes); len(tfs) > 0 {
 		out.Timeframes = tfs
 	}

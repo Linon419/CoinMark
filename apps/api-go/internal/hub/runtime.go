@@ -66,11 +66,12 @@ func (rt *Runtime) Start(ctx context.Context) {
 		if rt.cfg.AbsorptionScanEnabled && rt.bn != nil {
 			go rt.absorptionLoop(ctx)
 		}
-		if rt.cfg.BollPumpEnabled && rt.bn != nil {
-			source := service.NewBinanceBollPumpSource(rt.bn, rt.cfg.BollPumpSymbolLimit)
-			scanner := service.NewBollPumpScanner(source, rt.store, service.BollPumpConfigFromRuntime(rt.cfg))
-			go scanner.Run(ctx, rt.stopCh)
-		}
+	}
+
+	if rt.cfg.BollPumpEnabled && rt.bn != nil {
+		source := service.NewBinanceBollPumpSource(rt.bn, rt.cfg.BollPumpSymbolLimit)
+		scanner := service.NewBollPumpScanner(source, rt.store, service.BollPumpConfigFromRuntime(rt.cfg))
+		go scanner.Run(ctx, rt.stopCh)
 	}
 
 	// depth fullscan

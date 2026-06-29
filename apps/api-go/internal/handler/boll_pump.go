@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 	"strings"
@@ -86,14 +87,39 @@ func handleBollPumpSignalDetail(d *Deps) gin.HandlerFunc {
 		}
 		var st *model.BollPumpState
 		st, _ = service.GetBollPumpState(c.Request.Context(), d.Store, sig.Market, sig.Symbol, sig.Timeframe)
+		candles, indicators := bollPumpDetailSeries(c.Request.Context(), d, *sig)
 		c.JSON(http.StatusOK, gin.H{
 			"signal":     sig,
 			"state":      st,
-			"candles":    []interface{}{},
-			"indicators": []interface{}{},
+			"candles":    candles,
+			"indicators": indicators,
 			"markers":    bollPumpMarkers(*sig),
 		})
 	}
+}
+
+func bollPumpDetailSeries(ctx context.Context, d *Deps, sig model.BollPumpSignal) ([]map[string]interface{}, []map[string]interface{}) {
+	if d == nil || d.BN == nil {
+		return []map[string]interface{}{}, []map[string]interface{}{}
+	}
+	source := service.NewBinanceBollPumpSource(d.BN, 1)
+	bars, err := source.Klines(ctx, sig.Market, sig.Symbol, sig.Timeframe, 260)
+	if err != nil {
+		return []map[string]interface{}{}, []map[string]interface{}{}
+	}
+	ind := service.ComputeBollPumpIndicators(bars, 20, 2, 14)
+	candles := make([]map[string]interface{}, 0, len(bars))
+	indicators := make([]map[string]interface{}, 0, len(ind))
+	for i, b := range bars {
+		candles = append(candles, map[string]interface{}{
+			"time": b.OpenTimeMs, "open": b.Open, "high": b.High, "low": b.Low, "close": b.Close, "volume": b.Volume,
+		})
+		in := ind[i]
+		indicators = append(indicators, map[string]interface{}{
+			"time": b.OpenTimeMs, "middle": in.Middle, "upper": in.Upper, "lower": in.Lower, "atr14": in.ATR14, "bandwidth": in.Bandwidth,
+		})
+	}
+	return candles, indicators
 }
 
 func bollPumpMarkers(sig model.BollPumpSignal) []map[string]interface{} {
