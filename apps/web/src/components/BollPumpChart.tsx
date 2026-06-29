@@ -34,6 +34,12 @@ function fmtCompact(v: number, digits = 4) {
   return v.toPrecision(5);
 }
 
+function fmtPct(v: number) {
+  if (!Number.isFinite(v)) return "-";
+  const sign = v > 0 ? "+" : "";
+  return `${sign}${v.toFixed(2)}%`;
+}
+
 function fmtTime(ms: number) {
   if (!Number.isFinite(ms)) return "-";
   const d = new Date(ms);
@@ -45,6 +51,39 @@ function buildLineData(indicators: BollPumpDetail["indicators"], field: "upper" 
   return indicators
     .filter((x) => isFiniteNumber(x.time) && isFiniteNumber(x[field]) && x[field] > 0)
     .map((x) => ({ time: toLwTime(x.time), value: x[field] })) as SingleValueData<UTCTimestamp>[];
+}
+
+function buildEmaData(candles: Array<{ time: number; close: number }>, period: number) {
+  if (candles.length < period) return [] as SingleValueData<UTCTimestamp>[];
+  const out: SingleValueData<UTCTimestamp>[] = [];
+  const k = 2 / (period + 1);
+  let ema = 0;
+  for (let i = 0; i < candles.length; i++) {
+    const close = candles[i].close;
+    if (i < period) {
+      ema += close;
+      if (i === period - 1) {
+        ema /= period;
+        out.push({ time: toLwTime(candles[i].time), value: ema });
+      }
+      continue;
+    }
+    ema = close * k + ema * (1 - k);
+    out.push({ time: toLwTime(candles[i].time), value: ema });
+  }
+  return out;
+}
+
+function buildPeriodChanges(candles: Array<{ close: number }>) {
+  const last = candles[candles.length - 1];
+  if (!last || last.close <= 0) return [];
+  return [1, 3, 5, 10, 20]
+    .map((bars) => {
+      const prev = candles[candles.length - 1 - bars];
+      if (!prev || prev.close <= 0) return null;
+      return { label: `${bars}K`, value: (last.close / prev.close - 1) * 100 };
+    })
+    .filter(Boolean) as Array<{ label: string; value: number }>;
 }
 
 function buildMarkers(detail: BollPumpDetail | null) {
@@ -72,8 +111,9 @@ export default function BollPumpChart({ detail }: { detail: BollPumpDetail | nul
     upper: PriceLine | null;
     middle: PriceLine | null;
     lower: PriceLine | null;
+    ema10: PriceLine | null;
     volume: ISeriesApi<"Histogram", UTCTimestamp> | null;
-  }>({ candle: null, upper: null, middle: null, lower: null, volume: null });
+  }>({ candle: null, upper: null, middle: null, lower: null, ema10: null, volume: null });
 
   const chartData = useMemo(() => {
     const candles = (detail?.candles || [])
@@ -103,6 +143,8 @@ export default function BollPumpChart({ detail }: { detail: BollPumpDetail | nul
       upper: buildLineData(indicators, "upper"),
       middle: buildLineData(indicators, "middle"),
       lower: buildLineData(indicators, "lower"),
+      ema10: buildEmaData(candles, 10),
+      changes: buildPeriodChanges(candles),
       markers: buildMarkers(detail),
       last,
     };
@@ -161,6 +203,7 @@ export default function BollPumpChart({ detail }: { detail: BollPumpDetail | nul
     const upper = chart.addSeries(LineSeries, { color: "#60a5fa", lineWidth: 1, title: "BOLL U", priceLineVisible: false }, 0);
     const middle = chart.addSeries(LineSeries, { color: "#f59e0b", lineWidth: 1, lineStyle: 2, title: "BOLL M", priceLineVisible: false }, 0);
     const lower = chart.addSeries(LineSeries, { color: "#60a5fa", lineWidth: 1, title: "BOLL L", priceLineVisible: false }, 0);
+    const ema10 = chart.addSeries(LineSeries, { color: "#e879f9", lineWidth: 2, title: "EMA10", priceLineVisible: false }, 0);
     const volume = chart.addSeries(
       HistogramSeries,
       {
@@ -176,25 +219,26 @@ export default function BollPumpChart({ detail }: { detail: BollPumpDetail | nul
 
     chartRef.current = chart;
     markerApiRef.current = createSeriesMarkers(candle, []);
-    seriesRef.current = { candle, upper, middle, lower, volume };
+    seriesRef.current = { candle, upper, middle, lower, ema10, volume };
 
     return () => {
       markerApiRef.current?.detach();
       markerApiRef.current = null;
       chart.remove();
       chartRef.current = null;
-      seriesRef.current = { candle: null, upper: null, middle: null, lower: null, volume: null };
+      seriesRef.current = { candle: null, upper: null, middle: null, lower: null, ema10: null, volume: null };
     };
   }, []);
 
   useEffect(() => {
-    const { candle, upper, middle, lower, volume } = seriesRef.current;
+    const { candle, upper, middle, lower, ema10, volume } = seriesRef.current;
     if (!candle) return;
 
     candle.setData(chartData.candleData);
     upper?.setData(chartData.upper);
     middle?.setData(chartData.middle);
     lower?.setData(chartData.lower);
+    ema10?.setData(chartData.ema10);
     volume?.setData(chartData.volumeData);
     markerApiRef.current?.setMarkers(chartData.markers);
     chartRef.current?.timeScale().fitContent();
@@ -225,10 +269,19 @@ export default function BollPumpChart({ detail }: { detail: BollPumpDetail | nul
           <span>{signal ? fmtTime(signal.signal_time_ms) : "-"}</span>
         </div>
       </div>
+      <div className="cm-tvChangeStrip">
+        {chartData.changes.map((x) => (
+          <span key={x.label} className={x.value >= 0 ? "cm-tvChange cm-tvChange--up" : "cm-tvChange cm-tvChange--down"}>
+            <b>{x.label}</b>
+            {fmtPct(x.value)}
+          </span>
+        ))}
+      </div>
       <div className="cm-tvLegend">
         <span className="cm-tvLegendItem cm-tvLegendItem--up">K</span>
         <span className="cm-tvLegendItem cm-tvLegendItem--band">BOLL U/L</span>
         <span className="cm-tvLegendItem cm-tvLegendItem--mid">BOLL M</span>
+        <span className="cm-tvLegendItem cm-tvLegendItem--ema">EMA10</span>
         <span className="cm-tvLegendItem cm-tvLegendItem--vol">Volume</span>
       </div>
       <div ref={containerRef} className="cm-tvChart" />
