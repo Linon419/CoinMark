@@ -37,6 +37,40 @@ func TestBollPumpWatchTriggerRejectsLargeBearishStart(t *testing.T) {
 	}
 }
 
+func TestBollPumpConfirmFlowWaitsUntilBreaksPullbackHigh(t *testing.T) {
+	cfg := DefaultBollPumpConfig()
+	bars := bollPumpFixtureWatchThenTwoConfirms()
+	ind := ComputeBollPumpIndicators(bars, cfg.BollPeriod, cfg.BollStdDev, cfg.ATRPeriod)
+
+	state := NewBollPumpRuntimeState("swap", "XYZUSDT", "15m")
+	var signals []model.BollPumpSignal
+	for i := 0; i < len(bars); i++ {
+		out := AdvanceBollPumpState(&state, bars[:i+1], ind[:i+1], 3_000_000, cfg)
+		signals = append(signals, out.Signals...)
+	}
+
+	if len(signals) < 3 {
+		t.Fatalf("signals = %d, want at least WATCH, CONFIRM_1, CONFIRM_2", len(signals))
+	}
+	if signals[len(signals)-1].SignalLevel != string(BollPumpLevelConfirm2) {
+		t.Fatalf("last signal = %s, want CONFIRM_2", signals[len(signals)-1].SignalLevel)
+	}
+	if state.Status != string(BollPumpStatusCompleted) {
+		t.Fatalf("status = %s, want COMPLETED", state.Status)
+	}
+}
+
+func TestBollPumpSecondLowInvalidation(t *testing.T) {
+	firstLow := 100.0
+	atr := 2.0
+	if !bollPumpSecondLowInvalid(firstLow, 97.5, atr) {
+		t.Fatalf("second low should be invalid")
+	}
+	if bollPumpSecondLowInvalid(firstLow, 98.2, atr) {
+		t.Fatalf("second low should remain valid")
+	}
+}
+
 func bollPumpFixtureQuietBaseThenPump(tf string) []BollPumpBar {
 	_ = tf
 	bars := make([]BollPumpBar, 0, 140)
@@ -76,4 +110,37 @@ func bollPumpFixtureQuietBaseThenPump(tf string) []BollPumpBar {
 	return bars
 }
 
-var _ model.BollPumpSignal
+func bollPumpFixtureWatchThenTwoConfirms() []BollPumpBar {
+	bars := bollPumpFixtureQuietBaseThenPump("15m")
+	extra := []struct {
+		open  float64
+		high  float64
+		low   float64
+		close float64
+		vol   float64
+	}{
+		{104.8, 105.3, 104.4, 105.0, 130},
+		{105.0, 105.4, 104.5, 105.1, 125},
+		{105.1, 105.5, 104.7, 105.2, 120},
+		{104.0, 104.0, 90.0, 103.0, 140},
+		{103.2, 104.5, 102.8, 104.2, 150},
+		{104.2, 105.0, 103.8, 104.8, 130},
+		{103.8, 104.0, 90.5, 103.0, 140},
+		{103.2, 104.6, 102.9, 104.3, 150},
+	}
+	for _, x := range extra {
+		idx := len(bars)
+		bars = append(bars, BollPumpBar{
+			OpenTimeMs:  int64(idx) * 60000,
+			CloseTimeMs: int64(idx+1)*60000 - 1,
+			Open:        x.open,
+			High:        x.high,
+			Low:         x.low,
+			Close:       x.close,
+			Volume:      x.vol,
+			QuoteVolume: x.vol * x.close,
+			Closed:      true,
+		})
+	}
+	return bars
+}

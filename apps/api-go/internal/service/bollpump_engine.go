@@ -3,6 +3,7 @@ package service
 import (
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 
 	"coinmark/api-go/internal/model"
@@ -291,4 +292,249 @@ func normalizeBollPumpMarket(market string) string {
 		return "swap"
 	}
 	return m
+}
+
+type BollPumpRuntimeState struct {
+	Market                  string
+	Symbol                  string
+	Timeframe               string
+	Status                  string
+	WatchScore              float64
+	CurrentScore            float64
+	WatchCandleStartMs      int64
+	WatchStartedMs          int64
+	BounceCount             int
+	FirstPullbackLow        float64
+	SecondPullbackLow       float64
+	PendingPullbackCandleMs int64
+	PendingPullbackHigh     float64
+	PendingPullbackLow      float64
+	ExpiresAtCandleMs       int64
+	LastCheckedCandleMs     int64
+	LastSignalLevel         string
+}
+
+type BollPumpAdvanceResult struct {
+	State   BollPumpRuntimeState
+	Signals []model.BollPumpSignal
+}
+
+func NewBollPumpRuntimeState(market, symbol, timeframe string) BollPumpRuntimeState {
+	return BollPumpRuntimeState{
+		Market:    normalizeBollPumpMarket(market),
+		Symbol:    strings.ToUpper(strings.TrimSpace(symbol)),
+		Timeframe: timeframe,
+		Status:    string(BollPumpStatusIdle),
+	}
+}
+
+func AdvanceBollPumpState(state *BollPumpRuntimeState, bars []BollPumpBar, ind []BollPumpIndicator, quoteVolume24h float64, cfg BollPumpConfig) BollPumpAdvanceResult {
+	if state == nil || len(bars) == 0 || len(bars) != len(ind) {
+		return BollPumpAdvanceResult{}
+	}
+	latestIdx := len(bars) - 1
+	latest := bars[latestIdx]
+	if latest.OpenTimeMs <= state.LastCheckedCandleMs {
+		return BollPumpAdvanceResult{State: *state}
+	}
+	if state.Status == "" {
+		state.Status = string(BollPumpStatusIdle)
+	}
+	state.LastCheckedCandleMs = latest.OpenTimeMs
+	signals := make([]model.BollPumpSignal, 0, 1)
+
+	switch state.Status {
+	case string(BollPumpStatusIdle), string(BollPumpStatusExpired), string(BollPumpStatusCompleted), string(BollPumpStatusInvalidated):
+		watch := EvaluateBollPumpWatch(state.Market, state.Symbol, state.Timeframe, bars, ind, quoteVolume24h, cfg)
+		if watch.Triggered {
+			state.Status = string(BollPumpStatusWatch)
+			state.WatchScore = watch.Signal.Score
+			state.CurrentScore = watch.Signal.Score
+			state.WatchCandleStartMs = watch.Signal.CandleStartMs
+			state.WatchStartedMs = watch.Signal.SignalTimeMs
+			state.BounceCount = 0
+			state.FirstPullbackLow = 0
+			state.SecondPullbackLow = 0
+			state.PendingPullbackCandleMs = 0
+			state.PendingPullbackHigh = 0
+			state.PendingPullbackLow = 0
+			state.ExpiresAtCandleMs = latest.OpenTimeMs + int64(cfg.StageExpiryCandles)*bollPumpIntervalMs(state.Timeframe, bars)
+			state.LastSignalLevel = string(BollPumpLevelWatch)
+			signals = append(signals, watch.Signal)
+		}
+	case string(BollPumpStatusWatch):
+		if bollPumpStageExpired(*state, latest) {
+			state.Status = string(BollPumpStatusExpired)
+			break
+		}
+		if bollPumpHasThreeMiddleClosesAfterWatch(*state, bars, ind) && bollPumpIsPullbackCandidate(latest, ind[latestIdx]) {
+			state.Status = string(BollPumpStatusPullback1Pending)
+			state.PendingPullbackCandleMs = latest.OpenTimeMs
+			state.PendingPullbackHigh = latest.High
+			state.PendingPullbackLow = latest.Low
+		}
+	case string(BollPumpStatusPullback1Pending):
+		if bollPumpStageExpired(*state, latest) {
+			state.Status = string(BollPumpStatusExpired)
+			break
+		}
+		if bollPumpPendingInvalid(latest, ind[latestIdx]) {
+			state.Status = string(BollPumpStatusWatch)
+			state.PendingPullbackCandleMs = 0
+			state.PendingPullbackHigh = 0
+			state.PendingPullbackLow = 0
+			break
+		}
+		if bollPumpIsPullbackCandidate(latest, ind[latestIdx]) {
+			state.PendingPullbackCandleMs = latest.OpenTimeMs
+			state.PendingPullbackHigh = latest.High
+			state.PendingPullbackLow = latest.Low
+			break
+		}
+		if latest.OpenTimeMs > state.PendingPullbackCandleMs && latest.High > state.PendingPullbackHigh {
+			state.Status = string(BollPumpStatusConfirm1)
+			state.BounceCount = 1
+			state.FirstPullbackLow = state.PendingPullbackLow
+			state.CurrentScore = bollPumpScoreCap(state.WatchScore + 10)
+			state.LastSignalLevel = string(BollPumpLevelConfirm1)
+			state.ExpiresAtCandleMs = latest.OpenTimeMs + int64(cfg.StageExpiryCandles)*bollPumpIntervalMs(state.Timeframe, bars)
+			signals = append(signals, bollPumpConfirmSignal(*state, latest, ind[latestIdx], quoteVolume24h, BollPumpLevelConfirm1))
+			state.PendingPullbackCandleMs = 0
+			state.PendingPullbackHigh = 0
+			state.PendingPullbackLow = 0
+		}
+	case string(BollPumpStatusConfirm1):
+		if bollPumpStageExpired(*state, latest) {
+			state.Status = string(BollPumpStatusExpired)
+			break
+		}
+		if bollPumpIsPullbackCandidate(latest, ind[latestIdx]) {
+			if bollPumpSecondLowInvalid(state.FirstPullbackLow, latest.Low, ind[latestIdx].ATR14) {
+				state.Status = string(BollPumpStatusInvalidated)
+				break
+			}
+			state.Status = string(BollPumpStatusPullback2Pending)
+			state.PendingPullbackCandleMs = latest.OpenTimeMs
+			state.PendingPullbackHigh = latest.High
+			state.PendingPullbackLow = latest.Low
+		}
+	case string(BollPumpStatusPullback2Pending):
+		if bollPumpStageExpired(*state, latest) {
+			state.Status = string(BollPumpStatusExpired)
+			break
+		}
+		if bollPumpPendingInvalid(latest, ind[latestIdx]) {
+			state.Status = string(BollPumpStatusConfirm1)
+			state.PendingPullbackCandleMs = 0
+			state.PendingPullbackHigh = 0
+			state.PendingPullbackLow = 0
+			break
+		}
+		if bollPumpIsPullbackCandidate(latest, ind[latestIdx]) {
+			if bollPumpSecondLowInvalid(state.FirstPullbackLow, latest.Low, ind[latestIdx].ATR14) {
+				state.Status = string(BollPumpStatusInvalidated)
+				break
+			}
+			state.PendingPullbackCandleMs = latest.OpenTimeMs
+			state.PendingPullbackHigh = latest.High
+			state.PendingPullbackLow = latest.Low
+			break
+		}
+		if latest.OpenTimeMs > state.PendingPullbackCandleMs && latest.High > state.PendingPullbackHigh {
+			state.Status = string(BollPumpStatusCompleted)
+			state.BounceCount = 2
+			state.SecondPullbackLow = state.PendingPullbackLow
+			state.CurrentScore = bollPumpScoreCap(state.WatchScore + 20)
+			state.LastSignalLevel = string(BollPumpLevelConfirm2)
+			signals = append(signals, bollPumpConfirmSignal(*state, latest, ind[latestIdx], quoteVolume24h, BollPumpLevelConfirm2))
+			state.PendingPullbackCandleMs = 0
+			state.PendingPullbackHigh = 0
+			state.PendingPullbackLow = 0
+		}
+	}
+	return BollPumpAdvanceResult{State: *state, Signals: signals}
+}
+
+func bollPumpSecondLowInvalid(firstLow, secondLow, atr14 float64) bool {
+	if firstLow <= 0 || secondLow <= 0 {
+		return false
+	}
+	tolerance := math.Max(atr14, firstLow*0.015)
+	return secondLow < firstLow-tolerance
+}
+
+func bollPumpStageExpired(state BollPumpRuntimeState, latest BollPumpBar) bool {
+	return state.ExpiresAtCandleMs > 0 && latest.OpenTimeMs > state.ExpiresAtCandleMs
+}
+
+func bollPumpHasThreeMiddleClosesAfterWatch(state BollPumpRuntimeState, bars []BollPumpBar, ind []BollPumpIndicator) bool {
+	count := 0
+	for i, b := range bars {
+		if b.OpenTimeMs <= state.WatchCandleStartMs || b.OpenTimeMs >= state.LastCheckedCandleMs {
+			continue
+		}
+		if i >= len(ind) || !ind[i].ValidBoll {
+			continue
+		}
+		if b.Close >= ind[i].Middle {
+			count++
+		}
+	}
+	return count >= 3
+}
+
+func bollPumpIsPullbackCandidate(b BollPumpBar, in BollPumpIndicator) bool {
+	return in.ValidBoll && b.Low <= in.Lower && b.Close > in.Lower
+}
+
+func bollPumpPendingInvalid(b BollPumpBar, in BollPumpIndicator) bool {
+	return in.ValidBoll && b.Close < in.Lower
+}
+
+func bollPumpConfirmSignal(state BollPumpRuntimeState, b BollPumpBar, in BollPumpIndicator, quoteVolume24h float64, level BollPumpSignalLevel) model.BollPumpSignal {
+	score := state.CurrentScore
+	bounceCount := state.BounceCount
+	reason := "first lower-band confirm"
+	if level == BollPumpLevelConfirm2 {
+		reason = "second lower-band confirm"
+	}
+	return model.BollPumpSignal{
+		Market:         state.Market,
+		Symbol:         state.Symbol,
+		Timeframe:      state.Timeframe,
+		SignalLevel:    string(level),
+		Price:          b.Close,
+		VolumeRatio:    0,
+		BollBandwidth:  in.Bandwidth,
+		BounceCount:    bounceCount,
+		Score:          score,
+		PriorityScore:  score,
+		SignalTimeMs:   b.CloseTimeMs,
+		CandleStartMs:  b.OpenTimeMs,
+		QuoteVolume24h: quoteVolume24h,
+		Reason:         reason,
+		Details:        model.JSONB(`{}`),
+	}
+}
+
+func bollPumpIntervalMs(timeframe string, bars []BollPumpBar) int64 {
+	if len(bars) >= 2 {
+		d := bars[len(bars)-1].OpenTimeMs - bars[len(bars)-2].OpenTimeMs
+		if d > 0 {
+			return d
+		}
+	}
+	if strings.HasSuffix(timeframe, "m") {
+		n, _ := strconv.ParseInt(strings.TrimSuffix(timeframe, "m"), 10, 64)
+		if n > 0 {
+			return n * 60 * 1000
+		}
+	}
+	if strings.HasSuffix(timeframe, "h") {
+		n, _ := strconv.ParseInt(strings.TrimSuffix(timeframe, "h"), 10, 64)
+		if n > 0 {
+			return n * 60 * 60 * 1000
+		}
+	}
+	return 60 * 1000
 }
