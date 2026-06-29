@@ -1,5 +1,7 @@
 package service
 
+import "coinmark/api-go/internal/model"
+
 type BollPumpSignalLevel string
 type BollPumpStateStatus string
 
@@ -40,4 +42,34 @@ type BollPumpIndicator struct {
 	ATRRatio  float64
 	ValidBoll bool
 	ValidATR  bool
+}
+
+type BollPumpConfig struct {
+	Enabled                   bool
+	Market                    string
+	Timeframes                []string
+	BollPeriod                int
+	BollStdDev                float64
+	ATRPeriod                 int
+	StartupWindows            map[string]int
+	GainThresholds            map[string]float64
+	VolumeThresholds          map[string]float64
+	BackgroundLookback        int
+	BackgroundRecentWindow    int
+	BackgroundRecentMinPass   int
+	LowVolumeFactor           float64
+	MiddleNearBandwidthFactor float64
+	ThinQuoteVolume24h        float64
+	WatchTelegramThreshold    float64
+	Confirm1TelegramThreshold float64
+	Confirm2TelegramThreshold float64
+	ConfluenceWindowMs        int64
+	StageExpiryCandles        int
+}
+
+type BollPumpWatchResult struct {
+	Triggered       bool
+	Signal          model.BollPumpSignal
+	BackgroundScore float64
+	Reasons         []string
 }
