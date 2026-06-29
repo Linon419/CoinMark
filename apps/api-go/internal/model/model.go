@@ -65,20 +65,20 @@ type TradeBucket struct {
 }
 
 type OrderbookFeatureBucket struct {
-	ID                     int64   `db:"id" json:"-"`
-	Market                 string  `db:"market" json:"market"`
-	Symbol                 string  `db:"symbol" json:"symbol"`
-	Bucket                 string  `db:"bucket" json:"bucket"`
-	BucketStartMs          int64   `db:"bucket_start_ms" json:"bucket_start_ms"`
-	SpreadBpsSum           float64 `db:"spread_bps_sum" json:"spread_bps_sum"`
-	MicropriceShiftBpsSum  float64 `db:"microprice_shift_bps_sum" json:"microprice_shift_bps_sum"`
-	DepthImbalanceL20Sum   float64 `db:"depth_imbalance_l20_sum" json:"depth_imbalance_l20_sum"`
-	WallPressureL20Sum     float64 `db:"wall_pressure_l20_sum" json:"wall_pressure_l20_sum"`
-	SampleCount            int     `db:"sample_count" json:"sample_count"`
-	TakerBuyNotional       float64 `db:"taker_buy_notional" json:"taker_buy_notional"`
-	TakerSellNotional      float64 `db:"taker_sell_notional" json:"taker_sell_notional"`
-	DepletionEvents        int     `db:"depletion_events" json:"depletion_events"`
-	ReplenishmentEvents    int     `db:"replenishment_events" json:"replenishment_events"`
+	ID                    int64   `db:"id" json:"-"`
+	Market                string  `db:"market" json:"market"`
+	Symbol                string  `db:"symbol" json:"symbol"`
+	Bucket                string  `db:"bucket" json:"bucket"`
+	BucketStartMs         int64   `db:"bucket_start_ms" json:"bucket_start_ms"`
+	SpreadBpsSum          float64 `db:"spread_bps_sum" json:"spread_bps_sum"`
+	MicropriceShiftBpsSum float64 `db:"microprice_shift_bps_sum" json:"microprice_shift_bps_sum"`
+	DepthImbalanceL20Sum  float64 `db:"depth_imbalance_l20_sum" json:"depth_imbalance_l20_sum"`
+	WallPressureL20Sum    float64 `db:"wall_pressure_l20_sum" json:"wall_pressure_l20_sum"`
+	SampleCount           int     `db:"sample_count" json:"sample_count"`
+	TakerBuyNotional      float64 `db:"taker_buy_notional" json:"taker_buy_notional"`
+	TakerSellNotional     float64 `db:"taker_sell_notional" json:"taker_sell_notional"`
+	DepletionEvents       int     `db:"depletion_events" json:"depletion_events"`
+	ReplenishmentEvents   int     `db:"replenishment_events" json:"replenishment_events"`
 }
 
 type FundingRateSnapshot struct {
@@ -90,12 +90,12 @@ type FundingRateSnapshot struct {
 }
 
 type OpenInterestSnapshot struct {
-	ID             int64   `db:"id" json:"-"`
-	Symbol         string  `db:"symbol" json:"symbol"`
-	OpenInterest   float64 `db:"open_interest" json:"open_interest"`
-	MarkPrice      float64 `db:"mark_price" json:"mark_price"`
-	OINotionalUSD  float64 `db:"oi_notional_usd" json:"oi_notional_usd"`
-	EventTimeMs    int64   `db:"event_time_ms" json:"event_time_ms"`
+	ID            int64   `db:"id" json:"-"`
+	Symbol        string  `db:"symbol" json:"symbol"`
+	OpenInterest  float64 `db:"open_interest" json:"open_interest"`
+	MarkPrice     float64 `db:"mark_price" json:"mark_price"`
+	OINotionalUSD float64 `db:"oi_notional_usd" json:"oi_notional_usd"`
+	EventTimeMs   int64   `db:"event_time_ms" json:"event_time_ms"`
 }
 
 type AssetMarketCap struct {
@@ -116,68 +116,127 @@ type Favorite struct {
 }
 
 type CoinInfo struct {
-	ID          int64      `db:"id" json:"-"`
-	Symbol      string     `db:"symbol" json:"symbol"`
-	WhaleMinVal *float64   `db:"whale_min_val" json:"whale_min_val"`
-	CreatedAt   *string `db:"created_at" json:"-"`
-	UpdatedAt   *string `db:"updated_at" json:"-"`
+	ID          int64    `db:"id" json:"-"`
+	Symbol      string   `db:"symbol" json:"symbol"`
+	WhaleMinVal *float64 `db:"whale_min_val" json:"whale_min_val"`
+	CreatedAt   *string  `db:"created_at" json:"-"`
+	UpdatedAt   *string  `db:"updated_at" json:"-"`
 }
 
 type SRLevel struct {
-	ID            int64      `db:"id" json:"-"`
-	Market        string     `db:"market" json:"market"`
-	Symbol        string     `db:"symbol" json:"symbol"`
-	LevelPrice    float64    `db:"level_price" json:"level_price"`
-	Timeframe     string     `db:"timeframe" json:"timeframe"`
-	Touches       int        `db:"touches" json:"touches"`
-	StrengthScore float64    `db:"strength_score" json:"strength_score"`
-	LastTouchMs   int64      `db:"last_touch_ms" json:"last_touch_ms"`
+	ID            int64   `db:"id" json:"-"`
+	Market        string  `db:"market" json:"market"`
+	Symbol        string  `db:"symbol" json:"symbol"`
+	LevelPrice    float64 `db:"level_price" json:"level_price"`
+	Timeframe     string  `db:"timeframe" json:"timeframe"`
+	Touches       int     `db:"touches" json:"touches"`
+	StrengthScore float64 `db:"strength_score" json:"strength_score"`
+	LastTouchMs   int64   `db:"last_touch_ms" json:"last_touch_ms"`
 	CreatedAt     *string `db:"created_at" json:"-"`
 	UpdatedAt     *string `db:"updated_at" json:"-"`
 }
 
 type AnomalyEvent struct {
-	ID          int64           `db:"id" json:"id"`
-	Market      string          `db:"market" json:"market"`
-	Symbol      string          `db:"symbol" json:"symbol"`
-	EventType   string          `db:"event_type" json:"event_type"`
-	TfSignal    string          `db:"tf_signal" json:"tf_signal"`
-	TfLevel     *string         `db:"tf_level" json:"tf_level"`
-	EventTimeMs int64           `db:"event_time_ms" json:"event_time_ms"`
-	Title       string          `db:"title" json:"title"`
-	Details     JSONB           `db:"details" json:"details"`
-	CreatedAt   *string         `db:"created_at" json:"-"`
+	ID          int64   `db:"id" json:"id"`
+	Market      string  `db:"market" json:"market"`
+	Symbol      string  `db:"symbol" json:"symbol"`
+	EventType   string  `db:"event_type" json:"event_type"`
+	TfSignal    string  `db:"tf_signal" json:"tf_signal"`
+	TfLevel     *string `db:"tf_level" json:"tf_level"`
+	EventTimeMs int64   `db:"event_time_ms" json:"event_time_ms"`
+	Title       string  `db:"title" json:"title"`
+	Details     JSONB   `db:"details" json:"details"`
+	CreatedAt   *string `db:"created_at" json:"-"`
 }
 
 type AbsorptionSignalSnapshot struct {
-	ID                int64           `db:"id" json:"-"`
-	Market            string          `db:"market" json:"market"`
-	Symbol            string          `db:"symbol" json:"symbol"`
-	BucketStartMs     int64           `db:"bucket_start_ms" json:"bucket_start_ms"`
-	Direction         string          `db:"direction" json:"direction"`
-	SignalState       string          `db:"signal_state" json:"signal_state"`
-	Score             float64         `db:"score" json:"score"`
-	NetFlowStrength   *float64        `db:"net_flow_strength" json:"net_flow_strength"`
-	ImpactPerNotional *float64        `db:"impact_per_notional" json:"impact_per_notional"`
-	Window4hPassed    bool            `db:"window_4h_passed" json:"window_4h_passed"`
-	Window1dPassed    bool            `db:"window_1d_passed" json:"window_1d_passed"`
-	Window3dPassed    bool            `db:"window_3d_passed" json:"window_3d_passed"`
-	Windows           JSONB           `db:"windows" json:"windows"`
-	Reasons           JSONB           `db:"reasons" json:"reasons"`
-	CreatedAt         *string         `db:"created_at" json:"-"`
-	UpdatedAt         *string         `db:"updated_at" json:"-"`
+	ID                int64    `db:"id" json:"-"`
+	Market            string   `db:"market" json:"market"`
+	Symbol            string   `db:"symbol" json:"symbol"`
+	BucketStartMs     int64    `db:"bucket_start_ms" json:"bucket_start_ms"`
+	Direction         string   `db:"direction" json:"direction"`
+	SignalState       string   `db:"signal_state" json:"signal_state"`
+	Score             float64  `db:"score" json:"score"`
+	NetFlowStrength   *float64 `db:"net_flow_strength" json:"net_flow_strength"`
+	ImpactPerNotional *float64 `db:"impact_per_notional" json:"impact_per_notional"`
+	Window4hPassed    bool     `db:"window_4h_passed" json:"window_4h_passed"`
+	Window1dPassed    bool     `db:"window_1d_passed" json:"window_1d_passed"`
+	Window3dPassed    bool     `db:"window_3d_passed" json:"window_3d_passed"`
+	Windows           JSONB    `db:"windows" json:"windows"`
+	Reasons           JSONB    `db:"reasons" json:"reasons"`
+	CreatedAt         *string  `db:"created_at" json:"-"`
+	UpdatedAt         *string  `db:"updated_at" json:"-"`
+}
+
+type BollPumpState struct {
+	ID                      int64    `db:"id" json:"id"`
+	Market                  string   `db:"market" json:"market"`
+	Symbol                  string   `db:"symbol" json:"symbol"`
+	Timeframe               string   `db:"timeframe" json:"timeframe"`
+	Status                  string   `db:"status" json:"status"`
+	WatchStartedMs          *int64   `db:"watch_started_ms" json:"watch_started_ms"`
+	WatchCandleStartMs      *int64   `db:"watch_candle_start_ms" json:"watch_candle_start_ms"`
+	WatchScore              float64  `db:"watch_score" json:"watch_score"`
+	CurrentScore            float64  `db:"current_score" json:"current_score"`
+	ConfluenceScore         float64  `db:"confluence_score" json:"confluence_score"`
+	PriorityScore           float64  `db:"priority_score" json:"priority_score"`
+	BounceCount             int      `db:"bounce_count" json:"bounce_count"`
+	FirstPullbackLow        *float64 `db:"first_pullback_low" json:"first_pullback_low"`
+	SecondPullbackLow       *float64 `db:"second_pullback_low" json:"second_pullback_low"`
+	PendingPullbackCandleMs *int64   `db:"pending_pullback_candle_ms" json:"pending_pullback_candle_ms"`
+	PendingPullbackHigh     *float64 `db:"pending_pullback_high" json:"pending_pullback_high"`
+	LastCheckedCandleMs     *int64   `db:"last_checked_candle_ms" json:"last_checked_candle_ms"`
+	LastSignalLevel         *string  `db:"last_signal_level" json:"last_signal_level"`
+	LastAlertMs             *int64   `db:"last_alert_ms" json:"last_alert_ms"`
+	ExpiresAtCandleMs       *int64   `db:"expires_at_candle_ms" json:"expires_at_candle_ms"`
+	Details                 JSONB    `db:"details" json:"details"`
+	CreatedAt               *string  `db:"created_at" json:"-"`
+	UpdatedAt               *string  `db:"updated_at" json:"-"`
+}
+
+type BollPumpSignal struct {
+	ID                    int64    `db:"id" json:"id"`
+	Market                string   `db:"market" json:"market"`
+	Symbol                string   `db:"symbol" json:"symbol"`
+	Timeframe             string   `db:"timeframe" json:"timeframe"`
+	SignalLevel           string   `db:"signal_level" json:"signal_level"`
+	Price                 float64  `db:"price" json:"price"`
+	VolumeRatio           float64  `db:"volume_ratio" json:"volume_ratio"`
+	BollBandwidth         float64  `db:"boll_bandwidth" json:"boll_bandwidth"`
+	BounceCount           int      `db:"bounce_count" json:"bounce_count"`
+	Score                 float64  `db:"score" json:"score"`
+	ConfluenceScore       float64  `db:"confluence_score" json:"confluence_score"`
+	PriorityScore         float64  `db:"priority_score" json:"priority_score"`
+	SignalTimeMs          int64    `db:"signal_time_ms" json:"signal_time_ms"`
+	CandleStartMs         int64    `db:"candle_start_ms" json:"candle_start_ms"`
+	WatchCandleStartMs    *int64   `db:"watch_candle_start_ms" json:"watch_candle_start_ms"`
+	PullbackCandleStartMs *int64   `db:"pullback_candle_start_ms" json:"pullback_candle_start_ms"`
+	QuoteVolume24h        float64  `db:"quote_volume_24h" json:"quote_volume_24h"`
+	Perf1hMaxGain         *float64 `db:"perf_1h_max_gain" json:"perf_1h_max_gain"`
+	Perf1hMaxDrawdown     *float64 `db:"perf_1h_max_drawdown" json:"perf_1h_max_drawdown"`
+	Perf1hCloseReturn     *float64 `db:"perf_1h_close_return" json:"perf_1h_close_return"`
+	Perf4hMaxGain         *float64 `db:"perf_4h_max_gain" json:"perf_4h_max_gain"`
+	Perf4hMaxDrawdown     *float64 `db:"perf_4h_max_drawdown" json:"perf_4h_max_drawdown"`
+	Perf4hCloseReturn     *float64 `db:"perf_4h_close_return" json:"perf_4h_close_return"`
+	Perf24hMaxGain        *float64 `db:"perf_24h_max_gain" json:"perf_24h_max_gain"`
+	Perf24hMaxDrawdown    *float64 `db:"perf_24h_max_drawdown" json:"perf_24h_max_drawdown"`
+	Perf24hCloseReturn    *float64 `db:"perf_24h_close_return" json:"perf_24h_close_return"`
+	PerformanceUpdatedMs  *int64   `db:"performance_updated_ms" json:"performance_updated_ms"`
+	Reason                string   `db:"reason" json:"reason"`
+	Details               JSONB    `db:"details" json:"details"`
+	CreatedAt             *string  `db:"created_at" json:"-"`
 }
 
 type OrderbookHeatmapSnapshot struct {
-	ID            int64      `db:"id" json:"-"`
-	Market        string     `db:"market" json:"market"`
-	Symbol        string     `db:"symbol" json:"symbol"`
-	BucketStartMs int64      `db:"bucket_start_ms" json:"bucket_start_ms"`
-	Side          string     `db:"side" json:"side"`
-	PriceBin      float64    `db:"price_bin" json:"price_bin"`
-	PriceStep     float64    `db:"price_step" json:"price_step"`
-	Intensity     float64    `db:"intensity" json:"intensity"`
-	LevelCount    int        `db:"level_count" json:"level_count"`
+	ID            int64   `db:"id" json:"-"`
+	Market        string  `db:"market" json:"market"`
+	Symbol        string  `db:"symbol" json:"symbol"`
+	BucketStartMs int64   `db:"bucket_start_ms" json:"bucket_start_ms"`
+	Side          string  `db:"side" json:"side"`
+	PriceBin      float64 `db:"price_bin" json:"price_bin"`
+	PriceStep     float64 `db:"price_step" json:"price_step"`
+	Intensity     float64 `db:"intensity" json:"intensity"`
+	LevelCount    int     `db:"level_count" json:"level_count"`
 	CreatedAt     *string `db:"created_at" json:"-"`
 	UpdatedAt     *string `db:"updated_at" json:"-"`
 }

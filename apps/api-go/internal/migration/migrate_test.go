@@ -43,3 +43,29 @@ func TestMigrateAddsAbsorptionColumnToExistingTGNotifyPrefs(t *testing.T) {
 		t.Fatalf("absorption_enabled column count = %d, want 1", count)
 	}
 }
+
+func TestMigrateCreatesBollPumpTables(t *testing.T) {
+	ctx := context.Background()
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "app.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer store.Close()
+
+	if err := Migrate(ctx, store); err != nil {
+		t.Fatalf("migrate sqlite: %v", err)
+	}
+	if err := Migrate(ctx, store); err != nil {
+		t.Fatalf("migrate sqlite twice: %v", err)
+	}
+
+	for _, table := range []string{"boll_pump_states", "boll_pump_signals"} {
+		var count int
+		if err := store.GetContext(ctx, &count, `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, table); err != nil {
+			t.Fatalf("query table %s: %v", table, err)
+		}
+		if count != 1 {
+			t.Fatalf("table %s count = %d, want 1", table, count)
+		}
+	}
+}
