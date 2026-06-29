@@ -551,6 +551,38 @@ body {
   white-space: nowrap;
 }
 
+.cm-tvChartStats .cm-tvWsStatus {
+  position: relative;
+  gap: 6px;
+}
+
+.cm-tvChartStats .cm-tvWsStatus::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--cm-muted);
+}
+
+.cm-tvChartStats .cm-tvWsStatus--live {
+  color: var(--cm-success);
+}
+
+.cm-tvChartStats .cm-tvWsStatus--live::before {
+  background: var(--cm-success);
+  box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.12);
+}
+
+.cm-tvChartStats .cm-tvWsStatus--connecting,
+.cm-tvChartStats .cm-tvWsStatus--reconnecting {
+  color: var(--cm-warning);
+}
+
+.cm-tvChartStats .cm-tvWsStatus--connecting::before,
+.cm-tvChartStats .cm-tvWsStatus--reconnecting::before {
+  background: var(--cm-warning);
+}
+
 .cm-tvChangeStrip {
   display: flex;
   align-items: center;

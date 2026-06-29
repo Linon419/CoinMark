@@ -298,7 +298,7 @@ export default function BollPumpPage() {
       </div>
 
       <Drawer className="cm-bollDetailDrawer" width="80%" visible={open} onCancel={() => setOpen(false)} footer={null} title={detail?.signal ? `${detail.signal.symbol} ${detail.signal.timeframe}` : "BOLL detail"}>
-        <BollPumpChart detail={detail} />
+        {open ? <BollPumpChart detail={detail} bollPeriod={settings.boll_period} bollStdDev={settings.boll_std_dev} /> : null}
       </Drawer>
 
       <Drawer

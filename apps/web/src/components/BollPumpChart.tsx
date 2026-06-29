@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CandlestickSeries,
   ColorType,
@@ -18,6 +18,10 @@ import {
 import type { BollPumpDetail } from "../services/bollPump";
 
 type PriceLine = ISeriesApi<"Line", UTCTimestamp>;
+type ChartCandle = { time: number; open: number; high: number; low: number; close: number; volume: number };
+type WsStatus = "idle" | "connecting" | "live" | "reconnecting" | "closed";
+
+const MAX_DETAIL_CANDLES = 320;
 
 function toLwTime(ms: number) {
   return Math.floor(ms / 1000) as UTCTimestamp;
@@ -47,10 +51,31 @@ function fmtTime(ms: number) {
   return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-function buildLineData(indicators: BollPumpDetail["indicators"], field: "upper" | "middle" | "lower") {
-  return indicators
-    .filter((x) => isFiniteNumber(x.time) && isFiniteNumber(x[field]) && x[field] > 0)
-    .map((x) => ({ time: toLwTime(x.time), value: x[field] })) as SingleValueData<UTCTimestamp>[];
+function normalizeDetailCandles(detail: BollPumpDetail | null) {
+  return [...(detail?.candles || [])]
+    .filter((c) => [c.time, c.open, c.high, c.low, c.close, c.volume].every(isFiniteNumber))
+    .sort((a, b) => a.time - b.time) as ChartCandle[];
+}
+
+function buildBollData(candles: ChartCandle[], period: number, stdDev: number) {
+  const safePeriod = Math.max(2, Math.floor(period || 20));
+  const safeStdDev = Number.isFinite(stdDev) && stdDev > 0 ? stdDev : 2;
+  const upper: SingleValueData<UTCTimestamp>[] = [];
+  const middle: SingleValueData<UTCTimestamp>[] = [];
+  const lower: SingleValueData<UTCTimestamp>[] = [];
+
+  for (let i = safePeriod - 1; i < candles.length; i++) {
+    const window = candles.slice(i - safePeriod + 1, i + 1);
+    const mean = window.reduce((sum, x) => sum + x.close, 0) / safePeriod;
+    const variance = window.reduce((sum, x) => sum + (x.close - mean) ** 2, 0) / safePeriod;
+    const band = Math.sqrt(variance) * safeStdDev;
+    const time = toLwTime(candles[i].time);
+    middle.push({ time, value: mean });
+    upper.push({ time, value: mean + band });
+    lower.push({ time, value: mean - band });
+  }
+
+  return { upper, middle, lower };
 }
 
 function buildEmaData(candles: Array<{ time: number; close: number }>, period: number) {
@@ -86,6 +111,33 @@ function buildPeriodChanges(candles: Array<{ close: number }>) {
     .filter(Boolean) as Array<{ label: string; value: number }>;
 }
 
+function getBinanceWsUrl(market: string | undefined, symbol: string, timeframe: string) {
+  const stream = `${symbol.trim().toLowerCase()}@kline_${timeframe}`;
+  if (String(market || "").toLowerCase() === "spot") {
+    return `wss://stream.binance.com:9443/ws/${stream}`;
+  }
+  return `wss://fstream.binance.com/ws/${stream}`;
+}
+
+function buildCandleFromKline(kline: any): ChartCandle | null {
+  const time = Number(kline?.t);
+  const open = Number(kline?.o);
+  const high = Number(kline?.h);
+  const low = Number(kline?.l);
+  const close = Number(kline?.c);
+  const volume = Number(kline?.v);
+  if (![time, open, high, low, close, volume].every(Number.isFinite)) return null;
+  return { time, open, high, low, close, volume };
+}
+
+function wsStatusLabel(status: WsStatus) {
+  if (status === "live") return "WS live";
+  if (status === "connecting") return "WS connecting";
+  if (status === "reconnecting") return "WS reconnecting";
+  if (status === "closed") return "WS closed";
+  return "WS idle";
+}
+
 function buildMarkers(detail: BollPumpDetail | null) {
   const markers = detail?.markers || [];
   return markers
@@ -102,10 +154,12 @@ function buildMarkers(detail: BollPumpDetail | null) {
     });
 }
 
-export default function BollPumpChart({ detail }: { detail: BollPumpDetail | null }) {
+export default function BollPumpChart({ detail, bollPeriod = 20, bollStdDev = 2 }: { detail: BollPumpDetail | null; bollPeriod?: number; bollStdDev?: number }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const markerApiRef = useRef<ReturnType<typeof createSeriesMarkers<UTCTimestamp>> | null>(null);
+  const [liveCandles, setLiveCandles] = useState<ChartCandle[]>([]);
+  const [wsStatus, setWsStatus] = useState<WsStatus>("idle");
   const seriesRef = useRef<{
     candle: ISeriesApi<"Candlestick", UTCTimestamp> | null;
     upper: PriceLine | null;
@@ -115,10 +169,91 @@ export default function BollPumpChart({ detail }: { detail: BollPumpDetail | nul
     volume: ISeriesApi<"Histogram", UTCTimestamp> | null;
   }>({ candle: null, upper: null, middle: null, lower: null, ema10: null, volume: null });
 
+  useEffect(() => {
+    setLiveCandles(normalizeDetailCandles(detail));
+  }, [detail]);
+
+  useEffect(() => {
+    const signal = detail?.signal;
+    const symbol = signal?.symbol?.trim().toUpperCase();
+    const timeframe = signal?.timeframe;
+    if (!symbol || !timeframe) {
+      setWsStatus("idle");
+      return;
+    }
+
+    let ws: WebSocket | null = null;
+    let reconnectTimer: number | null = null;
+    let attempt = 0;
+    let stopped = false;
+
+    const mergeCandle = (patch: ChartCandle) => {
+      setLiveCandles((prev) => {
+        if (!prev.length) return [patch];
+        const last = prev[prev.length - 1];
+        if (patch.time < last.time) return prev;
+        const next =
+          patch.time === last.time
+            ? [...prev.slice(0, -1), { ...last, ...patch }]
+            : [...prev, patch].slice(-MAX_DETAIL_CANDLES);
+        return next;
+      });
+    };
+
+    const connect = () => {
+      if (stopped) return;
+      setWsStatus(attempt > 0 ? "reconnecting" : "connecting");
+      ws = new WebSocket(getBinanceWsUrl(signal.market, symbol, timeframe));
+
+      ws.onopen = () => {
+        attempt = 0;
+        setWsStatus("live");
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(String(event.data || "{}"));
+          const kline = payload?.k || payload?.data?.k;
+          const candle = buildCandleFromKline(kline);
+          if (candle) mergeCandle(candle);
+        } catch {
+          // ignore malformed WS payload
+        }
+      };
+
+      ws.onclose = () => {
+        if (stopped) return;
+        attempt += 1;
+        setWsStatus("reconnecting");
+        const delay = Math.min(10_000, 1000 * 2 ** Math.min(attempt, 4)) + Math.floor(Math.random() * 300);
+        reconnectTimer = window.setTimeout(connect, delay);
+      };
+
+      ws.onerror = () => {
+        try {
+          ws?.close();
+        } catch {
+          // no-op
+        }
+      };
+    };
+
+    connect();
+
+    return () => {
+      stopped = true;
+      if (reconnectTimer != null) window.clearTimeout(reconnectTimer);
+      try {
+        ws?.close();
+      } catch {
+        // no-op
+      }
+      setWsStatus("closed");
+    };
+  }, [detail?.signal?.id, detail?.signal?.market, detail?.signal?.symbol, detail?.signal?.timeframe]);
+
   const chartData = useMemo(() => {
-    const candles = (detail?.candles || [])
-      .filter((c) => [c.time, c.open, c.high, c.low, c.close].every(isFiniteNumber))
-      .sort((a, b) => a.time - b.time);
+    const candles = liveCandles;
 
     const candleData = candles.map((c) => ({
       time: toLwTime(c.time),
@@ -134,21 +269,21 @@ export default function BollPumpChart({ detail }: { detail: BollPumpDetail | nul
       color: c.close >= c.open ? "rgba(34,197,94,0.45)" : "rgba(239,68,68,0.45)",
     })) as HistogramData<UTCTimestamp>[];
 
-    const indicators = detail?.indicators || [];
+    const boll = buildBollData(candles, bollPeriod, bollStdDev);
     const last = candles[candles.length - 1];
 
     return {
       candleData,
       volumeData,
-      upper: buildLineData(indicators, "upper"),
-      middle: buildLineData(indicators, "middle"),
-      lower: buildLineData(indicators, "lower"),
+      upper: boll.upper,
+      middle: boll.middle,
+      lower: boll.lower,
       ema10: buildEmaData(candles, 10),
       changes: buildPeriodChanges(candles),
       markers: buildMarkers(detail),
       last,
     };
-  }, [detail]);
+  }, [detail, liveCandles, bollPeriod, bollStdDev]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -263,6 +398,7 @@ export default function BollPumpChart({ detail }: { detail: BollPumpDetail | nul
           <div className="cm-tvChartSub">{signal?.reason || ""}</div>
         </div>
         <div className="cm-tvChartStats">
+          <span className={`cm-tvWsStatus cm-tvWsStatus--${wsStatus}`}>{wsStatusLabel(wsStatus)}</span>
           <span>Last {last ? fmtCompact(last.close) : "-"}</span>
           <span>Signal {signal ? fmtCompact(Number(signal.price || 0)) : "-"}</span>
           <span>Vol {signal ? `${fmtCompact(Number(signal.volume_ratio || 0), 2)}x` : "-"}</span>
