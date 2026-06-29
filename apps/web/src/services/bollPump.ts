@@ -39,8 +39,33 @@ export type BollPumpDetail = {
   markers: Array<{ time: number; label: string; price: number; kind: string }>;
 };
 
-async function req<T>(path: string): Promise<T> {
-  const r = await fetch(`${API_BASE}${path}`);
+export type BollPumpSettings = {
+  enabled: boolean;
+  market: "swap" | "spot";
+  timeframes: string[];
+  symbol_limit: number;
+  scan_timeout_sec: number;
+  boll_period: number;
+  boll_std_dev: number;
+  atr_period: number;
+  startup_windows: Record<string, number>;
+  gain_thresholds: Record<string, number>;
+  volume_thresholds: Record<string, number>;
+  background_lookback: number;
+  background_recent_window: number;
+  background_recent_min_pass: number;
+  low_volume_factor: number;
+  middle_near_bandwidth_factor: number;
+  thin_quote_volume_24h: number;
+  watch_telegram_threshold: number;
+  confirm1_telegram_threshold: number;
+  confirm2_telegram_threshold: number;
+  confluence_window_ms: number;
+  stage_expiry_candles: number;
+};
+
+async function req<T>(path: string, init?: RequestInit): Promise<T> {
+  const r = await fetch(`${API_BASE}${path}`, init);
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return (await r.json()) as T;
 }
@@ -59,4 +84,16 @@ export function fetchBollPumpStats(params = "market=swap") {
 
 export function fetchBollPumpDetail(id: number) {
   return req<BollPumpDetail>(`/api/boll-pump/signals/${id}/detail`);
+}
+
+export function fetchBollPumpSettings() {
+  return req<{ settings: BollPumpSettings }>(`/api/boll-pump/settings`);
+}
+
+export function saveBollPumpSettings(settings: BollPumpSettings) {
+  return req<{ settings: BollPumpSettings }>(`/api/boll-pump/settings`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(settings),
+  });
 }

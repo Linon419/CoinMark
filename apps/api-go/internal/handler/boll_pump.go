@@ -18,6 +18,8 @@ func registerBollPumpRoutes(g *gin.RouterGroup, d *Deps) {
 	r.GET("/signals", handleBollPumpSignals(d))
 	r.GET("/states", handleBollPumpStates(d))
 	r.GET("/stats", handleBollPumpStats(d))
+	r.GET("/settings", handleBollPumpSettings(d))
+	r.PUT("/settings", handlePutBollPumpSettings(d))
 	r.GET("/signals/:id/detail", handleBollPumpSignalDetail(d))
 }
 
@@ -69,6 +71,37 @@ func handleBollPumpStats(d *Deps) gin.HandlerFunc {
 	}
 }
 
+func handleBollPumpSettings(d *Deps) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		cfg, err := service.LoadBollPumpConfig(c.Request.Context(), d.Store, bollPumpRuntimeConfig(d))
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"settings": cfg})
+	}
+}
+
+func handlePutBollPumpSettings(d *Deps) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if d.Store == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "settings store not configured"})
+			return
+		}
+		var cfg service.BollPumpConfig
+		if err := c.ShouldBindJSON(&cfg); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid json"})
+			return
+		}
+		cfg, err := service.SaveBollPumpConfig(c.Request.Context(), d.Store, cfg)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"settings": cfg})
+	}
+}
+
 func handleBollPumpSignalDetail(d *Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, err := strconv.ParseInt(c.Param("id"), 10, 64)
@@ -107,7 +140,8 @@ func bollPumpDetailSeries(ctx context.Context, d *Deps, sig model.BollPumpSignal
 	if err != nil {
 		return []map[string]interface{}{}, []map[string]interface{}{}
 	}
-	ind := service.ComputeBollPumpIndicators(bars, 20, 2, 14)
+	cfg, _ := service.LoadBollPumpConfig(ctx, d.Store, bollPumpRuntimeConfig(d))
+	ind := service.ComputeBollPumpIndicators(bars, cfg.BollPeriod, cfg.BollStdDev, cfg.ATRPeriod)
 	candles := make([]map[string]interface{}, 0, len(bars))
 	indicators := make([]map[string]interface{}, 0, len(ind))
 	for i, b := range bars {
@@ -120,6 +154,13 @@ func bollPumpDetailSeries(ctx context.Context, d *Deps, sig model.BollPumpSignal
 		})
 	}
 	return candles, indicators
+}
+
+func bollPumpRuntimeConfig(d *Deps) service.BollPumpConfig {
+	if d == nil {
+		return service.DefaultBollPumpConfig()
+	}
+	return service.BollPumpConfigFromRuntime(d.Cfg)
 }
 
 func bollPumpMarkers(sig model.BollPumpSignal) []map[string]interface{} {

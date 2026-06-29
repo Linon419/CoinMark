@@ -287,6 +287,13 @@ var schemaDDL = []string{
 	`CREATE INDEX IF NOT EXISTS ix_boll_pump_signals_symbol ON boll_pump_signals (market, symbol, signal_time_ms DESC)`,
 	`CREATE INDEX IF NOT EXISTS ix_boll_pump_signals_level ON boll_pump_signals (market, signal_level, signal_time_ms DESC)`,
 
+	// boll_pump_settings
+	`CREATE TABLE IF NOT EXISTS boll_pump_settings (
+		name VARCHAR(32) PRIMARY KEY,
+		config JSON NOT NULL,
+		updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+	)`,
+
 	// tg_notify_prefs (group-level notify switches)
 	`CREATE TABLE IF NOT EXISTS tg_notify_prefs (
 		chat_id BIGINT PRIMARY KEY,

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -50,6 +51,36 @@ func TestBollPumpSignalsAPI(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "XYZUSDT") {
 		t.Fatalf("response missing symbol: %s", w.Body.String())
+	}
+}
+
+func TestBollPumpSettingsAPI(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := openHandlerBollPumpStore(t)
+	defer store.Close()
+
+	r := gin.New()
+	RegisterRoutes(r, &Deps{Cfg: &config.Config{BollPumpEnabled: true, BollPumpMarket: "swap"}, Store: store})
+
+	cfg := service.DefaultBollPumpConfig()
+	cfg.SymbolLimit = 55
+	body, _ := json.Marshal(cfg)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/boll-pump/settings", strings.NewReader(string(body))))
+	if w.Code != http.StatusOK {
+		t.Fatalf("put status = %d, body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"symbol_limit":55`) {
+		t.Fatalf("put response missing symbol limit: %s", w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/boll-pump/settings", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("get status = %d, body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"symbol_limit":55`) {
+		t.Fatalf("get response missing symbol limit: %s", w.Body.String())
 	}
 }
 

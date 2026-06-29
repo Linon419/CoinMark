@@ -68,7 +68,7 @@ func (rt *Runtime) Start(ctx context.Context) {
 		}
 	}
 
-	if rt.cfg.BollPumpEnabled && rt.bn != nil {
+	if rt.bn != nil {
 		source := service.NewBinanceBollPumpSource(rt.bn, rt.cfg.BollPumpSymbolLimit)
 		scanner := service.NewBollPumpScanner(source, rt.store, service.BollPumpConfigFromRuntime(rt.cfg))
 		go scanner.Run(ctx, rt.stopCh)

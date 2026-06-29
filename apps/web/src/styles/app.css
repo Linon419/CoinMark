@@ -297,6 +297,52 @@ body {
   font-size: 12px;
 }
 
+.cm-bollSettings {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.cm-bollSettingsBlock {
+  padding: 12px;
+  border: 1px solid var(--cm-border);
+  border-radius: 10px;
+  background: rgba(148, 163, 184, 0.06);
+}
+
+.cm-bollSettingsGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 12px;
+  margin-top: 10px;
+}
+
+.cm-bollSettingsGrid label {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  color: var(--cm-muted);
+  font-size: 12px;
+}
+
+.cm-bollSettingsGrid .arco-input-number,
+.cm-bollSettingsGrid .arco-select {
+  width: 100%;
+}
+
+.cm-bollTfButtons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.cm-bollSettingsBlock .arco-table {
+  margin-top: 10px;
+}
+
 @media (max-width: 900px) {
   .cm-grid-2 {
     grid-template-columns: 1fr;
@@ -312,6 +358,10 @@ body {
 
   .cm-bollPanel {
     overflow-x: auto;
+  }
+
+  .cm-bollSettingsGrid {
+    grid-template-columns: 1fr;
   }
 }
 

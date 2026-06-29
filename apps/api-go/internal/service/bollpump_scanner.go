@@ -39,12 +39,7 @@ type BollPumpScanResult struct {
 }
 
 func NewBollPumpScanner(source BollPumpSource, store *sqlite.Store, cfg BollPumpConfig) *BollPumpScanner {
-	if cfg.BollPeriod <= 0 {
-		cfg = DefaultBollPumpConfig()
-	}
-	if cfg.SymbolLimit <= 0 {
-		cfg.SymbolLimit = 200
-	}
+	cfg = NormalizeBollPumpConfig(cfg)
 	return &BollPumpScanner{source: source, store: store, cfg: cfg, symbolLimit: cfg.SymbolLimit}
 }
 
@@ -53,6 +48,10 @@ func (s *BollPumpScanner) ScanTimeframe(ctx context.Context, timeframe string) B
 	defer func() { result.FinishedAtMs = time.Now().UnixMilli() }()
 	if s == nil || s.source == nil {
 		result.Errors++
+		return result
+	}
+	s.refreshConfig(ctx)
+	if !s.cfg.Enabled {
 		return result
 	}
 	symbols, err := s.source.Symbols(ctx, normalizeBollPumpMarket(s.cfg.Market), s.symbolLimit)
@@ -111,13 +110,17 @@ func (s *BollPumpScanner) Run(ctx context.Context, stopCh <-chan struct{}) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			for _, tf := range s.cfg.Timeframes {
+			cfg := s.refreshConfig(ctx)
+			if !cfg.Enabled {
+				continue
+			}
+			for _, tf := range cfg.Timeframes {
 				closed := lastClosedStartForTimeframe(time.Now().UnixMilli(), tf)
 				if closed <= 0 || lastRun[tf] == closed {
 					continue
 				}
 				lastRun[tf] = closed
-				timeoutSec := s.cfg.ScanTimeoutSec
+				timeoutSec := cfg.ScanTimeoutSec
 				if timeoutSec <= 0 {
 					timeoutSec = 45
 				}
@@ -149,6 +152,21 @@ func BollPumpConfigFromRuntime(cfg *config.Config) BollPumpConfig {
 		out.Timeframes = tfs
 	}
 	return out
+}
+
+func (s *BollPumpScanner) refreshConfig(ctx context.Context) BollPumpConfig {
+	if s == nil {
+		return DefaultBollPumpConfig()
+	}
+	cfg := NormalizeBollPumpConfig(s.cfg)
+	if s.store != nil {
+		if loaded, err := LoadBollPumpConfig(ctx, s.store, cfg); err == nil {
+			cfg = loaded
+		}
+	}
+	s.cfg = cfg
+	s.symbolLimit = cfg.SymbolLimit
+	return cfg
 }
 
 func (s *BollPumpScanner) klineLimit() int {

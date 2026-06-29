@@ -66,3 +66,25 @@ func TestBollPumpScannerUsesRuntimeSymbolLimit(t *testing.T) {
 		t.Fatalf("scan timeout = %d, want 7", scanner.cfg.ScanTimeoutSec)
 	}
 }
+
+func TestBollPumpScannerRefreshesSavedSettings(t *testing.T) {
+	ctx := context.Background()
+	store := openBollPumpTestStore(t)
+	defer store.Close()
+
+	cfg := DefaultBollPumpConfig()
+	cfg.SymbolLimit = 42
+	if _, err := SaveBollPumpConfig(ctx, store, cfg); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+	source := &fakeBollPumpSource{
+		bars:  map[string][]BollPumpBar{"15m": bollPumpFixtureQuietBaseThenPump("15m")},
+		quote: map[string]float64{"XYZUSDT": 3_000_000},
+	}
+	scanner := NewBollPumpScanner(source, store, DefaultBollPumpConfig())
+
+	scanner.ScanTimeframe(ctx, "15m")
+	if source.symbolLimit != 42 {
+		t.Fatalf("symbol limit = %d, want saved 42", source.symbolLimit)
+	}
+}

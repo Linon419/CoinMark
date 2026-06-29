@@ -45,28 +45,28 @@ type BollPumpIndicator struct {
 }
 
 type BollPumpConfig struct {
-	Enabled                   bool
-	Market                    string
-	Timeframes                []string
-	SymbolLimit               int
-	ScanTimeoutSec            int
-	BollPeriod                int
-	BollStdDev                float64
-	ATRPeriod                 int
-	StartupWindows            map[string]int
-	GainThresholds            map[string]float64
-	VolumeThresholds          map[string]float64
-	BackgroundLookback        int
-	BackgroundRecentWindow    int
-	BackgroundRecentMinPass   int
-	LowVolumeFactor           float64
-	MiddleNearBandwidthFactor float64
-	ThinQuoteVolume24h        float64
-	WatchTelegramThreshold    float64
-	Confirm1TelegramThreshold float64
-	Confirm2TelegramThreshold float64
-	ConfluenceWindowMs        int64
-	StageExpiryCandles        int
+	Enabled                   bool               `json:"enabled"`
+	Market                    string             `json:"market"`
+	Timeframes                []string           `json:"timeframes"`
+	SymbolLimit               int                `json:"symbol_limit"`
+	ScanTimeoutSec            int                `json:"scan_timeout_sec"`
+	BollPeriod                int                `json:"boll_period"`
+	BollStdDev                float64            `json:"boll_std_dev"`
+	ATRPeriod                 int                `json:"atr_period"`
+	StartupWindows            map[string]int     `json:"startup_windows"`
+	GainThresholds            map[string]float64 `json:"gain_thresholds"`
+	VolumeThresholds          map[string]float64 `json:"volume_thresholds"`
+	BackgroundLookback        int                `json:"background_lookback"`
+	BackgroundRecentWindow    int                `json:"background_recent_window"`
+	BackgroundRecentMinPass   int                `json:"background_recent_min_pass"`
+	LowVolumeFactor           float64            `json:"low_volume_factor"`
+	MiddleNearBandwidthFactor float64            `json:"middle_near_bandwidth_factor"`
+	ThinQuoteVolume24h        float64            `json:"thin_quote_volume_24h"`
+	WatchTelegramThreshold    float64            `json:"watch_telegram_threshold"`
+	Confirm1TelegramThreshold float64            `json:"confirm1_telegram_threshold"`
+	Confirm2TelegramThreshold float64            `json:"confirm2_telegram_threshold"`
+	ConfluenceWindowMs        int64              `json:"confluence_window_ms"`
+	StageExpiryCandles        int                `json:"stage_expiry_candles"`
 }
 
 type BollPumpWatchResult struct {

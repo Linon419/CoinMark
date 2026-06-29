@@ -59,7 +59,7 @@ func TestMigrateCreatesBollPumpTables(t *testing.T) {
 		t.Fatalf("migrate sqlite twice: %v", err)
 	}
 
-	for _, table := range []string{"boll_pump_states", "boll_pump_signals"} {
+	for _, table := range []string{"boll_pump_states", "boll_pump_signals", "boll_pump_settings"} {
 		var count int
 		if err := store.GetContext(ctx, &count, `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, table); err != nil {
 			t.Fatalf("query table %s: %v", table, err)
