@@ -107,6 +107,15 @@ func NormalizeBollPumpConfig(in BollPumpConfig) BollPumpConfig {
 	if in.ThinQuoteVolume24h > 0 {
 		out.ThinQuoteVolume24h = clampFloat(in.ThinQuoteVolume24h, 100_000, 100_000_000)
 	}
+	if in.WatchTrendCheckCandles > 0 {
+		out.WatchTrendCheckCandles = clampInt(in.WatchTrendCheckCandles, 2, 60)
+	}
+	if in.WatchTrendMaxDrawdownPct > 0 {
+		out.WatchTrendMaxDrawdownPct = clampFloat(in.WatchTrendMaxDrawdownPct, 0.001, 0.2)
+	}
+	if in.WatchTrendMaxDrawdownATR > 0 {
+		out.WatchTrendMaxDrawdownATR = clampFloat(in.WatchTrendMaxDrawdownATR, 0.1, 5)
+	}
 	if in.WatchTelegramThreshold > 0 {
 		out.WatchTelegramThreshold = clampFloat(in.WatchTelegramThreshold, 0, 100)
 	}

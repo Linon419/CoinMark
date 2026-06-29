@@ -35,6 +35,9 @@ function defaultBollPumpSettings(): BollPumpSettings {
     low_volume_factor: 0.8,
     middle_near_bandwidth_factor: 0.35,
     thin_quote_volume_24h: 2_000_000,
+    watch_trend_check_candles: 6,
+    watch_trend_max_drawdown_pct: 0.01,
+    watch_trend_max_drawdown_atr: 0.75,
     watch_telegram_threshold: 70,
     confirm1_telegram_threshold: 75,
     confirm2_telegram_threshold: 80,
@@ -388,6 +391,32 @@ export default function BollPumpPage() {
               <label>
                 <span>最低24h成交额</span>
                 <InputNumber min={100000} max={100000000} step={100000} value={settingsDraft.thin_quote_volume_24h} onChange={(v) => patchDraft({ thin_quote_volume_24h: Number(v || 2000000) })} />
+              </label>
+            </div>
+          </div>
+
+          <div className="cm-bollSettingsBlock">
+            <Title heading={6} style={{ margin: 0 }}>
+              趋势过滤
+            </Title>
+            <div className="cm-bollSettingsGrid">
+              <label>
+                <span>WATCH检查K数</span>
+                <InputNumber min={2} max={60} value={settingsDraft.watch_trend_check_candles} onChange={(v) => patchDraft({ watch_trend_check_candles: Number(v || 6) })} />
+              </label>
+              <label>
+                <span>最大回撤%</span>
+                <InputNumber
+                  min={0.1}
+                  max={20}
+                  step={0.1}
+                  value={Number((settingsDraft.watch_trend_max_drawdown_pct * 100).toFixed(2))}
+                  onChange={(v) => patchDraft({ watch_trend_max_drawdown_pct: Number(v || 1) / 100 })}
+                />
+              </label>
+              <label>
+                <span>ATR回撤倍数</span>
+                <InputNumber min={0.1} max={5} step={0.05} value={settingsDraft.watch_trend_max_drawdown_atr} onChange={(v) => patchDraft({ watch_trend_max_drawdown_atr: Number(v || 0.75) })} />
               </label>
             </div>
           </div>

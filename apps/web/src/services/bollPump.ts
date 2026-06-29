@@ -57,6 +57,9 @@ export type BollPumpSettings = {
   low_volume_factor: number;
   middle_near_bandwidth_factor: number;
   thin_quote_volume_24h: number;
+  watch_trend_check_candles: number;
+  watch_trend_max_drawdown_pct: number;
+  watch_trend_max_drawdown_atr: number;
   watch_telegram_threshold: number;
   confirm1_telegram_threshold: number;
   confirm2_telegram_threshold: number;

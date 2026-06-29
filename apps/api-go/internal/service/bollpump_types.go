@@ -62,6 +62,9 @@ type BollPumpConfig struct {
 	LowVolumeFactor           float64            `json:"low_volume_factor"`
 	MiddleNearBandwidthFactor float64            `json:"middle_near_bandwidth_factor"`
 	ThinQuoteVolume24h        float64            `json:"thin_quote_volume_24h"`
+	WatchTrendCheckCandles    int                `json:"watch_trend_check_candles"`
+	WatchTrendMaxDrawdownPct  float64            `json:"watch_trend_max_drawdown_pct"`
+	WatchTrendMaxDrawdownATR  float64            `json:"watch_trend_max_drawdown_atr"`
 	WatchTelegramThreshold    float64            `json:"watch_telegram_threshold"`
 	Confirm1TelegramThreshold float64            `json:"confirm1_telegram_threshold"`
 	Confirm2TelegramThreshold float64            `json:"confirm2_telegram_threshold"`

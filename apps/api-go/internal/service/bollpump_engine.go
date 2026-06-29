@@ -34,6 +34,9 @@ func DefaultBollPumpConfig() BollPumpConfig {
 		LowVolumeFactor:           0.8,
 		MiddleNearBandwidthFactor: 0.35,
 		ThinQuoteVolume24h:        2_000_000,
+		WatchTrendCheckCandles:    6,
+		WatchTrendMaxDrawdownPct:  0.01,
+		WatchTrendMaxDrawdownATR:  0.75,
 		WatchTelegramThreshold:    70,
 		Confirm1TelegramThreshold: 75,
 		Confirm2TelegramThreshold: 80,
@@ -369,6 +372,10 @@ func AdvanceBollPumpState(state *BollPumpRuntimeState, bars []BollPumpBar, ind [
 			state.Status = string(BollPumpStatusExpired)
 			break
 		}
+		if bollPumpWatchTrendFailed(*state, bars, ind, cfg) {
+			state.Status = string(BollPumpStatusInvalidated)
+			break
+		}
 		if bollPumpHasThreeMiddleClosesAfterWatch(*state, bars, ind) && bollPumpIsPullbackCandidate(latest, ind[latestIdx]) {
 			state.Status = string(BollPumpStatusPullback1Pending)
 			state.PendingPullbackCandleMs = latest.OpenTimeMs
@@ -467,6 +474,42 @@ func bollPumpSecondLowInvalid(firstLow, secondLow, atr14 float64) bool {
 
 func bollPumpStageExpired(state BollPumpRuntimeState, latest BollPumpBar) bool {
 	return state.ExpiresAtCandleMs > 0 && latest.OpenTimeMs > state.ExpiresAtCandleMs
+}
+
+func bollPumpWatchTrendFailed(state BollPumpRuntimeState, bars []BollPumpBar, ind []BollPumpIndicator, cfg BollPumpConfig) bool {
+	if state.WatchCandleStartMs <= 0 || len(bars) == 0 || len(bars) != len(ind) {
+		return false
+	}
+	watchIdx := -1
+	for i, b := range bars {
+		if b.OpenTimeMs == state.WatchCandleStartMs {
+			watchIdx = i
+			break
+		}
+	}
+	latestIdx := len(bars) - 1
+	if watchIdx < 0 || latestIdx <= watchIdx {
+		return false
+	}
+	postCount := latestIdx - watchIdx
+	if postCount < cfg.WatchTrendCheckCandles {
+		return false
+	}
+	watch := bars[watchIdx]
+	latest := bars[latestIdx]
+	if ind[latestIdx].ValidBoll && latest.Close >= ind[latestIdx].Middle {
+		return false
+	}
+	drawdown := watch.Close - latest.Close
+	if drawdown <= 0 || watch.Close <= 0 {
+		return false
+	}
+	pctLimit := watch.Close * cfg.WatchTrendMaxDrawdownPct
+	atrLimit := 0.0
+	if ind[latestIdx].ValidATR {
+		atrLimit = ind[latestIdx].ATR14 * cfg.WatchTrendMaxDrawdownATR
+	}
+	return drawdown >= math.Max(pctLimit, atrLimit)
 }
 
 func bollPumpHasThreeMiddleClosesAfterWatch(state BollPumpRuntimeState, bars []BollPumpBar, ind []BollPumpIndicator) bool {

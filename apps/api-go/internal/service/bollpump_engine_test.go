@@ -60,6 +60,35 @@ func TestBollPumpConfirmFlowWaitsUntilBreaksPullbackHigh(t *testing.T) {
 	}
 }
 
+func TestBollPumpWatchInvalidatesWhenTrendFails(t *testing.T) {
+	cfg := DefaultBollPumpConfig()
+	bars := bollPumpFixtureQuietBaseThenPump("15m")
+	for _, closePrice := range []float64{104.0, 103.4, 102.8, 102.2, 101.8, 101.4, 101.0} {
+		idx := len(bars)
+		bars = append(bars, BollPumpBar{
+			OpenTimeMs:  int64(idx) * 60000,
+			CloseTimeMs: int64(idx+1)*60000 - 1,
+			Open:        closePrice + 0.2,
+			High:        closePrice + 0.3,
+			Low:         closePrice - 0.2,
+			Close:       closePrice,
+			Volume:      100,
+			QuoteVolume: 100 * closePrice,
+			Closed:      true,
+		})
+	}
+	ind := ComputeBollPumpIndicators(bars, cfg.BollPeriod, cfg.BollStdDev, cfg.ATRPeriod)
+
+	state := NewBollPumpRuntimeState("swap", "XYZUSDT", "15m")
+	for i := 0; i < len(bars); i++ {
+		AdvanceBollPumpState(&state, bars[:i+1], ind[:i+1], 3_000_000, cfg)
+	}
+
+	if state.Status != string(BollPumpStatusInvalidated) {
+		t.Fatalf("status = %s, want INVALIDATED; watch=%d checked=%d score=%.2f", state.Status, state.WatchCandleStartMs, state.LastCheckedCandleMs, state.CurrentScore)
+	}
+}
+
 func TestBollPumpSecondLowInvalidation(t *testing.T) {
 	firstLow := 100.0
 	atr := 2.0
