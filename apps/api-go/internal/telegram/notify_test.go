@@ -128,6 +128,27 @@ func TestFormatBatchUsesAbsorptionScanDetails(t *testing.T) {
 	}
 }
 
+func TestFormatBatchUsesBollPumpDetails(t *testing.T) {
+	n := &AnomalyNotifier{}
+	got := n.formatBatch([]model.AnomalyEvent{
+		{
+			Market:      "swap",
+			Symbol:      "XYZUSDT",
+			EventType:   "boll_pump",
+			TfSignal:    "15m",
+			EventTimeMs: time.Now().UnixMilli(),
+			Title:       "CONFIRM_2 XYZUSDT 15m price=0.1234 score=92",
+			Details:     model.JSONB(`{"signalLevel":"CONFIRM_2","score":92,"volumeRatio":2.7,"bollBandwidth":0.034,"bounceCount":2,"confluenceScore":6}`),
+		},
+	})
+
+	for _, want := range []string{"BOLL泵盘", "XYZUSDT", "周期: 15m", "强度: 92", "量能: 2.70x", "带宽: 0.0340", "反弹: 2"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("format output missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestLevelGTEAcceptsWarnAlias(t *testing.T) {
 	if levelGTE("info", "warn") {
 		t.Fatalf("info passed warn threshold")

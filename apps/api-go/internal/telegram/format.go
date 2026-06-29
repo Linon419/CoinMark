@@ -116,6 +116,7 @@ func eventTypeLabel(et string) string {
 		"signal_lab_climax_short":   "天量反转看空",
 		"absorption_signal_long":    "吸筹扫描看多",
 		"absorption_signal_short":   "吸筹扫描看空",
+		"boll_pump":                 "BOLL泵盘",
 		"breakout_up":               "突破阻力",
 		"breakout_down":             "跌破支撑",
 		"volume_spike":              "量能异常",
@@ -171,6 +172,12 @@ func eventSeverityScore(et string, details map[string]interface{}) float64 {
 		base = score
 	}
 	switch et {
+	case "boll_pump":
+		if score, ok := detailFloat(details, "priorityScore"); ok && score > 0 {
+			base = score
+		} else if score, ok := detailFloat(details, "score"); ok && score > 0 {
+			base = score
+		}
 	case "breakout_up", "breakout_down":
 		if base < 60 {
 			base = 60

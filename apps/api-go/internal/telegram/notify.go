@@ -294,6 +294,25 @@ func notifyDetailLine(eventType string, details map[string]interface{}) string {
 	category := notifyEventCategory(eventType)
 	parts := make([]string, 0, 4)
 
+	if eventType == "boll_pump" {
+		if score, ok := detailFloat(details, "score"); ok {
+			parts = append(parts, fmt.Sprintf("强度: %.0f", score))
+		}
+		if volumeRatio, ok := detailFloat(details, "volumeRatio"); ok {
+			parts = append(parts, "量能: "+fmtFactor(volumeRatio))
+		}
+		if bw, ok := detailFloat(details, "bollBandwidth"); ok {
+			parts = append(parts, fmt.Sprintf("带宽: %.4f", bw))
+		}
+		if bounceCount, ok := detailFloat(details, "bounceCount"); ok {
+			parts = append(parts, fmt.Sprintf("反弹: %.0f", bounceCount))
+		}
+		if confluence, ok := detailFloat(details, "confluenceScore"); ok && confluence > 0 {
+			parts = append(parts, fmt.Sprintf("共振: +%.0f", confluence))
+		}
+		return strings.Join(parts, " | ")
+	}
+
 	switch category {
 	case service.TGNotifyCategoryWhaleWall:
 		side := detailString(details, "side")
