@@ -17,6 +17,11 @@ func TestBollPumpSettingsRoundTrip(t *testing.T) {
 	cfg.Timeframes = []string{"15m", "bad", "1m", "15m"}
 	cfg.GainThresholds["15m"] = 0.09
 	cfg.VolumeThresholds["1m"] = 8
+	cfg.TrendCleanBonus = 7
+	cfg.TrendWickPenalty = -35
+	cfg.TrendWeakPenalty = -12
+	cfg.TrendWickBodyMaxRatio = 0.22
+	cfg.TrendEfficiencyMin = 0.41
 
 	saved, err := SaveBollPumpConfig(ctx, store, cfg)
 	if err != nil {
@@ -41,5 +46,20 @@ func TestBollPumpSettingsRoundTrip(t *testing.T) {
 	}
 	if got.VolumeThresholds["1m"] != 8 {
 		t.Fatalf("1m volume = %v, want 8", got.VolumeThresholds["1m"])
+	}
+	if got.TrendCleanBonus != 7 {
+		t.Fatalf("trend clean bonus = %v, want 7", got.TrendCleanBonus)
+	}
+	if got.TrendWickPenalty != -35 {
+		t.Fatalf("trend wick penalty = %v, want -35", got.TrendWickPenalty)
+	}
+	if got.TrendWeakPenalty != -12 {
+		t.Fatalf("trend weak penalty = %v, want -12", got.TrendWeakPenalty)
+	}
+	if got.TrendWickBodyMaxRatio != 0.22 {
+		t.Fatalf("trend wick body max ratio = %v, want 0.22", got.TrendWickBodyMaxRatio)
+	}
+	if got.TrendEfficiencyMin != 0.41 {
+		t.Fatalf("trend efficiency min = %v, want 0.41", got.TrendEfficiencyMin)
 	}
 }

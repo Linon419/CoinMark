@@ -1,6 +1,7 @@
 package service
 
 import (
+	"strings"
 	"testing"
 
 	"coinmark/api-go/internal/model"
@@ -34,6 +35,23 @@ func TestBollPumpWatchTriggerRejectsLargeBearishStart(t *testing.T) {
 	got := EvaluateBollPumpWatch("swap", "XYZUSDT", "15m", bars, ind, 3_000_000, cfg)
 	if got.Triggered {
 		t.Fatalf("Triggered = true, want false")
+	}
+}
+
+func TestBollPumpWatchTrendScorePenalizesWickHeavyStartup(t *testing.T) {
+	cfg := DefaultBollPumpConfig()
+	bars := bollPumpFixtureWickHeavyPump()
+	ind := ComputeBollPumpIndicators(bars, cfg.BollPeriod, cfg.BollStdDev, cfg.ATRPeriod)
+
+	got := EvaluateBollPumpWatch("swap", "XYZUSDT", "15m", bars, ind, 3_000_000, cfg)
+	if !got.Triggered {
+		t.Fatalf("Triggered = false, want true; reasons=%v", got.Reasons)
+	}
+	if got.Signal.Score > 85 {
+		t.Fatalf("score = %.2f, want <= 85 after wick penalty", got.Signal.Score)
+	}
+	if !strings.Contains(got.Signal.Reason, "wick-heavy startup") {
+		t.Fatalf("reason = %q, want wick-heavy startup", got.Signal.Reason)
 	}
 }
 
@@ -149,6 +167,30 @@ func bollPumpFixtureQuietBaseThenPump(tf string) []BollPumpBar {
 			Open:        closePrice - 0.4,
 			High:        closePrice + 0.6,
 			Low:         closePrice - 0.5,
+			Close:       closePrice,
+			Volume:      vol,
+			QuoteVolume: vol * closePrice,
+			Closed:      true,
+		})
+	}
+	return bars
+}
+
+func bollPumpFixtureWickHeavyPump() []BollPumpBar {
+	bars := bollPumpFixtureQuietBaseThenPump("15m")[:120]
+	pumps := []float64{100.8, 101.5, 102.2, 103.0, 104.0, 105.0}
+	for i, closePrice := range pumps {
+		vol := 120.0
+		if i == 2 {
+			vol = 600
+		}
+		idx := len(bars)
+		bars = append(bars, BollPumpBar{
+			OpenTimeMs:  int64(idx) * 60000,
+			CloseTimeMs: int64(idx+1)*60000 - 1,
+			Open:        closePrice - 0.02,
+			High:        closePrice + 2.6,
+			Low:         closePrice - 2.1,
 			Close:       closePrice,
 			Volume:      vol,
 			QuoteVolume: vol * closePrice,

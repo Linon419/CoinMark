@@ -60,6 +60,11 @@ export type BollPumpSettings = {
   watch_trend_check_candles: number;
   watch_trend_max_drawdown_pct: number;
   watch_trend_max_drawdown_atr: number;
+  trend_clean_bonus: number;
+  trend_wick_penalty: number;
+  trend_weak_penalty: number;
+  trend_wick_body_max_ratio: number;
+  trend_efficiency_min: number;
   watch_telegram_threshold: number;
   confirm1_telegram_threshold: number;
   confirm2_telegram_threshold: number;

@@ -38,6 +38,11 @@ function defaultBollPumpSettings(): BollPumpSettings {
     watch_trend_check_candles: 6,
     watch_trend_max_drawdown_pct: 0.01,
     watch_trend_max_drawdown_atr: 0.75,
+    trend_clean_bonus: 10,
+    trend_wick_penalty: -25,
+    trend_weak_penalty: -10,
+    trend_wick_body_max_ratio: 0.35,
+    trend_efficiency_min: 0.3,
     watch_telegram_threshold: 70,
     confirm1_telegram_threshold: 75,
     confirm2_telegram_threshold: 80,
@@ -417,6 +422,26 @@ export default function BollPumpPage() {
               <label>
                 <span>ATR回撤倍数</span>
                 <InputNumber min={0.1} max={5} step={0.05} value={settingsDraft.watch_trend_max_drawdown_atr} onChange={(v) => patchDraft({ watch_trend_max_drawdown_atr: Number(v || 0.75) })} />
+              </label>
+              <label>
+                <span>清晰趋势加分</span>
+                <InputNumber min={0} max={30} step={1} value={settingsDraft.trend_clean_bonus} onChange={(v) => patchDraft({ trend_clean_bonus: Number(v || 0) })} />
+              </label>
+              <label>
+                <span>插针扣分</span>
+                <InputNumber min={-50} max={0} step={1} value={settingsDraft.trend_wick_penalty} onChange={(v) => patchDraft({ trend_wick_penalty: Number(v || 0) })} />
+              </label>
+              <label>
+                <span>弱趋势扣分</span>
+                <InputNumber min={-50} max={0} step={1} value={settingsDraft.trend_weak_penalty} onChange={(v) => patchDraft({ trend_weak_penalty: Number(v || 0) })} />
+              </label>
+              <label>
+                <span>插针实体阈值</span>
+                <InputNumber min={0.05} max={0.8} step={0.05} value={settingsDraft.trend_wick_body_max_ratio} onChange={(v) => patchDraft({ trend_wick_body_max_ratio: Number(v || 0.35) })} />
+              </label>
+              <label>
+                <span>趋势效率下限</span>
+                <InputNumber min={0.05} max={1} step={0.05} value={settingsDraft.trend_efficiency_min} onChange={(v) => patchDraft({ trend_efficiency_min: Number(v || 0.3) })} />
               </label>
             </div>
           </div>

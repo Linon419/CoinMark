@@ -37,6 +37,11 @@ func DefaultBollPumpConfig() BollPumpConfig {
 		WatchTrendCheckCandles:    6,
 		WatchTrendMaxDrawdownPct:  0.01,
 		WatchTrendMaxDrawdownATR:  0.75,
+		TrendCleanBonus:           10,
+		TrendWickPenalty:          -25,
+		TrendWeakPenalty:          -10,
+		TrendWickBodyMaxRatio:     0.35,
+		TrendEfficiencyMin:        0.30,
 		WatchTelegramThreshold:    70,
 		Confirm1TelegramThreshold: 75,
 		Confirm2TelegramThreshold: 80,
@@ -96,13 +101,18 @@ func EvaluateBollPumpWatch(market, symbol, timeframe string, bars []BollPumpBar,
 	}
 
 	backgroundScore, backgroundReasons := bollPumpBackgroundScore(bars, ind, startIdx, cfg)
-	score := 55.0 + 10 + 10 + 10 + 5 + backgroundScore
+	trendScore, trendReasons := bollPumpStartupTrendScore(bars, startIdx, latestIdx, cfg)
+	score := 55.0 + 10 + 10 + 10 + 5 + backgroundScore + trendScore
 	if quoteVolume24h > 0 && quoteVolume24h < cfg.ThinQuoteVolume24h {
 		score -= 15
 		reasons = append(reasons, "thin 24h quote volume")
 	}
 	reasons = append(reasons, "volume-backed pump", fmt.Sprintf("cumulative gain %.2f%%", cumulativeGain*100))
 	reasons = append(reasons, backgroundReasons...)
+	if trendScore != 0 {
+		reasons = append(reasons, fmt.Sprintf("trend score %.0f", trendScore))
+	}
+	reasons = append(reasons, trendReasons...)
 	score = bollPumpScoreCap(score)
 	return BollPumpWatchResult{
 		Triggered:       true,
@@ -126,6 +136,54 @@ func EvaluateBollPumpWatch(market, symbol, timeframe string, bars []BollPumpBar,
 			Details:        model.JSONB(`{}`),
 		},
 	}
+}
+
+func bollPumpStartupTrendScore(bars []BollPumpBar, startIdx, endIdx int, cfg BollPumpConfig) (float64, []string) {
+	if startIdx < 0 || endIdx <= startIdx || endIdx >= len(bars) {
+		return 0, nil
+	}
+	total := endIdx - startIdx + 1
+	path := 0.0
+	rising := 0
+	wickHeavy := 0
+	for i := startIdx; i <= endIdx; i++ {
+		b := bars[i]
+		rng := b.High - b.Low
+		if rng > 0 {
+			bodyRatio := math.Abs(b.Close-b.Open) / rng
+			if bodyRatio <= cfg.TrendWickBodyMaxRatio {
+				wickHeavy++
+			}
+		}
+		if i > startIdx {
+			delta := b.Close - bars[i-1].Close
+			path += math.Abs(delta)
+			if delta > 0 {
+				rising++
+			}
+		}
+	}
+	net := bars[endIdx].Close - bars[startIdx].Close
+	efficiency := 0.0
+	if path > 0 && net > 0 {
+		efficiency = net / path
+	}
+
+	score := 0.0
+	reasons := make([]string, 0, 3)
+	if wickHeavy*2 >= total {
+		score += cfg.TrendWickPenalty
+		reasons = append(reasons, fmt.Sprintf("wick-heavy startup %d/%d", wickHeavy, total))
+	}
+	if efficiency > 0 && efficiency < cfg.TrendEfficiencyMin {
+		score += cfg.TrendWeakPenalty
+		reasons = append(reasons, fmt.Sprintf("low trend efficiency %.2f", efficiency))
+	}
+	if efficiency >= 0.55 && rising*2 >= total-1 && wickHeavy*2 < total {
+		score += cfg.TrendCleanBonus
+		reasons = append(reasons, fmt.Sprintf("clean trend %.2f", efficiency))
+	}
+	return score, reasons
 }
 
 func bollPumpStartupWindow(timeframe string, cfg BollPumpConfig) int {

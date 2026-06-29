@@ -116,6 +116,15 @@ func NormalizeBollPumpConfig(in BollPumpConfig) BollPumpConfig {
 	if in.WatchTrendMaxDrawdownATR > 0 {
 		out.WatchTrendMaxDrawdownATR = clampFloat(in.WatchTrendMaxDrawdownATR, 0.1, 5)
 	}
+	out.TrendCleanBonus = clampFloat(in.TrendCleanBonus, 0, 30)
+	out.TrendWickPenalty = normalizeBollPumpScorePenalty(in.TrendWickPenalty)
+	out.TrendWeakPenalty = normalizeBollPumpScorePenalty(in.TrendWeakPenalty)
+	if in.TrendWickBodyMaxRatio > 0 {
+		out.TrendWickBodyMaxRatio = clampFloat(in.TrendWickBodyMaxRatio, 0.05, 0.8)
+	}
+	if in.TrendEfficiencyMin > 0 {
+		out.TrendEfficiencyMin = clampFloat(in.TrendEfficiencyMin, 0.05, 1)
+	}
 	if in.WatchTelegramThreshold > 0 {
 		out.WatchTelegramThreshold = clampFloat(in.WatchTelegramThreshold, 0, 100)
 	}
@@ -185,6 +194,13 @@ func clampInt(v, min, max int) int {
 		return max
 	}
 	return v
+}
+
+func normalizeBollPumpScorePenalty(v float64) float64 {
+	if v > 0 {
+		v = -v
+	}
+	return clampFloat(v, -50, 0)
 }
 
 func clampFloat(v, min, max float64) float64 {

@@ -65,6 +65,11 @@ type BollPumpConfig struct {
 	WatchTrendCheckCandles    int                `json:"watch_trend_check_candles"`
 	WatchTrendMaxDrawdownPct  float64            `json:"watch_trend_max_drawdown_pct"`
 	WatchTrendMaxDrawdownATR  float64            `json:"watch_trend_max_drawdown_atr"`
+	TrendCleanBonus           float64            `json:"trend_clean_bonus"`
+	TrendWickPenalty          float64            `json:"trend_wick_penalty"`
+	TrendWeakPenalty          float64            `json:"trend_weak_penalty"`
+	TrendWickBodyMaxRatio     float64            `json:"trend_wick_body_max_ratio"`
+	TrendEfficiencyMin        float64            `json:"trend_efficiency_min"`
 	WatchTelegramThreshold    float64            `json:"watch_telegram_threshold"`
 	Confirm1TelegramThreshold float64            `json:"confirm1_telegram_threshold"`
 	Confirm2TelegramThreshold float64            `json:"confirm2_telegram_threshold"`
