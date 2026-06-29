@@ -401,6 +401,9 @@ func AdvanceBollPumpState(state *BollPumpRuntimeState, bars []BollPumpBar, ind [
 			break
 		}
 		if latest.OpenTimeMs > state.PendingPullbackCandleMs && latest.High > state.PendingPullbackHigh {
+			if !bollPumpBounceRecovered(latest, ind[latestIdx]) {
+				break
+			}
 			state.Status = string(BollPumpStatusConfirm1)
 			state.BounceCount = 1
 			state.FirstPullbackLow = state.PendingPullbackLow
@@ -450,6 +453,9 @@ func AdvanceBollPumpState(state *BollPumpRuntimeState, bars []BollPumpBar, ind [
 			break
 		}
 		if latest.OpenTimeMs > state.PendingPullbackCandleMs && latest.High > state.PendingPullbackHigh {
+			if !bollPumpBounceRecovered(latest, ind[latestIdx]) {
+				break
+			}
 			state.Status = string(BollPumpStatusCompleted)
 			state.BounceCount = 2
 			state.SecondPullbackLow = state.PendingPullbackLow
@@ -530,6 +536,10 @@ func bollPumpHasThreeMiddleClosesAfterWatch(state BollPumpRuntimeState, bars []B
 
 func bollPumpIsPullbackCandidate(b BollPumpBar, in BollPumpIndicator) bool {
 	return in.ValidBoll && b.Low <= in.Lower && b.Close > in.Lower
+}
+
+func bollPumpBounceRecovered(b BollPumpBar, in BollPumpIndicator) bool {
+	return in.ValidBoll && b.Close >= in.Middle
 }
 
 func bollPumpPendingInvalid(b BollPumpBar, in BollPumpIndicator) bool {

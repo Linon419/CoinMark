@@ -89,6 +89,25 @@ func TestBollPumpWatchInvalidatesWhenTrendFails(t *testing.T) {
 	}
 }
 
+func TestBollPumpRejectsWeakLowerBandBounce(t *testing.T) {
+	cfg := DefaultBollPumpConfig()
+	bars := bollPumpFixtureWeakLowerBandBounce()
+	ind := ComputeBollPumpIndicators(bars, cfg.BollPeriod, cfg.BollStdDev, cfg.ATRPeriod)
+
+	state := NewBollPumpRuntimeState("swap", "XYZUSDT", "15m")
+	var signals []model.BollPumpSignal
+	for i := 0; i < len(bars); i++ {
+		out := AdvanceBollPumpState(&state, bars[:i+1], ind[:i+1], 3_000_000, cfg)
+		signals = append(signals, out.Signals...)
+	}
+
+	for _, sig := range signals {
+		if sig.SignalLevel == string(BollPumpLevelConfirm1) || sig.SignalLevel == string(BollPumpLevelConfirm2) {
+			t.Fatalf("weak bounce emitted %s, want no confirm", sig.SignalLevel)
+		}
+	}
+}
+
 func TestBollPumpSecondLowInvalidation(t *testing.T) {
 	firstLow := 100.0
 	atr := 2.0
@@ -156,6 +175,38 @@ func bollPumpFixtureWatchThenTwoConfirms() []BollPumpBar {
 		{104.2, 105.0, 103.8, 104.8, 130},
 		{103.8, 104.0, 90.5, 103.0, 140},
 		{103.2, 104.6, 102.9, 104.3, 150},
+	}
+	for _, x := range extra {
+		idx := len(bars)
+		bars = append(bars, BollPumpBar{
+			OpenTimeMs:  int64(idx) * 60000,
+			CloseTimeMs: int64(idx+1)*60000 - 1,
+			Open:        x.open,
+			High:        x.high,
+			Low:         x.low,
+			Close:       x.close,
+			Volume:      x.vol,
+			QuoteVolume: x.vol * x.close,
+			Closed:      true,
+		})
+	}
+	return bars
+}
+
+func bollPumpFixtureWeakLowerBandBounce() []BollPumpBar {
+	bars := bollPumpFixtureQuietBaseThenPump("15m")
+	extra := []struct {
+		open  float64
+		high  float64
+		low   float64
+		close float64
+		vol   float64
+	}{
+		{104.8, 105.3, 104.4, 105.0, 130},
+		{105.0, 105.4, 104.5, 105.1, 125},
+		{105.1, 105.5, 104.7, 105.2, 120},
+		{104.0, 104.0, 90.0, 103.0, 140},
+		{103.2, 104.5, 100.0, 100.5, 150},
 	}
 	for _, x := range extra {
 		idx := len(bars)
