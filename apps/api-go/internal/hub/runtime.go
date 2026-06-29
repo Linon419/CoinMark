@@ -66,6 +66,11 @@ func (rt *Runtime) Start(ctx context.Context) {
 		if rt.cfg.AbsorptionScanEnabled && rt.bn != nil {
 			go rt.absorptionLoop(ctx)
 		}
+		if rt.cfg.BollPumpEnabled && rt.bn != nil {
+			source := service.NewBinanceBollPumpSource(rt.bn, rt.cfg.BollPumpSymbolLimit)
+			scanner := service.NewBollPumpScanner(source, rt.store, service.BollPumpConfigFromRuntime(rt.cfg))
+			go scanner.Run(ctx, rt.stopCh)
+		}
 	}
 
 	// depth fullscan
@@ -225,6 +230,21 @@ func (rt *Runtime) doCleanup(ctx context.Context) {
 	cutoff30d := time.Now().UnixMilli() - 30*24*60*60*1000
 	if _, err := rt.store.DB.ExecContext(ctx, "DELETE FROM anomaly_events WHERE event_time_ms < ?", cutoff30d); err != nil {
 		log.Printf("hub: anomaly cleanup error: %v", err)
+	}
+
+	bollRetentionDays := rt.cfg.BollPumpRetentionDays
+	if bollRetentionDays < 1 {
+		bollRetentionDays = 30
+	}
+	if n, err := service.CleanupBollPumpSignals(ctx, rt.store, bollRetentionDays); err != nil {
+		log.Printf("hub: boll pump cleanup error: %v", err)
+	} else if n > 0 {
+		log.Printf("hub: cleaned %d boll pump signals", n)
+	}
+	if n, err := service.ExpireStaleBollPumpStates(ctx, rt.store, 7); err != nil {
+		log.Printf("hub: boll pump state expire error: %v", err)
+	} else if n > 0 {
+		log.Printf("hub: expired %d stale boll pump states", n)
 	}
 
 	// absorption snapshots
