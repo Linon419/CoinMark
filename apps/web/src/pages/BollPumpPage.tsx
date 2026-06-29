@@ -297,8 +297,7 @@ export default function BollPumpPage() {
         </div>
       </div>
 
-      <Drawer width="80%" visible={open} onCancel={() => setOpen(false)} footer={null} title={detail?.signal ? `${detail.signal.symbol} ${detail.signal.timeframe}` : "BOLL detail"}>
-        <Text className="cm-muted">{detail?.signal?.reason || ""}</Text>
+      <Drawer className="cm-bollDetailDrawer" width="80%" visible={open} onCancel={() => setOpen(false)} footer={null} title={detail?.signal ? `${detail.signal.symbol} ${detail.signal.timeframe}` : "BOLL detail"}>
         <BollPumpChart detail={detail} />
       </Drawer>
 
