@@ -88,6 +88,10 @@ function fmtPrice(v: number) {
   return v.toPrecision(5);
 }
 
+function hasFourHourResistanceBreakout(signal: BollPumpSignal) {
+  return String(signal.reason || "").toLowerCase().includes("4h resistance breakout");
+}
+
 export default function BollPumpPage() {
   const { Title, Text } = Typography;
   const [signals, setSignals] = useState<BollPumpSignal[]>([]);
@@ -199,13 +203,32 @@ export default function BollPumpPage() {
   const signalColumns = useMemo(
     () => [
       { title: "时间", width: 124, render: (_: any, r: BollPumpSignal) => <span className="cm-mono">{fmtTime(r.signal_time_ms)}</span> },
-      { title: "Symbol", dataIndex: "symbol", width: 122, render: (v: string) => <strong className="cm-symbol">{v}</strong> },
+      {
+        title: "Symbol",
+        dataIndex: "symbol",
+        width: 174,
+        render: (v: string, r: BollPumpSignal) => (
+          <span className="cm-bollSymbolCell">
+            <strong className="cm-symbol">{v}</strong>
+            {hasFourHourResistanceBreakout(r) ? (
+              <Tag className="cm-bollBreakoutTag" color="gold">
+                4H突破
+              </Tag>
+            ) : null}
+          </span>
+        ),
+      },
       { title: "周期", dataIndex: "timeframe", width: 70 },
       { title: "等级", width: 108, render: (_: any, r: BollPumpSignal) => <Tag color={levelColor(r.signal_level)}>{r.signal_level}</Tag> },
       { title: "价格", width: 112, align: "right", render: (_: any, r: BollPumpSignal) => <span className="cm-mono">{fmtPrice(Number(r.price || 0))}</span> },
       { title: "量能", width: 92, align: "right", render: (_: any, r: BollPumpSignal) => <span className="cm-mono">{fmtNum(Number(r.volume_ratio || 0))}x</span> },
       { title: "带宽", width: 96, align: "right", render: (_: any, r: BollPumpSignal) => <span className="cm-mono">{fmtNum(Number(r.boll_bandwidth || 0), 4)}</span> },
-      { title: "分数", width: 76, align: "right", render: (_: any, r: BollPumpSignal) => <strong className="cm-mono">{fmtNum(Number(r.priority_score || r.score || 0), 0)}</strong> },
+      {
+        title: "分数",
+        width: 76,
+        align: "right",
+        render: (_: any, r: BollPumpSignal) => <strong className={hasFourHourResistanceBreakout(r) ? "cm-mono cm-bollBreakoutScore" : "cm-mono"}>{fmtNum(Number(r.priority_score || r.score || 0), 0)}</strong>,
+      },
       {
         title: "操作",
         width: 86,
@@ -240,6 +263,7 @@ export default function BollPumpPage() {
 
   const countsByLevel = stats?.countsByLevel || {};
   const countsByTimeframe = stats?.countsByTimeframe || {};
+  const resistanceBreakoutCount = useMemo(() => signals.filter(hasFourHourResistanceBreakout).length, [signals]);
 
   return (
     <div className="cm-page cm-bollPage">
@@ -273,6 +297,7 @@ export default function BollPumpPage() {
           <span className="cm-pill">WATCH {countsByLevel.WATCH || 0}</span>
           <span className="cm-pill">CONFIRM_1 {countsByLevel.CONFIRM_1 || 0}</span>
           <span className="cm-pill">CONFIRM_2 {countsByLevel.CONFIRM_2 || 0}</span>
+          <span className="cm-pill cm-bollBreakoutPill">4h突破 {resistanceBreakoutCount}</span>
           <span className="cm-pill">更新时间 {stats?.generatedAtMs ? new Date(stats.generatedAtMs).toLocaleTimeString() : "-"}</span>
         </Space>
       </div>
@@ -293,7 +318,16 @@ export default function BollPumpPage() {
               最近信号
             </Title>
           </div>
-          <Table className="cm-bollTable" rowKey="id" size="small" columns={signalColumns as any} data={signals as any} pagination={{ pageSize: 20 }} scroll={{ x: 886 }} />
+          <Table
+            className="cm-bollTable"
+            rowKey="id"
+            size="small"
+            columns={signalColumns as any}
+            data={signals as any}
+            pagination={{ pageSize: 20 }}
+            scroll={{ x: 938 }}
+            rowClassName={(record) => (hasFourHourResistanceBreakout(record as BollPumpSignal) ? "cm-bollTableRow--resistanceBreakout" : "")}
+          />
         </div>
         <div className="cm-card cm-bollPanel">
           <div className="cm-sectionHeader">
