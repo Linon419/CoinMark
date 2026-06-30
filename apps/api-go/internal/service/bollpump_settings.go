@@ -140,6 +140,30 @@ func NormalizeBollPumpConfig(in BollPumpConfig) BollPumpConfig {
 	if in.MinimumTrendRisingRatio > 0 {
 		out.MinimumTrendRisingRatio = clampFloat(in.MinimumTrendRisingRatio, 0.1, 1)
 	}
+	if in.ResistanceLookback > 0 {
+		out.ResistanceLookback = clampInt(in.ResistanceLookback, 20, 300)
+	}
+	if in.ResistanceSwingSpan > 0 {
+		out.ResistanceSwingSpan = clampInt(in.ResistanceSwingSpan, 1, 5)
+	}
+	if in.ResistanceClusterATR > 0 {
+		out.ResistanceClusterATR = clampFloat(in.ResistanceClusterATR, 0.1, 3)
+	}
+	if in.ResistanceClusterPct > 0 {
+		out.ResistanceClusterPct = clampFloat(in.ResistanceClusterPct, 0.001, 0.05)
+	}
+	if in.ResistanceBreakoutBufferPct > 0 {
+		out.ResistanceBreakoutBufferPct = clampFloat(in.ResistanceBreakoutBufferPct, 0.001, 0.05)
+	}
+	if in.ResistanceMaxDistancePct > 0 {
+		out.ResistanceMaxDistancePct = clampFloat(in.ResistanceMaxDistancePct, 0.005, 0.2)
+	}
+	if in.ResistanceMinTouches > 0 {
+		out.ResistanceMinTouches = clampInt(in.ResistanceMinTouches, 1, 8)
+	}
+	if in.ResistanceBreakoutScore > 0 {
+		out.ResistanceBreakoutScore = clampFloat(in.ResistanceBreakoutScore, 0, 50)
+	}
 	if in.Resistance4HLookback > 0 {
 		out.Resistance4HLookback = clampInt(in.Resistance4HLookback, 20, 200)
 	}

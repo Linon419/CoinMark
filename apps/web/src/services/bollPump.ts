@@ -76,6 +76,14 @@ export type BollPumpSettings = {
   minimum_trend_gain_pct: number;
   minimum_trend_efficiency_min: number;
   minimum_trend_rising_ratio: number;
+  resistance_lookback: number;
+  resistance_swing_span: number;
+  resistance_cluster_atr: number;
+  resistance_cluster_pct: number;
+  resistance_breakout_buffer_pct: number;
+  resistance_max_distance_pct: number;
+  resistance_min_touches: number;
+  resistance_breakout_score: number;
   resistance_4h_lookback: number;
   resistance_4h_swing_span: number;
   resistance_4h_cluster_atr: number;

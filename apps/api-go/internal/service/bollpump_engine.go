@@ -48,6 +48,14 @@ func DefaultBollPumpConfig() BollPumpConfig {
 		MinimumTrendGainPct:           0.01,
 		MinimumTrendEfficiencyMin:     0.45,
 		MinimumTrendRisingRatio:       0.60,
+		ResistanceLookback:            60,
+		ResistanceSwingSpan:           2,
+		ResistanceClusterATR:          0.5,
+		ResistanceClusterPct:          0.008,
+		ResistanceBreakoutBufferPct:   0.003,
+		ResistanceMaxDistancePct:      0.04,
+		ResistanceMinTouches:          2,
+		ResistanceBreakoutScore:       10,
 		Resistance4HLookback:          60,
 		Resistance4HSwingSpan:         2,
 		Resistance4HClusterATR:        0.5,
@@ -93,6 +101,8 @@ func EvaluateBollPumpWatch(market, symbol, timeframe string, bars []BollPumpBar,
 	middleOK := latest.Close >= latestInd.Middle
 	upperOK := bollPumpUpperProximity(latest, latestInd)
 	expandOK := latestIdx > 0 && ind[latestIdx-1].ValidBoll && latestInd.Bandwidth > ind[latestIdx-1].Bandwidth && latestInd.Middle >= ind[latestIdx-1].Middle && latest.Close >= latestInd.Middle
+	resistanceBreakout := bollPumpCurrentTimeframeResistanceBreakout(timeframe, bars, cfg)
+	resistanceOK := resistanceBreakout.Triggered
 
 	reasons := make([]string, 0, 8)
 	if !gainOK {
@@ -110,18 +120,22 @@ func EvaluateBollPumpWatch(market, symbol, timeframe string, bars []BollPumpBar,
 	if !expandOK {
 		reasons = append(reasons, "boll not expanding upward")
 	}
-	if !gainOK || !volumeOK || !middleOK || !upperOK || !expandOK {
+	if !resistanceOK {
+		reasons = append(reasons, "missing current timeframe resistance breakout")
+	}
+	if !gainOK || !volumeOK || !middleOK || !upperOK || !expandOK || !resistanceOK {
 		return BollPumpWatchResult{Reasons: reasons}
 	}
 
 	backgroundScore, backgroundReasons := bollPumpBackgroundScore(bars, ind, startIdx, cfg)
 	trendScore, trendReasons := bollPumpStartupTrendScore(bars, startIdx, latestIdx, cfg)
-	score := 55.0 + 10 + 10 + 10 + 5 + backgroundScore + trendScore
+	score := 55.0 + 10 + 10 + 10 + cfg.ResistanceBreakoutScore + 5 + backgroundScore + trendScore
 	if quoteVolume24h > 0 && quoteVolume24h < cfg.ThinQuoteVolume24h {
 		score -= 15
 		reasons = append(reasons, "thin 24h quote volume")
 	}
 	reasons = append(reasons, "volume-backed pump", fmt.Sprintf("cumulative gain %.2f%%", cumulativeGain*100))
+	reasons = append(reasons, resistanceBreakout.Reason)
 	reasons = append(reasons, backgroundReasons...)
 	if trendScore != 0 {
 		reasons = append(reasons, fmt.Sprintf("trend score %.0f", trendScore))
@@ -286,11 +300,52 @@ type bollPumpResistanceCluster struct {
 	touches int
 }
 
+type bollPumpResistanceBreakoutParams struct {
+	Label             string
+	Lookback          int
+	SwingSpan         int
+	ClusterATR        float64
+	ClusterPct        float64
+	BreakoutBufferPct float64
+	MaxDistancePct    float64
+	MinTouches        int
+	Bonus             float64
+}
+
 func bollPumpFourHourResistanceBreakout(bars []BollPumpBar, cfg BollPumpConfig) bollPumpResistanceBreakoutResult {
 	cfg = NormalizeBollPumpConfig(cfg)
 	if cfg.Resistance4HBreakoutBonus <= 0 {
 		return bollPumpResistanceBreakoutResult{}
 	}
+	return bollPumpResistanceBreakout(bars, cfg, bollPumpResistanceBreakoutParams{
+		Label:             "4h",
+		Lookback:          cfg.Resistance4HLookback,
+		SwingSpan:         cfg.Resistance4HSwingSpan,
+		ClusterATR:        cfg.Resistance4HClusterATR,
+		ClusterPct:        cfg.Resistance4HClusterPct,
+		BreakoutBufferPct: cfg.Resistance4HBreakoutBufferPct,
+		MaxDistancePct:    cfg.Resistance4HMaxDistancePct,
+		MinTouches:        cfg.Resistance4HMinTouches,
+		Bonus:             cfg.Resistance4HBreakoutBonus,
+	})
+}
+
+func bollPumpCurrentTimeframeResistanceBreakout(timeframe string, bars []BollPumpBar, cfg BollPumpConfig) bollPumpResistanceBreakoutResult {
+	cfg = NormalizeBollPumpConfig(cfg)
+	return bollPumpResistanceBreakout(bars, cfg, bollPumpResistanceBreakoutParams{
+		Label:             timeframe,
+		Lookback:          cfg.ResistanceLookback,
+		SwingSpan:         cfg.ResistanceSwingSpan,
+		ClusterATR:        cfg.ResistanceClusterATR,
+		ClusterPct:        cfg.ResistanceClusterPct,
+		BreakoutBufferPct: cfg.ResistanceBreakoutBufferPct,
+		MaxDistancePct:    cfg.ResistanceMaxDistancePct,
+		MinTouches:        cfg.ResistanceMinTouches,
+		Bonus:             0,
+	})
+}
+
+func bollPumpResistanceBreakout(bars []BollPumpBar, cfg BollPumpConfig, params bollPumpResistanceBreakoutParams) bollPumpResistanceBreakoutResult {
 	closed := make([]BollPumpBar, 0, len(bars))
 	for _, b := range bars {
 		if b.Closed && b.High > 0 && b.Close > 0 {
@@ -303,7 +358,7 @@ func bollPumpFourHourResistanceBreakout(bars []BollPumpBar, cfg BollPumpConfig) 
 		return bollPumpResistanceBreakoutResult{}
 	}
 	price := closed[latestIdx].Close
-	lookback := cfg.Resistance4HLookback
+	lookback := params.Lookback
 	if lookback > prevEnd+1 {
 		lookback = prevEnd + 1
 	}
@@ -311,7 +366,7 @@ func bollPumpFourHourResistanceBreakout(bars []BollPumpBar, cfg BollPumpConfig) 
 	if start < 0 {
 		start = 0
 	}
-	span := cfg.Resistance4HSwingSpan
+	span := params.SwingSpan
 	if start+span > prevEnd-span {
 		return bollPumpResistanceBreakoutResult{}
 	}
@@ -321,7 +376,7 @@ func bollPumpFourHourResistanceBreakout(bars []BollPumpBar, cfg BollPumpConfig) 
 	if latestIdx < len(ind) && ind[latestIdx].ValidATR {
 		atr = ind[latestIdx].ATR14
 	}
-	tolerance := math.Max(atr*cfg.Resistance4HClusterATR, price*cfg.Resistance4HClusterPct)
+	tolerance := math.Max(atr*params.ClusterATR, price*params.ClusterPct)
 	if tolerance <= 0 {
 		return bollPumpResistanceBreakoutResult{}
 	}
@@ -367,15 +422,15 @@ func bollPumpFourHourResistanceBreakout(bars []BollPumpBar, cfg BollPumpConfig) 
 
 	var best bollPumpResistanceBreakoutResult
 	for _, cluster := range clusters {
-		if cluster.touches < cfg.Resistance4HMinTouches || cluster.maxHigh <= 0 {
+		if cluster.touches < params.MinTouches || cluster.maxHigh <= 0 {
 			continue
 		}
-		breakoutLevel := cluster.maxHigh * (1 + cfg.Resistance4HBreakoutBufferPct)
+		breakoutLevel := cluster.maxHigh * (1 + params.BreakoutBufferPct)
 		if price <= breakoutLevel {
 			continue
 		}
 		distance := price/cluster.maxHigh - 1
-		if cfg.Resistance4HMaxDistancePct > 0 && distance > cfg.Resistance4HMaxDistancePct {
+		if params.MaxDistancePct > 0 && distance > params.MaxDistancePct {
 			continue
 		}
 		if !best.Triggered || cluster.maxHigh > best.Resistance {
@@ -384,14 +439,14 @@ func bollPumpFourHourResistanceBreakout(bars []BollPumpBar, cfg BollPumpConfig) 
 				Resistance: cluster.maxHigh,
 				Touches:    cluster.touches,
 				Distance:   distance,
-				Bonus:      cfg.Resistance4HBreakoutBonus,
+				Bonus:      params.Bonus,
 			}
 		}
 	}
 	if !best.Triggered {
 		return bollPumpResistanceBreakoutResult{}
 	}
-	best.Reason = fmt.Sprintf("4h resistance breakout %.6g, touches %d, distance %.2f%%", best.Resistance, best.Touches, best.Distance*100)
+	best.Reason = fmt.Sprintf("%s resistance breakout %.6g, touches %d, distance %.2f%%", strings.TrimSpace(params.Label), best.Resistance, best.Touches, best.Distance*100)
 	return best
 }
 

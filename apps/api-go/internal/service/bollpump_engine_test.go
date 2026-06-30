@@ -9,7 +9,7 @@ import (
 
 func TestBollPumpWatchTriggerScoresQuietBase(t *testing.T) {
 	cfg := DefaultBollPumpConfig()
-	bars := bollPumpFixtureQuietBaseThenPump("15m")
+	bars := bollPumpFixtureQuietBaseThenResistanceBreakout("15m")
 	ind := ComputeBollPumpIndicators(bars, cfg.BollPeriod, cfg.BollStdDev, cfg.ATRPeriod)
 
 	got := EvaluateBollPumpWatch("swap", "XYZUSDT", "15m", bars, ind, 3_000_000, cfg)
@@ -22,11 +22,28 @@ func TestBollPumpWatchTriggerScoresQuietBase(t *testing.T) {
 	if got.Signal.Score <= 100 {
 		t.Fatalf("score = %.2f, want > 100 without score ceiling", got.Signal.Score)
 	}
+	if !strings.Contains(got.Signal.Reason, "15m resistance breakout") {
+		t.Fatalf("reason = %q, want current timeframe resistance breakout", got.Signal.Reason)
+	}
+}
+
+func TestBollPumpWatchRequiresCurrentTimeframeResistanceBreakout(t *testing.T) {
+	cfg := DefaultBollPumpConfig()
+	bars := bollPumpFixtureQuietBaseThenPump("15m")
+	ind := ComputeBollPumpIndicators(bars, cfg.BollPeriod, cfg.BollStdDev, cfg.ATRPeriod)
+
+	got := EvaluateBollPumpWatch("swap", "XYZUSDT", "15m", bars, ind, 3_000_000, cfg)
+	if got.Triggered {
+		t.Fatalf("Triggered = true, want false without current timeframe resistance breakout")
+	}
+	if !strings.Contains(strings.Join(got.Reasons, ","), "current timeframe resistance breakout") {
+		t.Fatalf("reasons = %v, want current timeframe resistance breakout reason", got.Reasons)
+	}
 }
 
 func TestBollPumpWatchTriggerRejectsLargeBearishStart(t *testing.T) {
 	cfg := DefaultBollPumpConfig()
-	bars := bollPumpFixtureQuietBaseThenPump("15m")
+	bars := bollPumpFixtureQuietBaseThenResistanceBreakout("15m")
 	last := len(bars) - 1
 	bars[last].Open = bars[last].High
 	bars[last].Close = bars[last].Low
@@ -40,15 +57,15 @@ func TestBollPumpWatchTriggerRejectsLargeBearishStart(t *testing.T) {
 
 func TestBollPumpWatchTrendScorePenalizesWickHeavyStartup(t *testing.T) {
 	cfg := DefaultBollPumpConfig()
-	bars := bollPumpFixtureWickHeavyPump()
+	bars := bollPumpFixtureWickHeavyResistanceBreakout()
 	ind := ComputeBollPumpIndicators(bars, cfg.BollPeriod, cfg.BollStdDev, cfg.ATRPeriod)
 
 	got := EvaluateBollPumpWatch("swap", "XYZUSDT", "15m", bars, ind, 3_000_000, cfg)
 	if !got.Triggered {
 		t.Fatalf("Triggered = false, want true; reasons=%v", got.Reasons)
 	}
-	if got.Signal.Score > 85 {
-		t.Fatalf("score = %.2f, want <= 85 after wick penalty", got.Signal.Score)
+	if got.Signal.Score > 95 {
+		t.Fatalf("score = %.2f, want <= 95 after wick penalty and resistance breakout score", got.Signal.Score)
 	}
 	if !strings.Contains(got.Signal.Reason, "wick-heavy startup") {
 		t.Fatalf("reason = %q, want wick-heavy startup", got.Signal.Reason)
@@ -164,7 +181,7 @@ func TestBollPumpConfirmFlowWaitsUntilBreaksPullbackHigh(t *testing.T) {
 
 func TestBollPumpWatchInvalidatesWhenTrendFails(t *testing.T) {
 	cfg := DefaultBollPumpConfig()
-	bars := bollPumpFixtureQuietBaseThenPump("15m")
+	bars := bollPumpFixtureQuietBaseThenResistanceBreakout("15m")
 	for _, closePrice := range []float64{104.0, 103.4, 102.8, 102.2, 101.8, 101.4, 101.0} {
 		idx := len(bars)
 		bars = append(bars, BollPumpBar{
@@ -303,6 +320,14 @@ func bollPumpFixtureQuietBaseThenPump(tf string) []BollPumpBar {
 	return bars
 }
 
+func bollPumpFixtureQuietBaseThenResistanceBreakout(tf string) []BollPumpBar {
+	bars := bollPumpFixtureQuietBaseThenPump(tf)
+	for _, i := range []int{75, 100, 115} {
+		bars[i].High = 101.1
+	}
+	return bars
+}
+
 func bollPumpFixtureWickHeavyPump() []BollPumpBar {
 	bars := bollPumpFixtureQuietBaseThenPump("15m")[:120]
 	pumps := []float64{100.8, 101.5, 102.2, 103.0, 104.0, 105.0}
@@ -327,8 +352,16 @@ func bollPumpFixtureWickHeavyPump() []BollPumpBar {
 	return bars
 }
 
+func bollPumpFixtureWickHeavyResistanceBreakout() []BollPumpBar {
+	bars := bollPumpFixtureWickHeavyPump()
+	for _, i := range []int{75, 100, 115} {
+		bars[i].High = 101.1
+	}
+	return bars
+}
+
 func bollPumpFixtureWatchThenTwoConfirms() []BollPumpBar {
-	bars := bollPumpFixtureQuietBaseThenPump("15m")
+	bars := bollPumpFixtureQuietBaseThenResistanceBreakout("15m")
 	extra := []struct {
 		open  float64
 		high  float64
@@ -363,7 +396,7 @@ func bollPumpFixtureWatchThenTwoConfirms() []BollPumpBar {
 }
 
 func bollPumpFixtureWeakLowerBandBounce() []BollPumpBar {
-	bars := bollPumpFixtureQuietBaseThenPump("15m")
+	bars := bollPumpFixtureQuietBaseThenResistanceBreakout("15m")
 	extra := []struct {
 		open  float64
 		high  float64

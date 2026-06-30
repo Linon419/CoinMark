@@ -27,6 +27,14 @@ func TestBollPumpSettingsRoundTrip(t *testing.T) {
 	cfg.MinimumTrendGainPct = 0.02
 	cfg.MinimumTrendEfficiencyMin = 0.55
 	cfg.MinimumTrendRisingRatio = 0.7
+	cfg.ResistanceLookback = 90
+	cfg.ResistanceSwingSpan = 3
+	cfg.ResistanceClusterATR = 0.6
+	cfg.ResistanceClusterPct = 0.009
+	cfg.ResistanceBreakoutBufferPct = 0.005
+	cfg.ResistanceMaxDistancePct = 0.06
+	cfg.ResistanceMinTouches = 4
+	cfg.ResistanceBreakoutScore = 12
 	cfg.Resistance4HLookback = 72
 	cfg.Resistance4HSwingSpan = 3
 	cfg.Resistance4HClusterATR = 0.7
@@ -89,6 +97,30 @@ func TestBollPumpSettingsRoundTrip(t *testing.T) {
 	}
 	if got.MinimumTrendRisingRatio != 0.7 {
 		t.Fatalf("minimum trend rising ratio = %v, want 0.7", got.MinimumTrendRisingRatio)
+	}
+	if got.ResistanceLookback != 90 {
+		t.Fatalf("resistance lookback = %d, want 90", got.ResistanceLookback)
+	}
+	if got.ResistanceSwingSpan != 3 {
+		t.Fatalf("resistance swing span = %d, want 3", got.ResistanceSwingSpan)
+	}
+	if got.ResistanceClusterATR != 0.6 {
+		t.Fatalf("resistance cluster atr = %v, want 0.6", got.ResistanceClusterATR)
+	}
+	if got.ResistanceClusterPct != 0.009 {
+		t.Fatalf("resistance cluster pct = %v, want 0.009", got.ResistanceClusterPct)
+	}
+	if got.ResistanceBreakoutBufferPct != 0.005 {
+		t.Fatalf("resistance breakout buffer = %v, want 0.005", got.ResistanceBreakoutBufferPct)
+	}
+	if got.ResistanceMaxDistancePct != 0.06 {
+		t.Fatalf("resistance max distance = %v, want 0.06", got.ResistanceMaxDistancePct)
+	}
+	if got.ResistanceMinTouches != 4 {
+		t.Fatalf("resistance min touches = %d, want 4", got.ResistanceMinTouches)
+	}
+	if got.ResistanceBreakoutScore != 12 {
+		t.Fatalf("resistance breakout score = %v, want 12", got.ResistanceBreakoutScore)
 	}
 	if got.Resistance4HLookback != 72 {
 		t.Fatalf("4h lookback = %d, want 72", got.Resistance4HLookback)

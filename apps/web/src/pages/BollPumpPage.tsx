@@ -53,6 +53,14 @@ function defaultBollPumpSettings(): BollPumpSettings {
     minimum_trend_gain_pct: 0.01,
     minimum_trend_efficiency_min: 0.45,
     minimum_trend_rising_ratio: 0.6,
+    resistance_lookback: 60,
+    resistance_swing_span: 2,
+    resistance_cluster_atr: 0.5,
+    resistance_cluster_pct: 0.008,
+    resistance_breakout_buffer_pct: 0.003,
+    resistance_max_distance_pct: 0.04,
+    resistance_min_touches: 2,
+    resistance_breakout_score: 10,
     resistance_4h_lookback: 60,
     resistance_4h_swing_span: 2,
     resistance_4h_cluster_atr: 0.5,
@@ -620,6 +628,64 @@ export default function BollPumpPage() {
                   value={Number((settingsDraft.minimum_trend_rising_ratio * 100).toFixed(0))}
                   onChange={(v) => patchDraft({ minimum_trend_rising_ratio: Number(v || 60) / 100 })}
                 />
+              </label>
+            </div>
+          </div>
+
+          <div className="cm-bollSettingsBlock">
+            <Title heading={6} style={{ margin: 0 }}>
+              当前周期箱体阻力
+            </Title>
+            <div className="cm-bollSettingsGrid">
+              <label>
+                <span>回看K数</span>
+                <InputNumber min={20} max={300} value={settingsDraft.resistance_lookback} onChange={(v) => patchDraft({ resistance_lookback: Number(v || 60) })} />
+              </label>
+              <label>
+                <span>Swing跨度</span>
+                <InputNumber min={1} max={5} value={settingsDraft.resistance_swing_span} onChange={(v) => patchDraft({ resistance_swing_span: Number(v || 2) })} />
+              </label>
+              <label>
+                <span>聚类ATR倍数</span>
+                <InputNumber min={0.1} max={3} step={0.1} value={settingsDraft.resistance_cluster_atr} onChange={(v) => patchDraft({ resistance_cluster_atr: Number(v || 0.5) })} />
+              </label>
+              <label>
+                <span>聚类价格%</span>
+                <InputNumber
+                  min={0.1}
+                  max={5}
+                  step={0.1}
+                  value={Number((settingsDraft.resistance_cluster_pct * 100).toFixed(2))}
+                  onChange={(v) => patchDraft({ resistance_cluster_pct: Number(v || 0.8) / 100 })}
+                />
+              </label>
+              <label>
+                <span>突破缓冲%</span>
+                <InputNumber
+                  min={0.1}
+                  max={5}
+                  step={0.1}
+                  value={Number((settingsDraft.resistance_breakout_buffer_pct * 100).toFixed(2))}
+                  onChange={(v) => patchDraft({ resistance_breakout_buffer_pct: Number(v || 0.3) / 100 })}
+                />
+              </label>
+              <label>
+                <span>最大距离%</span>
+                <InputNumber
+                  min={0.5}
+                  max={20}
+                  step={0.5}
+                  value={Number((settingsDraft.resistance_max_distance_pct * 100).toFixed(2))}
+                  onChange={(v) => patchDraft({ resistance_max_distance_pct: Number(v || 4) / 100 })}
+                />
+              </label>
+              <label>
+                <span>最少触碰数</span>
+                <InputNumber min={1} max={8} value={settingsDraft.resistance_min_touches} onChange={(v) => patchDraft({ resistance_min_touches: Number(v || 2) })} />
+              </label>
+              <label>
+                <span>突破得分</span>
+                <InputNumber min={1} max={50} value={settingsDraft.resistance_breakout_score} onChange={(v) => patchDraft({ resistance_breakout_score: Number(v || 10) })} />
               </label>
             </div>
           </div>

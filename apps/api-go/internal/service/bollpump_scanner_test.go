@@ -40,7 +40,7 @@ func TestBollPumpScannerScansOneTimeframe(t *testing.T) {
 	cfg := DefaultBollPumpConfig()
 	cfg.Timeframes = []string{"15m"}
 	source := &fakeBollPumpSource{
-		bars:  map[string][]BollPumpBar{"15m": bollPumpFixtureQuietBaseThenPump("15m")},
+		bars:  map[string][]BollPumpBar{"15m": bollPumpFixtureQuietBaseThenResistanceBreakout("15m")},
 		quote: map[string]float64{"XYZUSDT": 3_000_000},
 	}
 	scanner := NewBollPumpScanner(source, nil, cfg)
@@ -63,7 +63,7 @@ func TestBollPumpScannerUsesRuntimeSymbolLimit(t *testing.T) {
 		BollPumpScanTimeoutSec: 7,
 	})
 	source := &fakeBollPumpSource{
-		bars:  map[string][]BollPumpBar{"15m": bollPumpFixtureQuietBaseThenPump("15m")},
+		bars:  map[string][]BollPumpBar{"15m": bollPumpFixtureQuietBaseThenResistanceBreakout("15m")},
 		quote: map[string]float64{"XYZUSDT": 3_000_000},
 	}
 	scanner := NewBollPumpScanner(source, nil, cfg)
@@ -88,7 +88,7 @@ func TestBollPumpScannerRefreshesSavedSettings(t *testing.T) {
 		t.Fatalf("save settings: %v", err)
 	}
 	source := &fakeBollPumpSource{
-		bars:  map[string][]BollPumpBar{"15m": bollPumpFixtureQuietBaseThenPump("15m")},
+		bars:  map[string][]BollPumpBar{"15m": bollPumpFixtureQuietBaseThenResistanceBreakout("15m")},
 		quote: map[string]float64{"XYZUSDT": 3_000_000},
 	}
 	scanner := NewBollPumpScanner(source, store, DefaultBollPumpConfig())
@@ -104,7 +104,7 @@ func TestBollPumpScannerOnlyScansUSDTSymbols(t *testing.T) {
 	cfg.Timeframes = []string{"15m"}
 	source := &fakeBollPumpSource{
 		symbols: []string{"XYZUSDT", "ABCUSDC", "USDCUSDT"},
-		bars:    map[string][]BollPumpBar{"15m": bollPumpFixtureQuietBaseThenPump("15m")},
+		bars:    map[string][]BollPumpBar{"15m": bollPumpFixtureQuietBaseThenResistanceBreakout("15m")},
 		quote:   map[string]float64{"XYZUSDT": 3_000_000},
 	}
 	scanner := NewBollPumpScanner(source, nil, cfg)
@@ -299,7 +299,7 @@ func TestBollPumpScannerReplaysActiveStateWithCurrentRules(t *testing.T) {
 }
 
 func bollPumpFixtureUntilFirstWatch(tf string, cfg BollPumpConfig) []BollPumpBar {
-	bars := bollPumpFixtureQuietBaseThenPump(tf)
+	bars := bollPumpFixtureQuietBaseThenResistanceBreakout(tf)
 	for i := range bars {
 		if i < cfg.BollPeriod {
 			continue

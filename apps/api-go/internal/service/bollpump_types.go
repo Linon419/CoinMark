@@ -75,6 +75,14 @@ type BollPumpConfig struct {
 	MinimumTrendGainPct           float64            `json:"minimum_trend_gain_pct"`
 	MinimumTrendEfficiencyMin     float64            `json:"minimum_trend_efficiency_min"`
 	MinimumTrendRisingRatio       float64            `json:"minimum_trend_rising_ratio"`
+	ResistanceLookback            int                `json:"resistance_lookback"`
+	ResistanceSwingSpan           int                `json:"resistance_swing_span"`
+	ResistanceClusterATR          float64            `json:"resistance_cluster_atr"`
+	ResistanceClusterPct          float64            `json:"resistance_cluster_pct"`
+	ResistanceBreakoutBufferPct   float64            `json:"resistance_breakout_buffer_pct"`
+	ResistanceMaxDistancePct      float64            `json:"resistance_max_distance_pct"`
+	ResistanceMinTouches          int                `json:"resistance_min_touches"`
+	ResistanceBreakoutScore       float64            `json:"resistance_breakout_score"`
 	Resistance4HLookback          int                `json:"resistance_4h_lookback"`
 	Resistance4HSwingSpan         int                `json:"resistance_4h_swing_span"`
 	Resistance4HClusterATR        float64            `json:"resistance_4h_cluster_atr"`
