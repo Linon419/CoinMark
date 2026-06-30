@@ -95,13 +95,20 @@ func TestBollPumpStartupTrendScoreOnlyPenalizesWicks(t *testing.T) {
 
 func TestBollPumpMinimumTrendRequiresClearFifteenMinuteUptrend(t *testing.T) {
 	cfg := DefaultBollPumpConfig()
-	clear := bollPumpFixtureClearTrend(100, 8)
+	if cfg.MinimumTrendCheckCandles != 20 {
+		t.Fatalf("minimum trend candles = %d, want 20", cfg.MinimumTrendCheckCandles)
+	}
+
+	clear := bollPumpFixtureClearTrend(100, 45)
 	got := bollPumpMinimumTrendGate(clear, cfg)
 	if !got.Pass {
 		t.Fatalf("clear trend pass = false, reason=%q", got.Reason)
 	}
+	if !strings.Contains(got.Reason, "middle slope") {
+		t.Fatalf("reason = %q, want middle slope context", got.Reason)
+	}
 
-	choppy := bollPumpFixtureChoppyTrend(100, 8)
+	choppy := bollPumpFixtureChoppyTrend(100, 45)
 	got = bollPumpMinimumTrendGate(choppy, cfg)
 	if got.Pass {
 		t.Fatalf("choppy trend pass = true, want false")
@@ -111,26 +118,40 @@ func TestBollPumpMinimumTrendRequiresClearFifteenMinuteUptrend(t *testing.T) {
 	}
 }
 
-func TestBollPumpMinimumTrendIgnoresEfficiency(t *testing.T) {
+func TestBollPumpMinimumTrendUsesBollMiddleSlope(t *testing.T) {
 	cfg := DefaultBollPumpConfig()
-	bars := []BollPumpBar{
-		{Open: 0.0002008, High: 0.0002081, Low: 0.0002004, Close: 0.0002068, Closed: true},
-		{Open: 0.0002069, High: 0.0002152, Low: 0.0002068, Close: 0.0002147, Closed: true},
-		{Open: 0.0002149, High: 0.0002178, Low: 0.0002120, Close: 0.0002159, Closed: true},
-		{Open: 0.0002157, High: 0.0002193, Low: 0.0002127, Close: 0.0002167, Closed: true},
-		{Open: 0.0002167, High: 0.0002271, Low: 0.0002130, Close: 0.0002243, Closed: true},
-		{Open: 0.0002243, High: 0.0002304, Low: 0.0002212, Close: 0.0002278, Closed: true},
-		{Open: 0.0002279, High: 0.0002311, Low: 0.0002080, Close: 0.0002153, Closed: true},
-		{Open: 0.0002153, High: 0.0002240, Low: 0.0002152, Close: 0.0002218, Closed: true},
+	bars := make([]BollPumpBar, 0, 45)
+	for i := 0; i < 45; i++ {
+		closePrice := 100 + float64(i)*0.45
+		if i == 42 {
+			closePrice -= 2.8
+		}
+		if i == 43 {
+			closePrice -= 2.2
+		}
+		if i == 44 {
+			closePrice -= 1.6
+		}
+		bars = append(bars, BollPumpBar{
+			OpenTimeMs:  int64(i) * 15 * 60 * 1000,
+			CloseTimeMs: int64(i+1)*15*60*1000 - 1,
+			Open:        closePrice - 0.2,
+			High:        closePrice + 0.5,
+			Low:         closePrice - 0.8,
+			Close:       closePrice,
+			Volume:      100 + float64(i),
+			QuoteVolume: (100 + float64(i)) * closePrice,
+			Closed:      true,
+		})
 	}
 
 	got := bollPumpMinimumTrendGate(bars, cfg)
 
 	if !got.Pass {
-		t.Fatalf("trend pass = false, want true when gain/rising/wick pass despite low efficiency; reason=%q", got.Reason)
+		t.Fatalf("trend pass = false, want true while BOLL middle keeps rising; reason=%q", got.Reason)
 	}
-	if !strings.Contains(got.Reason, "efficiency 0.37") {
-		t.Fatalf("reason = %q, want efficiency kept for diagnostics", got.Reason)
+	if strings.Contains(got.Reason, "efficiency") {
+		t.Fatalf("reason = %q, want no close-path efficiency diagnostic", got.Reason)
 	}
 }
 

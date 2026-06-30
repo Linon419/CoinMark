@@ -39,6 +39,9 @@ func (f *fakeBollPumpSource) QuoteVolume24h(ctx context.Context, market, symbol 
 func TestBollPumpScannerScansOneTimeframe(t *testing.T) {
 	cfg := DefaultBollPumpConfig()
 	cfg.Timeframes = []string{"15m"}
+	cfg.MinimumTrendCheckCandles = 3
+	cfg.MinimumTrendGainPct = 0.001
+	cfg.MinimumTrendRisingRatio = 0.1
 	source := &fakeBollPumpSource{
 		bars:  map[string][]BollPumpBar{"15m": bollPumpFixtureQuietBaseThenResistanceBreakout("15m")},
 		quote: map[string]float64{"XYZUSDT": 3_000_000},
@@ -128,6 +131,9 @@ func TestBollPumpScannerAddsFourHourResistanceBreakoutScore(t *testing.T) {
 	cfg := DefaultBollPumpConfig()
 	cfg.Timeframes = []string{"15m"}
 	cfg.Resistance4HBreakoutBonus = 15
+	cfg.MinimumTrendCheckCandles = 3
+	cfg.MinimumTrendGainPct = 0.001
+	cfg.MinimumTrendRisingRatio = 0.1
 	signalBars := bollPumpFixtureUntilFirstWatch("15m", cfg)
 	source := &fakeBollPumpSource{
 		bars: map[string][]BollPumpBar{

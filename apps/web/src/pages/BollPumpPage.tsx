@@ -49,7 +49,7 @@ function defaultBollPumpSettings(): BollPumpSettings {
     trend_wick_body_max_ratio: 0.35,
     trend_efficiency_min: 0.3,
     minimum_trend_timeframe: "15m",
-    minimum_trend_check_candles: 8,
+    minimum_trend_check_candles: 20,
     minimum_trend_gain_pct: 0.01,
     minimum_trend_efficiency_min: 0.45,
     minimum_trend_rising_ratio: 0.6,
@@ -602,11 +602,11 @@ export default function BollPumpPage() {
                 </Select>
               </label>
               <label>
-                <span>最小趋势K数</span>
-                <InputNumber min={3} max={40} value={settingsDraft.minimum_trend_check_candles} onChange={(v) => patchDraft({ minimum_trend_check_candles: Number(v || 8) })} />
+                <span>中轨趋势K数</span>
+                <InputNumber min={3} max={40} value={settingsDraft.minimum_trend_check_candles} onChange={(v) => patchDraft({ minimum_trend_check_candles: Number(v || 20) })} />
               </label>
               <label>
-                <span>最小趋势涨幅%</span>
+                <span>中轨涨幅%</span>
                 <InputNumber
                   min={0.1}
                   max={20}
@@ -616,7 +616,7 @@ export default function BollPumpPage() {
                 />
               </label>
               <label>
-                <span>收涨比例</span>
+                <span>中轨上升比例</span>
                 <InputNumber
                   min={10}
                   max={100}
