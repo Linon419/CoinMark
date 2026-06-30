@@ -125,6 +125,30 @@ func NormalizeBollPumpConfig(in BollPumpConfig) BollPumpConfig {
 	if in.TrendEfficiencyMin > 0 {
 		out.TrendEfficiencyMin = clampFloat(in.TrendEfficiencyMin, 0.05, 1)
 	}
+	if in.Resistance4HLookback > 0 {
+		out.Resistance4HLookback = clampInt(in.Resistance4HLookback, 20, 200)
+	}
+	if in.Resistance4HSwingSpan > 0 {
+		out.Resistance4HSwingSpan = clampInt(in.Resistance4HSwingSpan, 1, 5)
+	}
+	if in.Resistance4HClusterATR > 0 {
+		out.Resistance4HClusterATR = clampFloat(in.Resistance4HClusterATR, 0.1, 3)
+	}
+	if in.Resistance4HClusterPct > 0 {
+		out.Resistance4HClusterPct = clampFloat(in.Resistance4HClusterPct, 0.001, 0.05)
+	}
+	if in.Resistance4HBreakoutBufferPct > 0 {
+		out.Resistance4HBreakoutBufferPct = clampFloat(in.Resistance4HBreakoutBufferPct, 0.001, 0.05)
+	}
+	if in.Resistance4HMaxDistancePct > 0 {
+		out.Resistance4HMaxDistancePct = clampFloat(in.Resistance4HMaxDistancePct, 0.005, 0.2)
+	}
+	if in.Resistance4HMinTouches > 0 {
+		out.Resistance4HMinTouches = clampInt(in.Resistance4HMinTouches, 1, 6)
+	}
+	if in.Resistance4HBreakoutBonus > 0 {
+		out.Resistance4HBreakoutBonus = clampFloat(in.Resistance4HBreakoutBonus, 0, 50)
+	}
 	if in.WatchTelegramThreshold > 0 {
 		out.WatchTelegramThreshold = clampFloat(in.WatchTelegramThreshold, 0, 100)
 	}

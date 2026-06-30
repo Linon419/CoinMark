@@ -65,6 +65,14 @@ export type BollPumpSettings = {
   trend_weak_penalty: number;
   trend_wick_body_max_ratio: number;
   trend_efficiency_min: number;
+  resistance_4h_lookback: number;
+  resistance_4h_swing_span: number;
+  resistance_4h_cluster_atr: number;
+  resistance_4h_cluster_pct: number;
+  resistance_4h_breakout_buffer_pct: number;
+  resistance_4h_max_distance_pct: number;
+  resistance_4h_min_touches: number;
+  resistance_4h_breakout_bonus: number;
   watch_telegram_threshold: number;
   confirm1_telegram_threshold: number;
   confirm2_telegram_threshold: number;

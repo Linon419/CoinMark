@@ -76,6 +76,45 @@ func TestBollPumpStartupTrendScoreOnlyPenalizesWicks(t *testing.T) {
 	}
 }
 
+func TestBollPumpFourHourResistanceBreakoutFindsKeySwingCluster(t *testing.T) {
+	cfg := DefaultBollPumpConfig()
+	cfg.Resistance4HLookback = 40
+	cfg.Resistance4HMinTouches = 2
+	cfg.Resistance4HBreakoutBufferPct = 0.003
+	cfg.Resistance4HMaxDistancePct = 0.04
+	cfg.Resistance4HBreakoutBonus = 15
+
+	got := bollPumpFourHourResistanceBreakout(bollPumpFixtureFourHourResistanceBreakout(), cfg)
+	if !got.Triggered {
+		t.Fatalf("Triggered = false, want true")
+	}
+	if got.Touches < 2 {
+		t.Fatalf("touches = %d, want >= 2", got.Touches)
+	}
+	if got.Bonus != 15 {
+		t.Fatalf("bonus = %.2f, want 15", got.Bonus)
+	}
+	if !strings.Contains(got.Reason, "4h resistance breakout") {
+		t.Fatalf("reason = %q, want 4h resistance breakout", got.Reason)
+	}
+}
+
+func TestBollPumpFourHourResistanceBreakoutRequiresCloseAboveBuffer(t *testing.T) {
+	cfg := DefaultBollPumpConfig()
+	cfg.Resistance4HLookback = 40
+	cfg.Resistance4HMinTouches = 2
+	cfg.Resistance4HBreakoutBufferPct = 0.01
+	cfg.Resistance4HMaxDistancePct = 0.005
+	cfg.Resistance4HBreakoutBonus = 15
+	bars := bollPumpFixtureFourHourResistanceBreakout()
+	bars[len(bars)-1].Close = 106.8
+
+	got := bollPumpFourHourResistanceBreakout(bars, cfg)
+	if got.Triggered {
+		t.Fatalf("Triggered = true, want false")
+	}
+}
+
 func TestBollPumpConfirmFlowWaitsUntilBreaksPullbackHigh(t *testing.T) {
 	cfg := DefaultBollPumpConfig()
 	bars := bollPumpFixtureWatchThenTwoConfirms()
@@ -288,6 +327,43 @@ func bollPumpFixtureWeakLowerBandBounce() []BollPumpBar {
 			Close:       x.close,
 			Volume:      x.vol,
 			QuoteVolume: x.vol * x.close,
+			Closed:      true,
+		})
+	}
+	return bars
+}
+
+func bollPumpFixtureFourHourResistanceBreakout() []BollPumpBar {
+	bars := make([]BollPumpBar, 0, 70)
+	closes := []float64{
+		95, 96, 97, 98, 99, 104, 100, 98, 97, 99,
+		101, 103, 100, 98, 96, 97, 99, 102, 105, 101,
+		99, 98, 100, 102, 104, 101, 99, 100, 102, 103,
+		101, 100, 102, 104, 103, 102, 104, 106, 107, 109.2,
+	}
+	for i, closePrice := range closes {
+		high := closePrice + 0.6
+		if i == 5 {
+			high = 106.2
+		}
+		if i == 18 {
+			high = 106.5
+		}
+		if i == 24 {
+			high = 106.3
+		}
+		if i == len(closes)-1 {
+			high = 110.0
+		}
+		bars = append(bars, BollPumpBar{
+			OpenTimeMs:  int64(i) * 4 * 60 * 60 * 1000,
+			CloseTimeMs: int64(i+1)*4*60*60*1000 - 1,
+			Open:        closePrice - 0.3,
+			High:        high,
+			Low:         closePrice - 0.8,
+			Close:       closePrice,
+			Volume:      1000 + float64(i),
+			QuoteVolume: (1000 + float64(i)) * closePrice,
 			Closed:      true,
 		})
 	}

@@ -3,6 +3,7 @@ package service
 import (
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -28,25 +29,33 @@ func DefaultBollPumpConfig() BollPumpConfig {
 		VolumeThresholds: map[string]float64{
 			"1m": 5.0, "3m": 3.0, "5m": 2.5, "15m": 2.0, "30m": 1.8, "1h": 1.5,
 		},
-		BackgroundLookback:        80,
-		BackgroundRecentWindow:    10,
-		BackgroundRecentMinPass:   7,
-		LowVolumeFactor:           0.8,
-		MiddleNearBandwidthFactor: 0.35,
-		ThinQuoteVolume24h:        2_000_000,
-		WatchTrendCheckCandles:    6,
-		WatchTrendMaxDrawdownPct:  0.01,
-		WatchTrendMaxDrawdownATR:  0.75,
-		TrendCleanBonus:           10,
-		TrendWickPenalty:          -25,
-		TrendWeakPenalty:          0,
-		TrendWickBodyMaxRatio:     0.35,
-		TrendEfficiencyMin:        0.30,
-		WatchTelegramThreshold:    70,
-		Confirm1TelegramThreshold: 75,
-		Confirm2TelegramThreshold: 80,
-		ConfluenceWindowMs:        10 * 60 * 1000,
-		StageExpiryCandles:        60,
+		BackgroundLookback:            80,
+		BackgroundRecentWindow:        10,
+		BackgroundRecentMinPass:       7,
+		LowVolumeFactor:               0.8,
+		MiddleNearBandwidthFactor:     0.35,
+		ThinQuoteVolume24h:            2_000_000,
+		WatchTrendCheckCandles:        6,
+		WatchTrendMaxDrawdownPct:      0.01,
+		WatchTrendMaxDrawdownATR:      0.75,
+		TrendCleanBonus:               10,
+		TrendWickPenalty:              -25,
+		TrendWeakPenalty:              0,
+		TrendWickBodyMaxRatio:         0.35,
+		TrendEfficiencyMin:            0.30,
+		Resistance4HLookback:          60,
+		Resistance4HSwingSpan:         2,
+		Resistance4HClusterATR:        0.5,
+		Resistance4HClusterPct:        0.008,
+		Resistance4HBreakoutBufferPct: 0.003,
+		Resistance4HMaxDistancePct:    0.04,
+		Resistance4HMinTouches:        2,
+		Resistance4HBreakoutBonus:     15,
+		WatchTelegramThreshold:        70,
+		Confirm1TelegramThreshold:     75,
+		Confirm2TelegramThreshold:     80,
+		ConfluenceWindowMs:            10 * 60 * 1000,
+		StageExpiryCandles:            60,
 	}
 }
 
@@ -180,6 +189,131 @@ func bollPumpStartupTrendScore(bars []BollPumpBar, startIdx, endIdx int, cfg Bol
 		reasons = append(reasons, fmt.Sprintf("clean trend %.2f", efficiency))
 	}
 	return score, reasons
+}
+
+type bollPumpResistanceBreakoutResult struct {
+	Triggered  bool
+	Resistance float64
+	Touches    int
+	Distance   float64
+	Bonus      float64
+	Reason     string
+}
+
+type bollPumpResistanceCluster struct {
+	sum     float64
+	avg     float64
+	maxHigh float64
+	touches int
+}
+
+func bollPumpFourHourResistanceBreakout(bars []BollPumpBar, cfg BollPumpConfig) bollPumpResistanceBreakoutResult {
+	cfg = NormalizeBollPumpConfig(cfg)
+	if cfg.Resistance4HBreakoutBonus <= 0 {
+		return bollPumpResistanceBreakoutResult{}
+	}
+	closed := make([]BollPumpBar, 0, len(bars))
+	for _, b := range bars {
+		if b.Closed && b.High > 0 && b.Close > 0 {
+			closed = append(closed, b)
+		}
+	}
+	latestIdx := len(closed) - 1
+	prevEnd := latestIdx - 1
+	if prevEnd <= 0 {
+		return bollPumpResistanceBreakoutResult{}
+	}
+	price := closed[latestIdx].Close
+	lookback := cfg.Resistance4HLookback
+	if lookback > prevEnd+1 {
+		lookback = prevEnd + 1
+	}
+	start := prevEnd - lookback + 1
+	if start < 0 {
+		start = 0
+	}
+	span := cfg.Resistance4HSwingSpan
+	if start+span > prevEnd-span {
+		return bollPumpResistanceBreakoutResult{}
+	}
+
+	ind := ComputeBollPumpIndicators(closed, cfg.BollPeriod, cfg.BollStdDev, cfg.ATRPeriod)
+	atr := 0.0
+	if latestIdx < len(ind) && ind[latestIdx].ValidATR {
+		atr = ind[latestIdx].ATR14
+	}
+	tolerance := math.Max(atr*cfg.Resistance4HClusterATR, price*cfg.Resistance4HClusterPct)
+	if tolerance <= 0 {
+		return bollPumpResistanceBreakoutResult{}
+	}
+
+	highs := make([]float64, 0, lookback)
+	for i := start + span; i <= prevEnd-span; i++ {
+		high := closed[i].High
+		isSwing := true
+		for j := i - span; j <= i+span; j++ {
+			if j != i && closed[j].High >= high {
+				isSwing = false
+				break
+			}
+		}
+		if isSwing {
+			highs = append(highs, high)
+		}
+	}
+	if len(highs) == 0 {
+		return bollPumpResistanceBreakoutResult{}
+	}
+	sort.Float64s(highs)
+
+	clusters := make([]bollPumpResistanceCluster, 0, len(highs))
+	for _, high := range highs {
+		placed := false
+		for i := range clusters {
+			if math.Abs(high-clusters[i].avg) <= tolerance {
+				clusters[i].sum += high
+				clusters[i].touches++
+				clusters[i].avg = clusters[i].sum / float64(clusters[i].touches)
+				if high > clusters[i].maxHigh {
+					clusters[i].maxHigh = high
+				}
+				placed = true
+				break
+			}
+		}
+		if !placed {
+			clusters = append(clusters, bollPumpResistanceCluster{sum: high, avg: high, maxHigh: high, touches: 1})
+		}
+	}
+
+	var best bollPumpResistanceBreakoutResult
+	for _, cluster := range clusters {
+		if cluster.touches < cfg.Resistance4HMinTouches || cluster.maxHigh <= 0 {
+			continue
+		}
+		breakoutLevel := cluster.maxHigh * (1 + cfg.Resistance4HBreakoutBufferPct)
+		if price <= breakoutLevel {
+			continue
+		}
+		distance := price/cluster.maxHigh - 1
+		if cfg.Resistance4HMaxDistancePct > 0 && distance > cfg.Resistance4HMaxDistancePct {
+			continue
+		}
+		if !best.Triggered || cluster.maxHigh > best.Resistance {
+			best = bollPumpResistanceBreakoutResult{
+				Triggered:  true,
+				Resistance: cluster.maxHigh,
+				Touches:    cluster.touches,
+				Distance:   distance,
+				Bonus:      cfg.Resistance4HBreakoutBonus,
+			}
+		}
+	}
+	if !best.Triggered {
+		return bollPumpResistanceBreakoutResult{}
+	}
+	best.Reason = fmt.Sprintf("4h resistance breakout %.6g, touches %d, distance %.2f%%", best.Resistance, best.Touches, best.Distance*100)
+	return best
 }
 
 func bollPumpStartupWindow(timeframe string, cfg BollPumpConfig) int {

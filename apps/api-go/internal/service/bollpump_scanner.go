@@ -80,11 +80,24 @@ func (s *BollPumpScanner) ScanTimeframe(ctx context.Context, timeframe string) B
 		ind := ComputeBollPumpIndicators(bars, s.cfg.BollPeriod, s.cfg.BollStdDev, s.cfg.ATRPeriod)
 		state := s.loadRuntimeState(ctx, symbol, timeframe)
 		latestOpen := bars[len(bars)-1].OpenTimeMs
+		var resistanceBreakout bollPumpResistanceBreakoutResult
+		resistanceChecked := false
 		for i := 0; i < len(bars); i++ {
 			out := AdvanceBollPumpState(&state, bars[:i+1], ind[:i+1], quoteVolume, s.cfg)
 			for _, sig := range out.Signals {
 				if s.store != nil && sig.CandleStartMs != latestOpen {
 					continue
+				}
+				if !resistanceChecked {
+					resistanceBreakout = s.fourHourResistanceBreakout(ctx, symbol)
+					resistanceChecked = true
+				}
+				sig = applyBollPumpResistanceBreakout(sig, resistanceBreakout)
+				if resistanceBreakout.Triggered {
+					state.CurrentScore = sig.Score
+					if sig.SignalLevel == string(BollPumpLevelWatch) {
+						state.WatchScore = sig.Score
+					}
 				}
 				result.SignalsFound++
 				s.persistSignal(ctx, sig)
@@ -94,6 +107,42 @@ func (s *BollPumpScanner) ScanTimeframe(ctx context.Context, timeframe string) B
 		result.SymbolsScanned++
 	}
 	return result
+}
+
+func (s *BollPumpScanner) fourHourResistanceBreakout(ctx context.Context, symbol string) bollPumpResistanceBreakoutResult {
+	if s == nil || s.source == nil || s.cfg.Resistance4HBreakoutBonus <= 0 {
+		return bollPumpResistanceBreakoutResult{}
+	}
+	limit := s.cfg.Resistance4HLookback + s.cfg.ATRPeriod + 2*s.cfg.Resistance4HSwingSpan + 10
+	if limit < 100 {
+		limit = 100
+	}
+	bars, err := s.source.Klines(ctx, normalizeBollPumpMarket(s.cfg.Market), symbol, "4h", limit)
+	if err != nil || len(bars) == 0 {
+		return bollPumpResistanceBreakoutResult{}
+	}
+	nowMs := time.Now().UnixMilli()
+	closed := make([]BollPumpBar, 0, len(bars))
+	for _, b := range bars {
+		if b.Closed && (b.CloseTimeMs == 0 || b.CloseTimeMs <= nowMs) {
+			closed = append(closed, b)
+		}
+	}
+	return bollPumpFourHourResistanceBreakout(closed, s.cfg)
+}
+
+func applyBollPumpResistanceBreakout(sig model.BollPumpSignal, breakout bollPumpResistanceBreakoutResult) model.BollPumpSignal {
+	if !breakout.Triggered {
+		return sig
+	}
+	sig.Score = bollPumpScoreFloor(sig.Score + breakout.Bonus)
+	sig.PriorityScore = bollPumpScoreFloor(sig.PriorityScore + breakout.Bonus)
+	if strings.TrimSpace(sig.Reason) == "" {
+		sig.Reason = breakout.Reason
+	} else {
+		sig.Reason += ", " + breakout.Reason
+	}
+	return sig
 }
 
 func (s *BollPumpScanner) Run(ctx context.Context, stopCh <-chan struct{}) {
