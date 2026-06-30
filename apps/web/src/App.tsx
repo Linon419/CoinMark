@@ -1,6 +1,7 @@
 ﻿import { useEffect, useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import { Space, Switch, Typography } from "@arco-design/web-react";
+import coinmarkLogo from "./assets/coinmark.svg";
 import NotificationCenter from "./components/NotificationCenter";
 import { useNotificationCenter } from "./stores/notificationCenter";
 
@@ -48,7 +49,7 @@ export default function App() {
       <div className="cm-topbar">
         <div className="cm-topbarRow">
           <div className="cm-brand">
-            <div className="cm-logo" aria-hidden="true" />
+            <img className="cm-logo" src={coinmarkLogo} alt="" aria-hidden="true" />
             <div>
               <Title heading={4} style={{ margin: 0 }}>
                 CoinMark（CoinArch）

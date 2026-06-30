@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+  <title id="title">CoinMark</title>
+  <desc id="desc">BOLL channel scanner logo with candles and breakout arrow</desc>
+  <defs>
+    <linearGradient id="coinmark-bg" x1="12" y1="8" x2="52" y2="58" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1d4ed8" />
+      <stop offset="0.52" stop-color="#0f766e" />
+      <stop offset="1" stop-color="#f59e0b" />
+    </linearGradient>
+    <linearGradient id="coinmark-line" x1="15" y1="44" x2="49" y2="18" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#bfdbfe" />
+      <stop offset="1" stop-color="#fef3c7" />
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="15" fill="#06101f" />
+  <rect x="5" y="5" width="54" height="54" rx="12" fill="url(#coinmark-bg)" opacity="0.94" />
+  <path d="M14 43.5C23 51 41 51 50 43.5" fill="none" stroke="#dbeafe" stroke-width="2.6" stroke-linecap="round" opacity="0.72" />
+  <path d="M14 28.5C23 20.5 41 20.5 50 28.5" fill="none" stroke="#dbeafe" stroke-width="2.6" stroke-linecap="round" opacity="0.72" />
+  <path d="M16 39L24 35L31 37L39 30L48 19" fill="none" stroke="url(#coinmark-line)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" />
+  <path d="M40 19H48V27" fill="none" stroke="#fef3c7" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" />
+  <g stroke="#ecfeff" stroke-width="2.4" stroke-linecap="round">
+    <path d="M21 27V43" />
+    <path d="M31 25V45" />
+    <path d="M41 20V37" />
+  </g>
+  <g fill="#ecfeff">
+    <rect x="18" y="32" width="6" height="7" rx="2" />
+    <rect x="28" y="29" width="6" height="9" rx="2" />
+    <rect x="38" y="24" width="6" height="8" rx="2" />
+  </g>
+</svg>
