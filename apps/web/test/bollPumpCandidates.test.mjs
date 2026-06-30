@@ -43,7 +43,7 @@ test("filters inactive BOLL states from the active view", () => {
   );
 });
 
-test("builds current trade candidates from confirmed states only", () => {
+test("builds current trade candidates from breakout watch and confirmed states", () => {
   const nowMs = 10_000;
   const states = [
     { symbol: "WATCHUSDT", timeframe: "1m", status: "WATCH", priority_score: 140, bounce_count: 0, expires_at_candle_ms: 20_000 },
@@ -66,6 +66,7 @@ test("builds current trade candidates from confirmed states only", () => {
     out.map((row) => [row.symbol, row.status, row.trade_label, row.latest_signal_id, row.has_4h_breakout]),
     [
       ["TWOUSDT", "COMPLETED", "重点", 7, true],
+      ["WATCHUSDT", "WATCH", "突破", 1, false],
       ["ONEUSDT", "CONFIRM_1", "可参与", 3, false],
     ],
   );

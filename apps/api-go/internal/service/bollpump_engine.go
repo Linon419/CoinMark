@@ -686,30 +686,31 @@ func AdvanceBollPumpState(state *BollPumpRuntimeState, bars []BollPumpBar, ind [
 			state.PendingPullbackCandleMs = 0
 			state.PendingPullbackHigh = 0
 			state.PendingPullbackLow = 0
-			state.ExpiresAtCandleMs = latest.OpenTimeMs + int64(cfg.StageExpiryCandles)*bollPumpIntervalMs(state.Timeframe, bars)
+			bollPumpRefreshStageExpiry(state, latest, bars, cfg)
 			state.LastSignalLevel = string(BollPumpLevelWatch)
 			signals = append(signals, watch.Signal)
 		}
 	case string(BollPumpStatusWatch):
-		if bollPumpStageExpired(*state, latest) {
-			state.Status = string(BollPumpStatusExpired)
+		if bollPumpHasThreeMiddleClosesAfterWatch(*state, bars, ind) && bollPumpIsPullbackCandidate(latest, ind[latestIdx]) {
+			state.Status = string(BollPumpStatusPullback1Pending)
+			state.PendingPullbackCandleMs = latest.OpenTimeMs
+			state.PendingPullbackHigh = latest.High
+			state.PendingPullbackLow = latest.Low
+			bollPumpRefreshStageExpiry(state, latest, bars, cfg)
 			break
 		}
 		if bollPumpWatchTrendFailed(*state, bars, ind, cfg) {
 			bollPumpInvalidateRuntimeState(state)
 			break
 		}
-		if bollPumpHasThreeMiddleClosesAfterWatch(*state, bars, ind) && bollPumpIsPullbackCandidate(latest, ind[latestIdx]) {
-			state.Status = string(BollPumpStatusPullback1Pending)
-			state.PendingPullbackCandleMs = latest.OpenTimeMs
-			state.PendingPullbackHigh = latest.High
-			state.PendingPullbackLow = latest.Low
+		if bollPumpStageExpired(*state, latest) {
+			if bollPumpTrendStillAdvancing(latest, ind[latestIdx]) {
+				bollPumpRefreshStageExpiry(state, latest, bars, cfg)
+				break
+			}
+			state.Status = string(BollPumpStatusExpired)
 		}
 	case string(BollPumpStatusPullback1Pending):
-		if bollPumpStageExpired(*state, latest) {
-			state.Status = string(BollPumpStatusExpired)
-			break
-		}
 		if bollPumpPendingInvalid(latest, ind[latestIdx]) {
 			bollPumpInvalidateRuntimeState(state)
 			break
@@ -718,6 +719,11 @@ func AdvanceBollPumpState(state *BollPumpRuntimeState, bars []BollPumpBar, ind [
 			state.PendingPullbackCandleMs = latest.OpenTimeMs
 			state.PendingPullbackHigh = latest.High
 			state.PendingPullbackLow = latest.Low
+			bollPumpRefreshStageExpiry(state, latest, bars, cfg)
+			break
+		}
+		if bollPumpStageExpired(*state, latest) {
+			state.Status = string(BollPumpStatusExpired)
 			break
 		}
 		if latest.OpenTimeMs > state.PendingPullbackCandleMs && latest.High > state.PendingPullbackHigh {
@@ -729,17 +735,13 @@ func AdvanceBollPumpState(state *BollPumpRuntimeState, bars []BollPumpBar, ind [
 			state.FirstPullbackLow = state.PendingPullbackLow
 			state.CurrentScore = bollPumpScoreFloor(state.WatchScore + 10)
 			state.LastSignalLevel = string(BollPumpLevelConfirm1)
-			state.ExpiresAtCandleMs = latest.OpenTimeMs + int64(cfg.StageExpiryCandles)*bollPumpIntervalMs(state.Timeframe, bars)
+			bollPumpRefreshStageExpiry(state, latest, bars, cfg)
 			signals = append(signals, bollPumpConfirmSignal(*state, latest, ind[latestIdx], quoteVolume24h, BollPumpLevelConfirm1))
 			state.PendingPullbackCandleMs = 0
 			state.PendingPullbackHigh = 0
 			state.PendingPullbackLow = 0
 		}
 	case string(BollPumpStatusConfirm1):
-		if bollPumpStageExpired(*state, latest) {
-			state.Status = string(BollPumpStatusExpired)
-			break
-		}
 		if bollPumpIsPullbackCandidate(latest, ind[latestIdx]) {
 			if bollPumpSecondLowInvalid(state.FirstPullbackLow, latest.Low, ind[latestIdx].ATR14) {
 				bollPumpInvalidateRuntimeState(state)
@@ -749,12 +751,17 @@ func AdvanceBollPumpState(state *BollPumpRuntimeState, bars []BollPumpBar, ind [
 			state.PendingPullbackCandleMs = latest.OpenTimeMs
 			state.PendingPullbackHigh = latest.High
 			state.PendingPullbackLow = latest.Low
-		}
-	case string(BollPumpStatusPullback2Pending):
-		if bollPumpStageExpired(*state, latest) {
-			state.Status = string(BollPumpStatusExpired)
+			bollPumpRefreshStageExpiry(state, latest, bars, cfg)
 			break
 		}
+		if bollPumpStageExpired(*state, latest) {
+			if bollPumpTrendStillAdvancing(latest, ind[latestIdx]) {
+				bollPumpRefreshStageExpiry(state, latest, bars, cfg)
+				break
+			}
+			state.Status = string(BollPumpStatusExpired)
+		}
+	case string(BollPumpStatusPullback2Pending):
 		if bollPumpPendingInvalid(latest, ind[latestIdx]) {
 			bollPumpInvalidateRuntimeState(state)
 			break
@@ -767,6 +774,11 @@ func AdvanceBollPumpState(state *BollPumpRuntimeState, bars []BollPumpBar, ind [
 			state.PendingPullbackCandleMs = latest.OpenTimeMs
 			state.PendingPullbackHigh = latest.High
 			state.PendingPullbackLow = latest.Low
+			bollPumpRefreshStageExpiry(state, latest, bars, cfg)
+			break
+		}
+		if bollPumpStageExpired(*state, latest) {
+			state.Status = string(BollPumpStatusExpired)
 			break
 		}
 		if latest.OpenTimeMs > state.PendingPullbackCandleMs && latest.High > state.PendingPullbackHigh {
@@ -797,6 +809,13 @@ func bollPumpSecondLowInvalid(firstLow, secondLow, atr14 float64) bool {
 
 func bollPumpStageExpired(state BollPumpRuntimeState, latest BollPumpBar) bool {
 	return state.ExpiresAtCandleMs > 0 && latest.OpenTimeMs > state.ExpiresAtCandleMs
+}
+
+func bollPumpRefreshStageExpiry(state *BollPumpRuntimeState, latest BollPumpBar, bars []BollPumpBar, cfg BollPumpConfig) {
+	if state == nil {
+		return
+	}
+	state.ExpiresAtCandleMs = latest.OpenTimeMs + int64(cfg.StageExpiryCandles)*bollPumpIntervalMs(state.Timeframe, bars)
 }
 
 func bollPumpInvalidateRuntimeState(state *BollPumpRuntimeState) {
@@ -893,6 +912,10 @@ func bollPumpIsPullbackCandidate(b BollPumpBar, in BollPumpIndicator) bool {
 }
 
 func bollPumpBounceRecovered(b BollPumpBar, in BollPumpIndicator) bool {
+	return in.ValidBoll && b.Close >= in.Middle
+}
+
+func bollPumpTrendStillAdvancing(b BollPumpBar, in BollPumpIndicator) bool {
 	return in.ValidBoll && b.Close >= in.Middle
 }
 

@@ -20,14 +20,14 @@ export type BollPumpCandidateSignal = {
 };
 
 export type BollPumpTradeCandidate = BollPumpCandidateState & {
-  trade_label: "重点" | "可参与";
+  trade_label: "重点" | "可参与" | "突破";
   latest_signal_id?: number;
   has_4h_breakout: boolean;
 };
 
 const inactiveStatuses = new Set(["IDLE", "EXPIRED", "INVALIDATED"]);
-const tradeStatuses = new Set(["CONFIRM_1", "CONFIRM_2", "COMPLETED"]);
-const confirmSignalLevels = new Set(["CONFIRM_1", "CONFIRM_2"]);
+const tradeStatuses = new Set(["WATCH", "CONFIRM_1", "CONFIRM_2", "COMPLETED"]);
+const candidateSignalLevels = new Set(["WATCH", "CONFIRM_1", "CONFIRM_2"]);
 
 export function filterActiveBollPumpStates<T extends { status: string; expires_at_candle_ms?: number | null }>(states: T[], nowMs = Date.now()): T[] {
   return states.filter((state) => {
@@ -49,8 +49,19 @@ export function hasBollPumpFourHourBreakout(signal?: { reason?: string | null })
   return String(signal?.reason || "").toLowerCase().includes("4h resistance breakout");
 }
 
-function isConfirmSignal(signal: BollPumpCandidateSignal): boolean {
-  return confirmSignalLevels.has(String(signal.signal_level || "").toUpperCase());
+function isCandidateSignal(signal: BollPumpCandidateSignal): boolean {
+  return candidateSignalLevels.has(String(signal.signal_level || "").toUpperCase());
+}
+
+function tradeLabelForStatus(status: string): BollPumpTradeCandidate["trade_label"] {
+  const upper = String(status || "").toUpperCase();
+  if (upper === "COMPLETED" || upper === "CONFIRM_2") {
+    return "重点";
+  }
+  if (upper === "CONFIRM_1") {
+    return "可参与";
+  }
+  return "突破";
 }
 
 export function buildBollPumpTradeCandidates(
@@ -61,7 +72,7 @@ export function buildBollPumpTradeCandidates(
 ): BollPumpTradeCandidate[] {
   const latestByKey = new Map<string, BollPumpCandidateSignal>();
   for (const signal of signals) {
-    if (!isConfirmSignal(signal)) {
+    if (!isCandidateSignal(signal)) {
       continue;
     }
     const key = `${signal.symbol}:${signal.timeframe}`;
@@ -79,7 +90,7 @@ export function buildBollPumpTradeCandidates(
       const status = String(state.status || "").toUpperCase();
       return {
         ...state,
-        trade_label: status === "COMPLETED" || status === "CONFIRM_2" ? "重点" : "可参与",
+        trade_label: tradeLabelForStatus(status),
         latest_signal_id: latest?.id,
         has_4h_breakout: hasBollPumpFourHourBreakout(latest),
       } satisfies BollPumpTradeCandidate;

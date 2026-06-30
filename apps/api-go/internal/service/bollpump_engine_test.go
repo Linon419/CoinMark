@@ -208,6 +208,78 @@ func TestBollPumpWatchInvalidatesWhenTrendFails(t *testing.T) {
 	}
 }
 
+func TestBollPumpWatchExtendsExpiryWhileTrendContinues(t *testing.T) {
+	cfg := DefaultBollPumpConfig()
+	cfg.StageExpiryCandles = 5
+	state := NewBollPumpRuntimeState("swap", "XYZUSDT", "3m")
+	state.Status = string(BollPumpStatusWatch)
+	state.WatchScore = 100
+	state.CurrentScore = 100
+	state.WatchCandleStartMs = 0
+	state.WatchStartedMs = 59_999
+	state.LastCheckedCandleMs = 0
+	state.ExpiresAtCandleMs = 120_000
+	state.LastSignalLevel = string(BollPumpLevelWatch)
+
+	bars := []BollPumpBar{
+		{OpenTimeMs: 0, CloseTimeMs: 59_999, Open: 100, High: 101, Low: 99, Close: 100, Closed: true},
+		{OpenTimeMs: 60_000, CloseTimeMs: 119_999, Open: 100, High: 102, Low: 100, Close: 101, Closed: true},
+		{OpenTimeMs: 180_000, CloseTimeMs: 239_999, Open: 101, High: 103, Low: 100.5, Close: 102, Closed: true},
+	}
+	ind := []BollPumpIndicator{
+		{Lower: 95, Middle: 100, Upper: 105, ValidBoll: true},
+		{Lower: 96, Middle: 100, Upper: 106, ValidBoll: true},
+		{Lower: 97, Middle: 101, Upper: 107, ValidBoll: true},
+	}
+
+	AdvanceBollPumpState(&state, bars, ind, 3_000_000, cfg)
+
+	if state.Status != string(BollPumpStatusWatch) {
+		t.Fatalf("status = %s, want WATCH while trend continues", state.Status)
+	}
+	if state.ExpiresAtCandleMs <= 180_000 {
+		t.Fatalf("expires_at = %d, want refreshed beyond latest candle", state.ExpiresAtCandleMs)
+	}
+}
+
+func TestBollPumpPullbackCandidateRefreshesExpiryWindow(t *testing.T) {
+	cfg := DefaultBollPumpConfig()
+	cfg.StageExpiryCandles = 5
+	state := NewBollPumpRuntimeState("swap", "XYZUSDT", "3m")
+	state.Status = string(BollPumpStatusPullback1Pending)
+	state.WatchScore = 100
+	state.CurrentScore = 100
+	state.WatchCandleStartMs = 0
+	state.WatchStartedMs = 59_999
+	state.PendingPullbackCandleMs = 60_000
+	state.PendingPullbackHigh = 103
+	state.PendingPullbackLow = 99
+	state.LastCheckedCandleMs = 60_000
+	state.ExpiresAtCandleMs = 120_000
+	state.LastSignalLevel = string(BollPumpLevelWatch)
+
+	bars := []BollPumpBar{
+		{OpenTimeMs: 60_000, CloseTimeMs: 119_999, Open: 102, High: 103, Low: 99, Close: 101, Closed: true},
+		{OpenTimeMs: 180_000, CloseTimeMs: 239_999, Open: 101, High: 102, Low: 96, Close: 98, Closed: true},
+	}
+	ind := []BollPumpIndicator{
+		{Lower: 97, Middle: 101, Upper: 105, ValidBoll: true},
+		{Lower: 97, Middle: 101, Upper: 105, ValidBoll: true},
+	}
+
+	AdvanceBollPumpState(&state, bars, ind, 3_000_000, cfg)
+
+	if state.Status != string(BollPumpStatusPullback1Pending) {
+		t.Fatalf("status = %s, want PULLBACK_1_PENDING after fresh pullback candidate", state.Status)
+	}
+	if state.PendingPullbackCandleMs != 180_000 {
+		t.Fatalf("pending candle = %d, want latest candle", state.PendingPullbackCandleMs)
+	}
+	if state.ExpiresAtCandleMs <= 180_000 {
+		t.Fatalf("expires_at = %d, want refreshed beyond latest pullback", state.ExpiresAtCandleMs)
+	}
+}
+
 func TestBollPumpRejectsWeakLowerBandBounce(t *testing.T) {
 	cfg := DefaultBollPumpConfig()
 	bars := bollPumpFixtureWeakLowerBandBounce()
