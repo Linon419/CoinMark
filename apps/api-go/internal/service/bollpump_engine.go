@@ -39,7 +39,7 @@ func DefaultBollPumpConfig() BollPumpConfig {
 		WatchTrendMaxDrawdownATR:  0.75,
 		TrendCleanBonus:           10,
 		TrendWickPenalty:          -25,
-		TrendWeakPenalty:          -10,
+		TrendWeakPenalty:          0,
 		TrendWickBodyMaxRatio:     0.35,
 		TrendEfficiencyMin:        0.30,
 		WatchTelegramThreshold:    70,
@@ -113,7 +113,7 @@ func EvaluateBollPumpWatch(market, symbol, timeframe string, bars []BollPumpBar,
 		reasons = append(reasons, fmt.Sprintf("trend score %.0f", trendScore))
 	}
 	reasons = append(reasons, trendReasons...)
-	score = bollPumpScoreCap(score)
+	score = bollPumpScoreFloor(score)
 	return BollPumpWatchResult{
 		Triggered:       true,
 		BackgroundScore: backgroundScore,
@@ -175,10 +175,6 @@ func bollPumpStartupTrendScore(bars []BollPumpBar, startIdx, endIdx int, cfg Bol
 		score += cfg.TrendWickPenalty
 		reasons = append(reasons, fmt.Sprintf("wick-heavy startup %d/%d", wickHeavy, total))
 	}
-	if efficiency > 0 && efficiency < cfg.TrendEfficiencyMin {
-		score += cfg.TrendWeakPenalty
-		reasons = append(reasons, fmt.Sprintf("low trend efficiency %.2f", efficiency))
-	}
 	if efficiency >= 0.55 && rising*2 >= total-1 && wickHeavy*2 < total {
 		score += cfg.TrendCleanBonus
 		reasons = append(reasons, fmt.Sprintf("clean trend %.2f", efficiency))
@@ -207,12 +203,9 @@ func bollPumpVolumeThreshold(timeframe string, cfg BollPumpConfig) float64 {
 	return 2
 }
 
-func bollPumpScoreCap(v float64) float64 {
+func bollPumpScoreFloor(v float64) float64 {
 	if v < 0 {
 		return 0
-	}
-	if v > 100 {
-		return 100
 	}
 	return v
 }
@@ -465,7 +458,7 @@ func AdvanceBollPumpState(state *BollPumpRuntimeState, bars []BollPumpBar, ind [
 			state.Status = string(BollPumpStatusConfirm1)
 			state.BounceCount = 1
 			state.FirstPullbackLow = state.PendingPullbackLow
-			state.CurrentScore = bollPumpScoreCap(state.WatchScore + 10)
+			state.CurrentScore = bollPumpScoreFloor(state.WatchScore + 10)
 			state.LastSignalLevel = string(BollPumpLevelConfirm1)
 			state.ExpiresAtCandleMs = latest.OpenTimeMs + int64(cfg.StageExpiryCandles)*bollPumpIntervalMs(state.Timeframe, bars)
 			signals = append(signals, bollPumpConfirmSignal(*state, latest, ind[latestIdx], quoteVolume24h, BollPumpLevelConfirm1))
@@ -517,7 +510,7 @@ func AdvanceBollPumpState(state *BollPumpRuntimeState, bars []BollPumpBar, ind [
 			state.Status = string(BollPumpStatusCompleted)
 			state.BounceCount = 2
 			state.SecondPullbackLow = state.PendingPullbackLow
-			state.CurrentScore = bollPumpScoreCap(state.WatchScore + 20)
+			state.CurrentScore = bollPumpScoreFloor(state.WatchScore + 20)
 			state.LastSignalLevel = string(BollPumpLevelConfirm2)
 			signals = append(signals, bollPumpConfirmSignal(*state, latest, ind[latestIdx], quoteVolume24h, BollPumpLevelConfirm2))
 			state.PendingPullbackCandleMs = 0

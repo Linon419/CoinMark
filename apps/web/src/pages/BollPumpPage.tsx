@@ -40,7 +40,7 @@ function defaultBollPumpSettings(): BollPumpSettings {
     watch_trend_max_drawdown_atr: 0.75,
     trend_clean_bonus: 10,
     trend_wick_penalty: -25,
-    trend_weak_penalty: -10,
+    trend_weak_penalty: 0,
     trend_wick_body_max_ratio: 0.35,
     trend_efficiency_min: 0.3,
     watch_telegram_threshold: 70,
@@ -447,10 +447,6 @@ export default function BollPumpPage() {
               <label>
                 <span>插针扣分</span>
                 <InputNumber min={-50} max={0} step={1} value={settingsDraft.trend_wick_penalty} onChange={(v) => patchDraft({ trend_wick_penalty: Number(v || 0) })} />
-              </label>
-              <label>
-                <span>弱趋势扣分</span>
-                <InputNumber min={-50} max={0} step={1} value={settingsDraft.trend_weak_penalty} onChange={(v) => patchDraft({ trend_weak_penalty: Number(v || 0) })} />
               </label>
               <label>
                 <span>插针实体阈值</span>

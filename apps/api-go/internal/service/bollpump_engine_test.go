@@ -19,8 +19,8 @@ func TestBollPumpWatchTriggerScoresQuietBase(t *testing.T) {
 	if got.Signal.SignalLevel != string(BollPumpLevelWatch) {
 		t.Fatalf("level = %s, want WATCH", got.Signal.SignalLevel)
 	}
-	if got.Signal.Score < 85 {
-		t.Fatalf("score = %.2f, want >= 85", got.Signal.Score)
+	if got.Signal.Score <= 100 {
+		t.Fatalf("score = %.2f, want > 100 without score ceiling", got.Signal.Score)
 	}
 }
 
@@ -55,6 +55,27 @@ func TestBollPumpWatchTrendScorePenalizesWickHeavyStartup(t *testing.T) {
 	}
 }
 
+func TestBollPumpStartupTrendScoreOnlyPenalizesWicks(t *testing.T) {
+	cfg := DefaultBollPumpConfig()
+	bars := []BollPumpBar{
+		{Open: 100.0, High: 101.0, Low: 99.8, Close: 100.8},
+		{Open: 100.8, High: 101.0, Low: 98.0, Close: 98.6},
+		{Open: 98.6, High: 101.6, Low: 98.4, Close: 101.0},
+		{Open: 101.0, High: 101.2, Low: 99.0, Close: 99.4},
+		{Open: 99.4, High: 102.2, Low: 99.2, Close: 101.4},
+		{Open: 101.4, High: 101.6, Low: 100.0, Close: 100.2},
+		{Open: 100.2, High: 102.8, Low: 100.0, Close: 102.0},
+	}
+
+	score, reasons := bollPumpStartupTrendScore(bars, 0, len(bars)-1, cfg)
+	if score < 0 {
+		t.Fatalf("score = %.2f, want no non-wick penalty; reasons=%v", score, reasons)
+	}
+	if strings.Contains(strings.Join(reasons, ","), "low trend efficiency") {
+		t.Fatalf("reasons = %v, want no low trend efficiency penalty", reasons)
+	}
+}
+
 func TestBollPumpConfirmFlowWaitsUntilBreaksPullbackHigh(t *testing.T) {
 	cfg := DefaultBollPumpConfig()
 	bars := bollPumpFixtureWatchThenTwoConfirms()
@@ -72,6 +93,12 @@ func TestBollPumpConfirmFlowWaitsUntilBreaksPullbackHigh(t *testing.T) {
 	}
 	if signals[len(signals)-1].SignalLevel != string(BollPumpLevelConfirm2) {
 		t.Fatalf("last signal = %s, want CONFIRM_2", signals[len(signals)-1].SignalLevel)
+	}
+	if signals[0].Score <= 100 {
+		t.Fatalf("watch score = %.2f, want > 100 without score ceiling", signals[0].Score)
+	}
+	if signals[len(signals)-1].Score <= signals[0].Score {
+		t.Fatalf("final score = %.2f, want above watch score %.2f", signals[len(signals)-1].Score, signals[0].Score)
 	}
 	if state.Status != string(BollPumpStatusCompleted) {
 		t.Fatalf("status = %s, want COMPLETED", state.Status)
