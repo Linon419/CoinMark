@@ -269,7 +269,6 @@ func bollPumpMinimumTrendGate(bars []BollPumpBar, cfg BollPumpConfig) bollPumpMi
 	}
 
 	pass := gain >= cfg.MinimumTrendGainPct &&
-		efficiency >= cfg.MinimumTrendEfficiencyMin &&
 		risingRatio >= cfg.MinimumTrendRisingRatio &&
 		wickHeavy*2 < len(window)
 	reason := fmt.Sprintf(

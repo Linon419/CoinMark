@@ -111,6 +111,29 @@ func TestBollPumpMinimumTrendRequiresClearFifteenMinuteUptrend(t *testing.T) {
 	}
 }
 
+func TestBollPumpMinimumTrendIgnoresEfficiency(t *testing.T) {
+	cfg := DefaultBollPumpConfig()
+	bars := []BollPumpBar{
+		{Open: 0.0002008, High: 0.0002081, Low: 0.0002004, Close: 0.0002068, Closed: true},
+		{Open: 0.0002069, High: 0.0002152, Low: 0.0002068, Close: 0.0002147, Closed: true},
+		{Open: 0.0002149, High: 0.0002178, Low: 0.0002120, Close: 0.0002159, Closed: true},
+		{Open: 0.0002157, High: 0.0002193, Low: 0.0002127, Close: 0.0002167, Closed: true},
+		{Open: 0.0002167, High: 0.0002271, Low: 0.0002130, Close: 0.0002243, Closed: true},
+		{Open: 0.0002243, High: 0.0002304, Low: 0.0002212, Close: 0.0002278, Closed: true},
+		{Open: 0.0002279, High: 0.0002311, Low: 0.0002080, Close: 0.0002153, Closed: true},
+		{Open: 0.0002153, High: 0.0002240, Low: 0.0002152, Close: 0.0002218, Closed: true},
+	}
+
+	got := bollPumpMinimumTrendGate(bars, cfg)
+
+	if !got.Pass {
+		t.Fatalf("trend pass = false, want true when gain/rising/wick pass despite low efficiency; reason=%q", got.Reason)
+	}
+	if !strings.Contains(got.Reason, "efficiency 0.37") {
+		t.Fatalf("reason = %q, want efficiency kept for diagnostics", got.Reason)
+	}
+}
+
 func TestBollPumpFourHourResistanceBreakoutFindsKeySwingCluster(t *testing.T) {
 	cfg := DefaultBollPumpConfig()
 	cfg.Resistance4HLookback = 40

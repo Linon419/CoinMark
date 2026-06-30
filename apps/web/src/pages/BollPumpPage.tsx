@@ -616,10 +616,6 @@ export default function BollPumpPage() {
                 />
               </label>
               <label>
-                <span>最小趋势效率</span>
-                <InputNumber min={0.05} max={1} step={0.05} value={settingsDraft.minimum_trend_efficiency_min} onChange={(v) => patchDraft({ minimum_trend_efficiency_min: Number(v || 0.45) })} />
-              </label>
-              <label>
                 <span>收涨比例</span>
                 <InputNumber
                   min={10}
