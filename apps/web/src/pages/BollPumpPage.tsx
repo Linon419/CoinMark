@@ -2,6 +2,11 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button, Drawer, InputNumber, Message, Select, Space, Switch, Table, Tag, Typography } from "@arco-design/web-react";
 import BollPumpChart from "../components/BollPumpChart";
 import {
+  buildBollPumpTradeCandidates,
+  filterActiveBollPumpStates,
+  hasBollPumpFourHourBreakout,
+} from "./bollPumpCandidates";
+import {
   fetchBollPumpDetail,
   fetchBollPumpSignals,
   fetchBollPumpSettings,
@@ -69,6 +74,7 @@ function cloneSettings(settings: BollPumpSettings): BollPumpSettings {
 }
 
 function levelColor(level: string) {
+  if (level === "COMPLETED") return "red";
   if (level === "CONFIRM_2") return "red";
   if (level === "CONFIRM_1") return "orange";
   return "arcoblue";
@@ -94,7 +100,7 @@ function fmtPrice(v: number) {
 }
 
 function hasFourHourResistanceBreakout(signal: BollPumpSignal) {
-  return String(signal.reason || "").toLowerCase().includes("4h resistance breakout");
+  return hasBollPumpFourHourBreakout(signal);
 }
 
 export default function BollPumpPage() {
@@ -110,6 +116,7 @@ export default function BollPumpPage() {
   const [loading, setLoading] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
   const [selectedTimeframe, setSelectedTimeframe] = useState<string | null>(null);
+  const [inactiveStateCount, setInactiveStateCount] = useState(0);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -117,11 +124,13 @@ export default function BollPumpPage() {
       const timeframeParam = selectedTimeframe ? `&timeframe=${encodeURIComponent(selectedTimeframe)}` : "";
       const [sig, st, stat] = await Promise.all([
         fetchBollPumpSignals(`market=swap&limit=100${timeframeParam}`),
-        fetchBollPumpStates(`market=swap&limit=100&min_priority_score=60${timeframeParam}`),
+        fetchBollPumpStates(`market=swap&limit=300&min_priority_score=60${timeframeParam}`),
         fetchBollPumpStats(),
       ]);
+      const activeStates = filterActiveBollPumpStates((st.items || []) as BollPumpState[]);
       setSignals(sig.items || []);
-      setStates(st.items || []);
+      setStates(activeStates);
+      setInactiveStateCount(Math.max(0, (st.items || []).length - activeStates.length));
       setStats(stat);
     } finally {
       setLoading(false);
@@ -177,6 +186,12 @@ export default function BollPumpPage() {
       setSavingSettings(false);
     }
   };
+
+  const openSignalDetail = useCallback(async (signalId?: number) => {
+    if (!signalId) return;
+    setDetail(await fetchBollPumpDetail(signalId));
+    setOpen(true);
+  }, []);
 
   const thresholdColumns = useMemo(
     () => [
@@ -247,8 +262,7 @@ export default function BollPumpPage() {
           <Button
             size="small"
             onClick={async () => {
-              setDetail(await fetchBollPumpDetail(r.id));
-              setOpen(true);
+              await openSignalDetail(r.id);
             }}
           >
             详情
@@ -256,7 +270,7 @@ export default function BollPumpPage() {
         ),
       },
     ],
-    []
+    [openSignalDetail]
   );
 
   const stateColumns = useMemo(
@@ -283,6 +297,7 @@ export default function BollPumpPage() {
   const countsByLevel = stats?.countsByLevel || {};
   const countsByTimeframe = stats?.countsByTimeframe || {};
   const resistanceBreakoutCount = useMemo(() => signals.filter(hasFourHourResistanceBreakout).length, [signals]);
+  const tradeCandidates = useMemo(() => buildBollPumpTradeCandidates(states, signals, 12), [states, signals]);
 
   return (
     <div className="cm-page cm-bollPage">
@@ -313,6 +328,8 @@ export default function BollPumpPage() {
           <Tag color={settings.enabled ? "green" : "gray"}>{settings.enabled ? "扫描开启" : "扫描暂停"}</Tag>
           <span className="cm-pill">信号 {signals.length}</span>
           <span className="cm-pill">活跃 {states.length}</span>
+          <span className="cm-pill">候选 {tradeCandidates.length}</span>
+          {inactiveStateCount > 0 ? <span className="cm-pill">隐藏失效 {inactiveStateCount}</span> : null}
           <span className="cm-pill">WATCH {countsByLevel.WATCH || 0}</span>
           <span className="cm-pill">CONFIRM_1 {countsByLevel.CONFIRM_1 || 0}</span>
           <span className="cm-pill">CONFIRM_2 {countsByLevel.CONFIRM_2 || 0}</span>
@@ -334,6 +351,51 @@ export default function BollPumpPage() {
             <strong>{countsByTimeframe[tf] || 0}</strong>
           </button>
         ))}
+      </div>
+
+      <div className="cm-bollTradeBand">
+        <div className="cm-sectionHeader">
+          <Title heading={6} style={{ margin: 0 }}>
+            当前可交易候选
+          </Title>
+          <Space size={8}>
+            <Tag color="orange">CONFIRM_1</Tag>
+            <Tag color="red">CONFIRM_2 / COMPLETED</Tag>
+          </Space>
+        </div>
+        {tradeCandidates.length > 0 ? (
+          <div className="cm-bollCandidateGrid">
+            {tradeCandidates.map((candidate) => (
+              <div className="cm-bollCandidateCard" key={`${candidate.symbol}-${candidate.timeframe}`}>
+                <div className="cm-bollCandidateTop">
+                  <strong className="cm-symbol">{candidate.symbol}</strong>
+                  <Tag color={candidate.trade_label === "重点" ? "red" : "orange"}>{candidate.trade_label}</Tag>
+                </div>
+                <div className="cm-bollCandidateMeta">
+                  <span>
+                    触发 <b>{candidate.timeframe}</b>
+                  </span>
+                  <span>
+                    主导 <b>{candidate.dominant_timeframe || candidate.timeframe}</b>
+                  </span>
+                  <span>
+                    反弹 <b>{candidate.bounce_count}</b>
+                  </span>
+                </div>
+                <div className="cm-bollCandidateBottom">
+                  <Tag color={levelColor(candidate.status)}>{candidate.status}</Tag>
+                  {candidate.has_4h_breakout ? <Tag color="gold">4H突破</Tag> : null}
+                  <strong className="cm-mono cm-bollCandidateScore">{fmtNum(Number(candidate.priority_score || 0), 0)}</strong>
+                  <Button size="mini" disabled={!candidate.latest_signal_id} onClick={() => openSignalDetail(candidate.latest_signal_id)}>
+                    详情
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="cm-bollCandidateEmpty">暂无确认候选</div>
+        )}
       </div>
 
       <div className="cm-bollWorkbench">

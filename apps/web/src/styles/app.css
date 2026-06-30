@@ -372,6 +372,104 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+.cm-bollTradeBand {
+  padding: 12px;
+  border: 1px solid rgba(16, 185, 129, 0.26);
+  border-radius: 10px;
+  background:
+    linear-gradient(135deg, rgba(16, 185, 129, 0.10), rgba(245, 158, 11, 0.06)),
+    var(--cm-surface);
+  box-shadow: var(--cm-shadow);
+}
+
+.cm-bollTradeBand .cm-sectionHeader {
+  margin-bottom: 10px;
+}
+
+.cm-bollCandidateGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.cm-bollCandidateCard {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.06);
+}
+
+:root[data-theme="dark"] .cm-bollCandidateCard {
+  border-color: rgba(148, 163, 184, 0.20);
+  background: rgba(15, 23, 42, 0.72);
+}
+
+.cm-bollCandidateTop,
+.cm-bollCandidateBottom {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cm-bollCandidateTop {
+  justify-content: space-between;
+}
+
+.cm-bollCandidateTop .cm-symbol {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cm-bollCandidateMeta {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin: 10px 0;
+  color: var(--cm-muted);
+  font-size: 11px;
+}
+
+.cm-bollCandidateMeta span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cm-bollCandidateMeta b {
+  color: var(--cm-text);
+  font-weight: 700;
+}
+
+.cm-bollCandidateBottom {
+  min-width: 0;
+  justify-content: flex-start;
+}
+
+.cm-bollCandidateScore {
+  margin-left: auto;
+  color: #047857;
+  font-size: 18px;
+  line-height: 1;
+}
+
+:root[data-theme="dark"] .cm-bollCandidateScore {
+  color: #34d399;
+}
+
+.cm-bollCandidateEmpty {
+  display: grid;
+  place-items: center;
+  min-height: 74px;
+  border: 1px dashed rgba(148, 163, 184, 0.45);
+  border-radius: 8px;
+  color: var(--cm-muted);
+  background: rgba(148, 163, 184, 0.06);
+}
+
 .cm-bollWorkbench {
   display: grid;
   grid-template-columns: minmax(760px, 1.45fr) minmax(420px, 0.8fr);
@@ -792,6 +890,10 @@ body {
 }
 
 @media (max-width: 1220px) {
+  .cm-bollCandidateGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .cm-bollWorkbench {
     grid-template-columns: 1fr;
   }
@@ -811,6 +913,10 @@ body {
   }
 
   .cm-bollWorkbench {
+    grid-template-columns: 1fr;
+  }
+
+  .cm-bollCandidateGrid {
     grid-template-columns: 1fr;
   }
 
