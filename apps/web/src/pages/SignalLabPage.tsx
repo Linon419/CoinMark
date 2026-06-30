@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { Button, InputNumber, Space, Table, Tag, Typography } from "@arco-design/web-react";
+import {
+  formatSignalLabBuyRatio,
+  signalLabEventTypeColor,
+  signalLabEventTypeLabel,
+} from "./signalLabPresentation";
 
 type MarketScope = "spot" | "swap" | "both";
 
@@ -28,8 +33,10 @@ type RealtimeSignal = {
   close: number;
   netFlow: number;
   zScore: number;
-  largeBuyCount: number;
-  buyRatio: number;
+  eventType?: string;
+  direction?: string;
+  largeBuyCount?: number;
+  buyRatio?: number;
   score: number;
   signalState: "NONE" | "WATCH" | "CONFIRM" | "STRONG";
 };
@@ -144,6 +151,15 @@ export default function SignalLabPage() {
         dataIndex: "symbol",
       },
       {
+        title: "类型",
+        render: (_: any, row: RealtimeSignal) => (
+          <Space size={4}>
+            <Tag color={signalLabEventTypeColor(row.eventType)}>{signalLabEventTypeLabel(row.eventType)}</Tag>
+            {row.direction && <Tag color={row.direction === "buy" || row.direction === "long" ? "green" : "red"}>{row.direction}</Tag>}
+          </Space>
+        ),
+      },
+      {
         title: "状态",
         render: (_: any, row: RealtimeSignal) => <Tag color={stateColor(row.signalState)}>{row.signalState}</Tag>,
       },
@@ -153,7 +169,7 @@ export default function SignalLabPage() {
       },
       {
         title: "买入占比",
-        render: (_: any, row: RealtimeSignal) => `${(Number(row.buyRatio || 0) * 100).toFixed(1)}%`,
+        render: (_: any, row: RealtimeSignal) => formatSignalLabBuyRatio(row),
       },
       {
         title: "大单次数",
