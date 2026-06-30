@@ -210,12 +210,46 @@ func TestBollPumpRejectsWeakLowerBandBounce(t *testing.T) {
 	}
 }
 
-func TestBollPumpPullbackCandidateAllowsNearLowerBandHold(t *testing.T) {
-	in := BollPumpIndicator{Lower: 100, Middle: 110, ValidBoll: true}
-	b := BollPumpBar{Low: 105.5, Close: 106}
+func TestBollPumpConfirmInvalidatesWhenCloseFallsBelowLowerBand(t *testing.T) {
+	state := NewBollPumpRuntimeState("swap", "XYZUSDT", "15m")
+	state.Status = string(BollPumpStatusConfirm1)
+	state.WatchScore = 110
+	state.CurrentScore = 120
+	state.WatchCandleStartMs = 60_000
+	state.WatchStartedMs = 119_999
+	state.BounceCount = 1
+	state.FirstPullbackLow = 99
+	state.ExpiresAtCandleMs = 600_000
+	state.LastCheckedCandleMs = 120_000
+	state.LastSignalLevel = string(BollPumpLevelConfirm1)
 
-	if !bollPumpIsPullbackCandidate(b, in) {
-		t.Fatalf("near lower-band hold should be a pullback candidate")
+	bars := []BollPumpBar{
+		{OpenTimeMs: 120_000, CloseTimeMs: 179_999, Open: 105, High: 106, Low: 103, Close: 104, Closed: true},
+		{OpenTimeMs: 180_000, CloseTimeMs: 239_999, Open: 104, High: 104.5, Low: 96, Close: 98, Closed: true},
+	}
+	ind := []BollPumpIndicator{
+		{Lower: 100, Middle: 110, Upper: 120, Bandwidth: 0.18, ATR14: 2, ValidBoll: true, ValidATR: true},
+		{Lower: 100, Middle: 110, Upper: 120, Bandwidth: 0.18, ATR14: 2, ValidBoll: true, ValidATR: true},
+	}
+
+	AdvanceBollPumpState(&state, bars, ind, 3_000_000, DefaultBollPumpConfig())
+
+	if state.Status != string(BollPumpStatusInvalidated) {
+		t.Fatalf("status = %s, want INVALIDATED after close below lower band", state.Status)
+	}
+}
+
+func TestBollPumpPullbackCandidateRequiresLowerBandTouchAndRecovery(t *testing.T) {
+	in := BollPumpIndicator{Lower: 100, Middle: 110, ValidBoll: true}
+
+	if bollPumpIsPullbackCandidate(BollPumpBar{Low: 105.5, Close: 106}, in) {
+		t.Fatalf("near lower-band hold should stay out of pullback candidates")
+	}
+	if !bollPumpIsPullbackCandidate(BollPumpBar{Low: 99.8, Close: 100.4}, in) {
+		t.Fatalf("lower-band touch with close recovery should be a pullback candidate")
+	}
+	if bollPumpIsPullbackCandidate(BollPumpBar{Low: 99.8, Close: 99.7}, in) {
+		t.Fatalf("lower-band break without close recovery should stay out of pullback candidates")
 	}
 }
 

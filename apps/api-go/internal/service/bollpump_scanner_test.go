@@ -202,6 +202,102 @@ func TestBollPumpScannerRequiresFifteenMinuteClearUptrend(t *testing.T) {
 	}
 }
 
+func TestBollPumpScannerKeepsScanningActiveStateSymbolsOutsideRuntimeLimit(t *testing.T) {
+	ctx := context.Background()
+	store := openBollPumpTestStore(t)
+	defer store.Close()
+
+	cfg := DefaultBollPumpConfig()
+	cfg.Timeframes = []string{"1h"}
+	cfg.Resistance4HBreakoutBonus = 0
+	bars := bollPumpFixtureLatestCloseBelowLowerBand("1h")
+	prevOpen := bars[len(bars)-2].OpenTimeMs
+	if err := SaveBollPumpState(ctx, store, model.BollPumpState{
+		Market:              "swap",
+		Symbol:              "JTOUSDT",
+		Timeframe:           "1h",
+		Status:              string(BollPumpStatusConfirm1),
+		WatchStartedMs:      ptrInt64(60_000),
+		WatchCandleStartMs:  ptrInt64(0),
+		WatchScore:          95,
+		CurrentScore:        105,
+		PriorityScore:       105,
+		BounceCount:         1,
+		FirstPullbackLow:    ptrFloat64(99),
+		LastCheckedCandleMs: ptrInt64(prevOpen),
+		LastSignalLevel:     ptrString(string(BollPumpLevelConfirm1)),
+		ExpiresAtCandleMs:   ptrInt64(bars[len(bars)-1].OpenTimeMs + 10*60*60*1000),
+		Details:             model.JSONB(`{}`),
+	}); err != nil {
+		t.Fatalf("save active state: %v", err)
+	}
+	source := &fakeBollPumpSource{
+		symbols: []string{"AAAUSDT"},
+		bars:    map[string][]BollPumpBar{"1h": bars},
+		quote:   map[string]float64{"AAAUSDT": 3_000_000, "JTOUSDT": 3_000_000},
+	}
+	scanner := NewBollPumpScanner(source, store, cfg)
+
+	scanner.ScanTimeframe(ctx, "1h")
+
+	if !strings.Contains(strings.Join(source.requestedSymbols, ","), "JTOUSDT") {
+		t.Fatalf("requested symbols = %v, want active JTOUSDT included", source.requestedSymbols)
+	}
+	st, err := GetBollPumpState(ctx, store, "swap", "JTOUSDT", "1h")
+	if err != nil {
+		t.Fatalf("get active state: %v", err)
+	}
+	if st == nil || st.Status != string(BollPumpStatusInvalidated) {
+		t.Fatalf("state = %#v, want INVALIDATED after latest close below lower band", st)
+	}
+}
+
+func TestBollPumpScannerReplaysActiveStateWithCurrentRules(t *testing.T) {
+	ctx := context.Background()
+	store := openBollPumpTestStore(t)
+	defer store.Close()
+
+	cfg := DefaultBollPumpConfig()
+	cfg.Timeframes = []string{"1h"}
+	cfg.Resistance4HBreakoutBonus = 0
+	bars := bollPumpFixtureFlatNoSignal("1h")
+	if err := SaveBollPumpState(ctx, store, model.BollPumpState{
+		Market:              "swap",
+		Symbol:              "JTOUSDT",
+		Timeframe:           "1h",
+		Status:              string(BollPumpStatusConfirm1),
+		WatchStartedMs:      ptrInt64(60_000),
+		WatchCandleStartMs:  ptrInt64(0),
+		WatchScore:          95,
+		CurrentScore:        105,
+		PriorityScore:       105,
+		BounceCount:         1,
+		FirstPullbackLow:    ptrFloat64(99),
+		LastCheckedCandleMs: ptrInt64(bars[len(bars)-1].OpenTimeMs),
+		LastSignalLevel:     ptrString(string(BollPumpLevelConfirm1)),
+		ExpiresAtCandleMs:   ptrInt64(bars[len(bars)-1].OpenTimeMs + 10*60*60*1000),
+		Details:             model.JSONB(`{}`),
+	}); err != nil {
+		t.Fatalf("save active state: %v", err)
+	}
+	source := &fakeBollPumpSource{
+		symbols: []string{"AAAUSDT"},
+		bars:    map[string][]BollPumpBar{"1h": bars},
+		quote:   map[string]float64{"AAAUSDT": 3_000_000, "JTOUSDT": 3_000_000},
+	}
+	scanner := NewBollPumpScanner(source, store, cfg)
+
+	scanner.ScanTimeframe(ctx, "1h")
+
+	st, err := GetBollPumpState(ctx, store, "swap", "JTOUSDT", "1h")
+	if err != nil {
+		t.Fatalf("get active state: %v", err)
+	}
+	if st == nil || st.Status != string(BollPumpStatusIdle) {
+		t.Fatalf("state = %#v, want IDLE after replay with no current-rule signal", st)
+	}
+}
+
 func bollPumpFixtureUntilFirstWatch(tf string, cfg BollPumpConfig) []BollPumpBar {
 	bars := bollPumpFixtureQuietBaseThenPump(tf)
 	for i := range bars {
@@ -216,4 +312,70 @@ func bollPumpFixtureUntilFirstWatch(tf string, cfg BollPumpConfig) []BollPumpBar
 		}
 	}
 	return bars
+}
+
+func bollPumpFixtureFlatNoSignal(tf string) []BollPumpBar {
+	step := int64(60 * 60 * 1000)
+	if tf == "15m" {
+		step = int64(15 * 60 * 1000)
+	}
+	bars := make([]BollPumpBar, 0, 40)
+	for i := 0; i < 40; i++ {
+		openTime := int64(i) * step
+		bars = append(bars, BollPumpBar{
+			OpenTimeMs:  openTime,
+			CloseTimeMs: openTime + step - 1,
+			Open:        100,
+			High:        100.2,
+			Low:         99.8,
+			Close:       100,
+			Volume:      100,
+			QuoteVolume: 10_000,
+			Closed:      true,
+		})
+	}
+	return bars
+}
+
+func bollPumpFixtureLatestCloseBelowLowerBand(tf string) []BollPumpBar {
+	step := int64(60 * 60 * 1000)
+	if tf == "15m" {
+		step = int64(15 * 60 * 1000)
+	}
+	bars := make([]BollPumpBar, 0, 30)
+	for i := 0; i < 29; i++ {
+		openTime := int64(i) * step
+		bars = append(bars, BollPumpBar{
+			OpenTimeMs:  openTime,
+			CloseTimeMs: openTime + step - 1,
+			Open:        100,
+			High:        100.2,
+			Low:         99.8,
+			Close:       100,
+			Volume:      100,
+			QuoteVolume: 10_000,
+			Closed:      true,
+		})
+	}
+	openTime := int64(len(bars)) * step
+	bars = append(bars, BollPumpBar{
+		OpenTimeMs:  openTime,
+		CloseTimeMs: openTime + step - 1,
+		Open:        100,
+		High:        100.1,
+		Low:         89,
+		Close:       90,
+		Volume:      120,
+		QuoteVolume: 10_800,
+		Closed:      true,
+	})
+	return bars
+}
+
+func ptrFloat64(v float64) *float64 {
+	return &v
+}
+
+func ptrInt64(v int64) *int64 {
+	return &v
 }

@@ -110,6 +110,51 @@ func TestBollPumpListsFilterNonUSDTPairs(t *testing.T) {
 	}
 }
 
+func TestBollPumpStateListZeroesInactiveScores(t *testing.T) {
+	ctx := context.Background()
+	store := openBollPumpTestStore(t)
+	defer store.Close()
+
+	if err := SaveBollPumpState(ctx, store, model.BollPumpState{
+		Market:          "swap",
+		Symbol:          "OLDUSDT",
+		Timeframe:       "1m",
+		Status:          string(BollPumpStatusInvalidated),
+		CurrentScore:    120,
+		PriorityScore:   120,
+		LastSignalLevel: ptrString(string(BollPumpLevelWatch)),
+		Details:         model.JSONB(`{}`),
+	}); err != nil {
+		t.Fatalf("save inactive state: %v", err)
+	}
+	if err := SaveBollPumpState(ctx, store, model.BollPumpState{
+		Market:          "swap",
+		Symbol:          "LIVEUSDT",
+		Timeframe:       "1m",
+		Status:          string(BollPumpStatusWatch),
+		CurrentScore:    70,
+		PriorityScore:   70,
+		LastSignalLevel: ptrString(string(BollPumpLevelWatch)),
+		Details:         model.JSONB(`{}`),
+	}); err != nil {
+		t.Fatalf("save active state: %v", err)
+	}
+
+	states, err := ListBollPumpStates(ctx, store, BollPumpStateFilter{Market: "swap", Limit: 10})
+	if err != nil {
+		t.Fatalf("list states: %v", err)
+	}
+	if len(states) != 2 {
+		t.Fatalf("states = %d, want 2", len(states))
+	}
+	if states[0].Symbol != "LIVEUSDT" || states[0].PriorityScore != 70 {
+		t.Fatalf("first state = %#v, want active LIVEUSDT first", states[0])
+	}
+	if states[1].Symbol != "OLDUSDT" || states[1].PriorityScore != 0 || states[1].LastSignalLevel != nil {
+		t.Fatalf("inactive state = %#v, want zero score and empty signal level", states[1])
+	}
+}
+
 func TestBollPumpStatsFilterNonUSDTPairs(t *testing.T) {
 	ctx := context.Background()
 	store := openBollPumpTestStore(t)

@@ -59,6 +59,7 @@ func (s *BollPumpScanner) ScanTimeframe(ctx context.Context, timeframe string) B
 		result.Errors++
 		return result
 	}
+	symbols = s.mergeActiveStateSymbols(ctx, timeframe, symbols)
 	limit := s.klineLimit()
 	for _, symbol := range symbols {
 		if !bollPumpTradableUSDTSymbol(symbol) {
@@ -82,6 +83,17 @@ func (s *BollPumpScanner) ScanTimeframe(ctx context.Context, timeframe string) B
 		quoteVolume, _ := s.source.QuoteVolume24h(ctx, normalizeBollPumpMarket(s.cfg.Market), symbol)
 		ind := ComputeBollPumpIndicators(bars, s.cfg.BollPeriod, s.cfg.BollStdDev, s.cfg.ATRPeriod)
 		state := s.loadRuntimeState(ctx, symbol, timeframe)
+		latest := bars[len(bars)-1]
+		latestInd := ind[len(ind)-1]
+		if bollPumpActiveLowerBandBreakdown(state, latest, latestInd) {
+			bollPumpInvalidateRuntimeState(&state)
+			s.persistState(ctx, state)
+			result.SymbolsScanned++
+			continue
+		}
+		if bollPumpStatusIsActive(state.Status) {
+			state = NewBollPumpRuntimeState(s.cfg.Market, symbol, timeframe)
+		}
 		var trendGate bollPumpMinimumTrendGateResult
 		trendChecked := false
 		checkTrend := func() bollPumpMinimumTrendGateResult {
@@ -103,6 +115,7 @@ func (s *BollPumpScanner) ScanTimeframe(ctx context.Context, timeframe string) B
 		latestOpen := bars[len(bars)-1].OpenTimeMs
 		var resistanceBreakout bollPumpResistanceBreakoutResult
 		resistanceChecked := false
+		stopReplay := false
 		for i := 0; i < len(bars); i++ {
 			out := AdvanceBollPumpState(&state, bars[:i+1], ind[:i+1], quoteVolume, s.cfg)
 			for _, sig := range out.Signals {
@@ -112,6 +125,7 @@ func (s *BollPumpScanner) ScanTimeframe(ctx context.Context, timeframe string) B
 				gate := checkTrend()
 				if !gate.Pass {
 					s.invalidateStateForMinimumTrend(ctx, &state)
+					stopReplay = true
 					continue
 				}
 				if !resistanceChecked {
@@ -129,6 +143,15 @@ func (s *BollPumpScanner) ScanTimeframe(ctx context.Context, timeframe string) B
 				result.SignalsFound++
 				s.persistSignal(ctx, sig)
 			}
+			if stopReplay {
+				break
+			}
+		}
+		if !stopReplay && bollPumpStateNeedsMinimumTrend(state) {
+			gate := checkTrend()
+			if !gate.Pass {
+				s.invalidateStateForMinimumTrend(ctx, &state)
+			}
 		}
 		s.persistState(ctx, state)
 		result.SymbolsScanned++
@@ -137,12 +160,40 @@ func (s *BollPumpScanner) ScanTimeframe(ctx context.Context, timeframe string) B
 }
 
 func bollPumpStateNeedsMinimumTrend(state BollPumpRuntimeState) bool {
-	switch state.Status {
-	case string(BollPumpStatusWatch), string(BollPumpStatusPullback1Pending), string(BollPumpStatusConfirm1), string(BollPumpStatusPullback2Pending), string(BollPumpStatusConfirm2), string(BollPumpStatusCompleted):
-		return state.CurrentScore > 0 || state.WatchScore > 0
-	default:
-		return false
+	return bollPumpStatusIsActive(state.Status) && (state.CurrentScore > 0 || state.WatchScore > 0)
+}
+
+func (s *BollPumpScanner) mergeActiveStateSymbols(ctx context.Context, timeframe string, base []string) []string {
+	out := make([]string, 0, len(base))
+	seen := map[string]bool{}
+	add := func(symbol string) {
+		symbol = strings.ToUpper(strings.TrimSpace(symbol))
+		if seen[symbol] || !bollPumpTradableUSDTSymbol(symbol) {
+			return
+		}
+		seen[symbol] = true
+		out = append(out, symbol)
 	}
+	for _, symbol := range base {
+		add(symbol)
+	}
+	if s == nil || s.store == nil {
+		return out
+	}
+	states, err := ListBollPumpStates(ctx, s.store, BollPumpStateFilter{
+		Market:    s.cfg.Market,
+		Timeframe: timeframe,
+		Limit:     1000,
+	})
+	if err != nil {
+		return out
+	}
+	for _, st := range states {
+		if bollPumpStatusIsActive(st.Status) {
+			add(st.Symbol)
+		}
+	}
+	return out
 }
 
 func (s *BollPumpScanner) minimumTrendGate(ctx context.Context, symbol, timeframe string, bars []BollPumpBar) bollPumpMinimumTrendGateResult {
@@ -169,10 +220,7 @@ func (s *BollPumpScanner) invalidateStateForMinimumTrend(ctx context.Context, st
 	if state == nil || state.Status == "" || state.Status == string(BollPumpStatusIdle) {
 		return
 	}
-	state.Status = string(BollPumpStatusInvalidated)
-	state.CurrentScore = 0
-	state.WatchScore = 0
-	state.LastSignalLevel = ""
+	bollPumpInvalidateRuntimeState(state)
 	s.persistState(ctx, *state)
 }
 

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -411,12 +412,27 @@ func filterBollPumpStatesForTradableUSDT(rows []model.BollPumpState, limit int) 
 		if !bollPumpTradableUSDTSymbol(row.Symbol) {
 			continue
 		}
-		out = append(out, row)
-		if len(out) >= limit {
-			break
-		}
+		out = append(out, normalizeBollPumpStateForList(row))
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].PriorityScore > out[j].PriorityScore
+	})
+	if len(out) > limit {
+		return out[:limit]
 	}
 	return out
+}
+
+func normalizeBollPumpStateForList(row model.BollPumpState) model.BollPumpState {
+	if bollPumpStatusIsActive(row.Status) {
+		return row
+	}
+	row.WatchScore = 0
+	row.CurrentScore = 0
+	row.ConfluenceScore = 0
+	row.PriorityScore = 0
+	row.LastSignalLevel = nil
+	return row
 }
 
 func countTradableSymbolRowsMap(rows []bollPumpSymbolKeyRow) map[string]int64 {

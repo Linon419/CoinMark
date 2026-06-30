@@ -611,6 +611,10 @@ func AdvanceBollPumpState(state *BollPumpRuntimeState, bars []BollPumpBar, ind [
 	}
 	state.LastCheckedCandleMs = latest.OpenTimeMs
 	signals := make([]model.BollPumpSignal, 0, 1)
+	if bollPumpActiveLowerBandBreakdown(*state, latest, ind[latestIdx]) {
+		bollPumpInvalidateRuntimeState(state)
+		return BollPumpAdvanceResult{State: *state, Signals: signals}
+	}
 
 	switch state.Status {
 	case string(BollPumpStatusIdle), string(BollPumpStatusExpired), string(BollPumpStatusCompleted), string(BollPumpStatusInvalidated):
@@ -637,7 +641,7 @@ func AdvanceBollPumpState(state *BollPumpRuntimeState, bars []BollPumpBar, ind [
 			break
 		}
 		if bollPumpWatchTrendFailed(*state, bars, ind, cfg) {
-			state.Status = string(BollPumpStatusInvalidated)
+			bollPumpInvalidateRuntimeState(state)
 			break
 		}
 		if bollPumpHasThreeMiddleClosesAfterWatch(*state, bars, ind) && bollPumpIsPullbackCandidate(latest, ind[latestIdx]) {
@@ -652,10 +656,7 @@ func AdvanceBollPumpState(state *BollPumpRuntimeState, bars []BollPumpBar, ind [
 			break
 		}
 		if bollPumpPendingInvalid(latest, ind[latestIdx]) {
-			state.Status = string(BollPumpStatusWatch)
-			state.PendingPullbackCandleMs = 0
-			state.PendingPullbackHigh = 0
-			state.PendingPullbackLow = 0
+			bollPumpInvalidateRuntimeState(state)
 			break
 		}
 		if bollPumpIsPullbackCandidate(latest, ind[latestIdx]) {
@@ -686,7 +687,7 @@ func AdvanceBollPumpState(state *BollPumpRuntimeState, bars []BollPumpBar, ind [
 		}
 		if bollPumpIsPullbackCandidate(latest, ind[latestIdx]) {
 			if bollPumpSecondLowInvalid(state.FirstPullbackLow, latest.Low, ind[latestIdx].ATR14) {
-				state.Status = string(BollPumpStatusInvalidated)
+				bollPumpInvalidateRuntimeState(state)
 				break
 			}
 			state.Status = string(BollPumpStatusPullback2Pending)
@@ -700,15 +701,12 @@ func AdvanceBollPumpState(state *BollPumpRuntimeState, bars []BollPumpBar, ind [
 			break
 		}
 		if bollPumpPendingInvalid(latest, ind[latestIdx]) {
-			state.Status = string(BollPumpStatusConfirm1)
-			state.PendingPullbackCandleMs = 0
-			state.PendingPullbackHigh = 0
-			state.PendingPullbackLow = 0
+			bollPumpInvalidateRuntimeState(state)
 			break
 		}
 		if bollPumpIsPullbackCandidate(latest, ind[latestIdx]) {
 			if bollPumpSecondLowInvalid(state.FirstPullbackLow, latest.Low, ind[latestIdx].ATR14) {
-				state.Status = string(BollPumpStatusInvalidated)
+				bollPumpInvalidateRuntimeState(state)
 				break
 			}
 			state.PendingPullbackCandleMs = latest.OpenTimeMs
@@ -744,6 +742,43 @@ func bollPumpSecondLowInvalid(firstLow, secondLow, atr14 float64) bool {
 
 func bollPumpStageExpired(state BollPumpRuntimeState, latest BollPumpBar) bool {
 	return state.ExpiresAtCandleMs > 0 && latest.OpenTimeMs > state.ExpiresAtCandleMs
+}
+
+func bollPumpInvalidateRuntimeState(state *BollPumpRuntimeState) {
+	if state == nil {
+		return
+	}
+	state.Status = string(BollPumpStatusInvalidated)
+	state.WatchScore = 0
+	state.CurrentScore = 0
+	state.BounceCount = 0
+	state.FirstPullbackLow = 0
+	state.SecondPullbackLow = 0
+	state.PendingPullbackCandleMs = 0
+	state.PendingPullbackHigh = 0
+	state.PendingPullbackLow = 0
+	state.LastSignalLevel = ""
+}
+
+func bollPumpActiveLowerBandBreakdown(state BollPumpRuntimeState, b BollPumpBar, in BollPumpIndicator) bool {
+	if !bollPumpStatusIsActive(state.Status) {
+		return false
+	}
+	return bollPumpPendingInvalid(b, in)
+}
+
+func bollPumpStatusIsActive(status string) bool {
+	switch status {
+	case string(BollPumpStatusWatch),
+		string(BollPumpStatusPullback1Pending),
+		string(BollPumpStatusConfirm1),
+		string(BollPumpStatusPullback2Pending),
+		string(BollPumpStatusConfirm2),
+		string(BollPumpStatusCompleted):
+		return true
+	default:
+		return false
+	}
 }
 
 func bollPumpWatchTrendFailed(state BollPumpRuntimeState, bars []BollPumpBar, ind []BollPumpIndicator, cfg BollPumpConfig) bool {
@@ -799,13 +834,7 @@ func bollPumpHasThreeMiddleClosesAfterWatch(state BollPumpRuntimeState, bars []B
 }
 
 func bollPumpIsPullbackCandidate(b BollPumpBar, in BollPumpIndicator) bool {
-	if !in.ValidBoll || b.Close <= in.Lower {
-		return false
-	}
-	if b.Low <= in.Lower {
-		return true
-	}
-	return b.Low <= in.Lower+(in.Middle-in.Lower)*0.60
+	return in.ValidBoll && b.Low <= in.Lower && b.Close > in.Lower
 }
 
 func bollPumpBounceRecovered(b BollPumpBar, in BollPumpIndicator) bool {
