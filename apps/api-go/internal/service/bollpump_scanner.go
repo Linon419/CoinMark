@@ -61,6 +61,9 @@ func (s *BollPumpScanner) ScanTimeframe(ctx context.Context, timeframe string) B
 	}
 	limit := s.klineLimit()
 	for _, symbol := range symbols {
+		if !bollPumpTradableUSDTSymbol(symbol) {
+			continue
+		}
 		select {
 		case <-ctx.Done():
 			result.Errors++
@@ -295,7 +298,7 @@ func (s *binanceBollPumpSource) Symbols(ctx context.Context, market string, limi
 	for _, t := range tickers {
 		sym, _ := t["symbol"].(string)
 		sym = strings.ToUpper(strings.TrimSpace(sym))
-		if sym == "" || binance.IsExcludedSymbol(sym) {
+		if !bollPumpTradableUSDTSymbol(sym) {
 			continue
 		}
 		qv := bollPumpToFloat(t["quoteVolume"])
@@ -311,6 +314,11 @@ func (s *binanceBollPumpSource) Symbols(ctx context.Context, market string, limi
 		out = append(out, r.symbol)
 	}
 	return out, nil
+}
+
+func bollPumpTradableUSDTSymbol(symbol string) bool {
+	sym := strings.ToUpper(strings.TrimSpace(symbol))
+	return strings.HasSuffix(sym, "USDT") && !binance.IsExcludedSymbol(sym)
 }
 
 func (s *binanceBollPumpSource) Klines(ctx context.Context, market, symbol, timeframe string, limit int) ([]BollPumpBar, error) {

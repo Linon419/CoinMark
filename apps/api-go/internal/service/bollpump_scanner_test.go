@@ -9,17 +9,23 @@ import (
 )
 
 type fakeBollPumpSource struct {
-	bars        map[string][]BollPumpBar
-	quote       map[string]float64
-	symbolLimit int
+	bars             map[string][]BollPumpBar
+	quote            map[string]float64
+	symbols          []string
+	symbolLimit      int
+	requestedSymbols []string
 }
 
 func (f *fakeBollPumpSource) Symbols(ctx context.Context, market string, limit int) ([]string, error) {
 	f.symbolLimit = limit
+	if len(f.symbols) > 0 {
+		return f.symbols, nil
+	}
 	return []string{"XYZUSDT"}, nil
 }
 
 func (f *fakeBollPumpSource) Klines(ctx context.Context, market, symbol, timeframe string, limit int) ([]BollPumpBar, error) {
+	f.requestedSymbols = append(f.requestedSymbols, symbol)
 	return f.bars[timeframe], nil
 }
 
@@ -87,6 +93,27 @@ func TestBollPumpScannerRefreshesSavedSettings(t *testing.T) {
 	scanner.ScanTimeframe(ctx, "15m")
 	if source.symbolLimit != 42 {
 		t.Fatalf("symbol limit = %d, want saved 42", source.symbolLimit)
+	}
+}
+
+func TestBollPumpScannerOnlyScansUSDTSymbols(t *testing.T) {
+	cfg := DefaultBollPumpConfig()
+	cfg.Timeframes = []string{"15m"}
+	source := &fakeBollPumpSource{
+		symbols: []string{"XYZUSDT", "ABCUSDC", "USDCUSDT"},
+		bars:    map[string][]BollPumpBar{"15m": bollPumpFixtureQuietBaseThenPump("15m")},
+		quote:   map[string]float64{"XYZUSDT": 3_000_000},
+	}
+	scanner := NewBollPumpScanner(source, nil, cfg)
+
+	result := scanner.ScanTimeframe(context.Background(), "15m")
+	if result.SymbolsScanned != 1 {
+		t.Fatalf("symbols scanned = %d, want 1", result.SymbolsScanned)
+	}
+	for _, symbol := range source.requestedSymbols {
+		if symbol != "XYZUSDT" {
+			t.Fatalf("requested symbols = %v, want only XYZUSDT", source.requestedSymbols)
+		}
 	}
 }
 
