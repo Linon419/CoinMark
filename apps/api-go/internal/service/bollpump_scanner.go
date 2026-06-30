@@ -91,9 +91,6 @@ func (s *BollPumpScanner) ScanTimeframe(ctx context.Context, timeframe string) B
 			result.SymbolsScanned++
 			continue
 		}
-		if bollPumpStatusIsActive(state.Status) {
-			state = NewBollPumpRuntimeState(s.cfg.Market, symbol, timeframe)
-		}
 		var trendGate bollPumpMinimumTrendGateResult
 		trendChecked := false
 		checkTrend := func() bollPumpMinimumTrendGateResult {

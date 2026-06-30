@@ -258,7 +258,54 @@ func TestBollPumpScannerKeepsScanningActiveStateSymbolsOutsideRuntimeLimit(t *te
 	}
 }
 
-func TestBollPumpScannerReplaysActiveStateWithCurrentRules(t *testing.T) {
+func TestBollPumpScannerContinuesActiveStateWithoutReplayReset(t *testing.T) {
+	ctx := context.Background()
+	store := openBollPumpTestStore(t)
+	defer store.Close()
+
+	cfg := DefaultBollPumpConfig()
+	cfg.Timeframes = []string{"15m"}
+	cfg.Resistance4HBreakoutBonus = 0
+	bars := bollPumpFixtureClearTrend(100, 45)
+	if err := SaveBollPumpState(ctx, store, model.BollPumpState{
+		Market:              "swap",
+		Symbol:              "XYZUSDT",
+		Timeframe:           "15m",
+		Status:              string(BollPumpStatusWatch),
+		WatchStartedMs:      ptrInt64(bars[30].CloseTimeMs),
+		WatchCandleStartMs:  ptrInt64(bars[30].OpenTimeMs),
+		WatchScore:          105,
+		CurrentScore:        105,
+		PriorityScore:       105,
+		LastCheckedCandleMs: ptrInt64(bars[len(bars)-2].OpenTimeMs),
+		LastSignalLevel:     ptrString(string(BollPumpLevelWatch)),
+		ExpiresAtCandleMs:   ptrInt64(bars[len(bars)-1].OpenTimeMs + 20*15*60*1000),
+		Details:             model.JSONB(`{}`),
+	}); err != nil {
+		t.Fatalf("save active state: %v", err)
+	}
+	source := &fakeBollPumpSource{
+		symbols: []string{"XYZUSDT"},
+		bars:    map[string][]BollPumpBar{"15m": bars},
+		quote:   map[string]float64{"XYZUSDT": 3_000_000},
+	}
+	scanner := NewBollPumpScanner(source, store, cfg)
+
+	scanner.ScanTimeframe(ctx, "15m")
+
+	st, err := GetBollPumpState(ctx, store, "swap", "XYZUSDT", "15m")
+	if err != nil {
+		t.Fatalf("get active state: %v", err)
+	}
+	if st == nil || st.Status != string(BollPumpStatusWatch) {
+		t.Fatalf("state = %#v, want WATCH to continue after latest candle", st)
+	}
+	if st.PriorityScore != 105 {
+		t.Fatalf("priority score = %.0f, want preserved active score", st.PriorityScore)
+	}
+}
+
+func TestBollPumpScannerInvalidatesActiveStateWhenTrendFailsCurrentRules(t *testing.T) {
 	ctx := context.Background()
 	store := openBollPumpTestStore(t)
 	defer store.Close()
@@ -299,8 +346,8 @@ func TestBollPumpScannerReplaysActiveStateWithCurrentRules(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get active state: %v", err)
 	}
-	if st == nil || st.Status != string(BollPumpStatusIdle) {
-		t.Fatalf("state = %#v, want IDLE after replay with no current-rule signal", st)
+	if st == nil || st.Status != string(BollPumpStatusInvalidated) {
+		t.Fatalf("state = %#v, want INVALIDATED when active state fails current trend gate", st)
 	}
 }
 
