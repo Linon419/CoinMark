@@ -46,9 +46,9 @@ type BollPumpPerformance struct {
 	UpdatedMs          int64
 }
 
-type bollPumpCountRow struct {
-	Key string `db:"key"`
-	N   int64  `db:"n"`
+type bollPumpSymbolKeyRow struct {
+	Key    string `db:"key"`
+	Symbol string `db:"symbol"`
 }
 
 func SaveBollPumpState(ctx context.Context, store *sqlite.Store, st model.BollPumpState) error {
@@ -134,10 +134,14 @@ func ListBollPumpStates(ctx context.Context, store *sqlite.Store, f BollPumpStat
 		args = append(args, f.MinPriorityScore)
 	}
 	limit := clampBollPumpLimit(f.Limit)
-	args = append(args, limit)
+	where = append(where, "symbol LIKE ?")
+	args = append(args, "%USDT", bollPumpOverfetchLimit(limit))
 	q := `SELECT * FROM boll_pump_states WHERE ` + strings.Join(where, " AND ") + ` ORDER BY priority_score DESC, updated_at DESC LIMIT ?`
 	var rows []model.BollPumpState
-	return rows, store.SelectContext(ctx, &rows, q, args...)
+	if err := store.SelectContext(ctx, &rows, q, args...); err != nil {
+		return nil, err
+	}
+	return filterBollPumpStatesForTradableUSDT(rows, limit), nil
 }
 
 func SaveBollPumpSignal(ctx context.Context, store *sqlite.Store, sig model.BollPumpSignal, insertAnomaly bool) (int64, error) {
@@ -228,10 +232,14 @@ func ListBollPumpSignals(ctx context.Context, store *sqlite.Store, f BollPumpSig
 		args = append(args, f.SinceMs)
 	}
 	limit := clampBollPumpLimit(f.Limit)
-	args = append(args, limit)
+	where = append(where, "symbol LIKE ?")
+	args = append(args, "%USDT", bollPumpOverfetchLimit(limit))
 	q := `SELECT * FROM boll_pump_signals WHERE ` + strings.Join(where, " AND ") + ` ORDER BY signal_time_ms DESC, priority_score DESC LIMIT ?`
 	var rows []model.BollPumpSignal
-	return rows, store.SelectContext(ctx, &rows, q, args...)
+	if err := store.SelectContext(ctx, &rows, q, args...); err != nil {
+		return nil, err
+	}
+	return filterBollPumpSignalsForTradableUSDT(rows, limit), nil
 }
 
 func CleanupBollPumpSignals(ctx context.Context, store *sqlite.Store, retentionDays int) (int64, error) {
@@ -306,19 +314,19 @@ func BollPumpStats(ctx context.Context, store *sqlite.Store, market string, sinc
 	if sinceMs <= 0 {
 		sinceMs = time.Now().UnixMilli() - 30*24*60*60*1000
 	}
-	var levels []bollPumpCountRow
-	if err := store.SelectContext(ctx, &levels, `SELECT signal_level AS key, COUNT(*) AS n FROM boll_pump_signals WHERE market = ? AND signal_time_ms >= ? GROUP BY signal_level`, market, sinceMs); err != nil {
+	var levels []bollPumpSymbolKeyRow
+	if err := store.SelectContext(ctx, &levels, `SELECT signal_level AS key, symbol FROM boll_pump_signals WHERE market = ? AND signal_time_ms >= ? AND symbol LIKE ?`, market, sinceMs, "%USDT"); err != nil {
 		return nil, err
 	}
-	var timeframes []bollPumpCountRow
-	if err := store.SelectContext(ctx, &timeframes, `SELECT timeframe AS key, COUNT(*) AS n FROM boll_pump_signals WHERE market = ? AND signal_time_ms >= ? GROUP BY timeframe`, market, sinceMs); err != nil {
+	var timeframes []bollPumpSymbolKeyRow
+	if err := store.SelectContext(ctx, &timeframes, `SELECT timeframe AS key, symbol FROM boll_pump_signals WHERE market = ? AND signal_time_ms >= ? AND symbol LIKE ?`, market, sinceMs, "%USDT"); err != nil {
 		return nil, err
 	}
 	return map[string]interface{}{
 		"market":            market,
 		"generatedAtMs":     time.Now().UnixMilli(),
-		"countsByLevel":     countRowsMap(levels),
-		"countsByTimeframe": countRowsMap(timeframes),
+		"countsByLevel":     countTradableSymbolRowsMap(levels),
+		"countsByTimeframe": countTradableSymbolRowsMap(timeframes),
 	}, nil
 }
 
@@ -372,10 +380,51 @@ func clampBollPumpLimit(limit int) int {
 	return limit
 }
 
-func countRowsMap(rows []bollPumpCountRow) map[string]int64 {
+func bollPumpOverfetchLimit(limit int) int {
+	n := limit * 3
+	if n < limit {
+		n = limit
+	}
+	if n > 5000 {
+		return 5000
+	}
+	return n
+}
+
+func filterBollPumpSignalsForTradableUSDT(rows []model.BollPumpSignal, limit int) []model.BollPumpSignal {
+	out := make([]model.BollPumpSignal, 0, len(rows))
+	for _, row := range rows {
+		if !bollPumpTradableUSDTSymbol(row.Symbol) {
+			continue
+		}
+		out = append(out, row)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
+func filterBollPumpStatesForTradableUSDT(rows []model.BollPumpState, limit int) []model.BollPumpState {
+	out := make([]model.BollPumpState, 0, len(rows))
+	for _, row := range rows {
+		if !bollPumpTradableUSDTSymbol(row.Symbol) {
+			continue
+		}
+		out = append(out, row)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
+func countTradableSymbolRowsMap(rows []bollPumpSymbolKeyRow) map[string]int64 {
 	out := make(map[string]int64, len(rows))
 	for _, r := range rows {
-		out[r.Key] = r.N
+		if bollPumpTradableUSDTSymbol(r.Symbol) {
+			out[r.Key]++
+		}
 	}
 	return out
 }
