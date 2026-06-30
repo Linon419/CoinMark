@@ -43,6 +43,11 @@ function defaultBollPumpSettings(): BollPumpSettings {
     trend_weak_penalty: 0,
     trend_wick_body_max_ratio: 0.35,
     trend_efficiency_min: 0.3,
+    minimum_trend_timeframe: "15m",
+    minimum_trend_check_candles: 8,
+    minimum_trend_gain_pct: 0.01,
+    minimum_trend_efficiency_min: 0.45,
+    minimum_trend_rising_ratio: 0.6,
     resistance_4h_lookback: 60,
     resistance_4h_swing_span: 2,
     resistance_4h_cluster_atr: 0.5,
@@ -517,6 +522,42 @@ export default function BollPumpPage() {
               <label>
                 <span>趋势效率下限</span>
                 <InputNumber min={0.05} max={1} step={0.05} value={settingsDraft.trend_efficiency_min} onChange={(v) => patchDraft({ trend_efficiency_min: Number(v || 0.3) })} />
+              </label>
+              <label>
+                <span>最小趋势周期</span>
+                <Select value={settingsDraft.minimum_trend_timeframe} onChange={(v) => patchDraft({ minimum_trend_timeframe: v as "15m" | "30m" | "1h" })}>
+                  <Select.Option value="15m">15m</Select.Option>
+                  <Select.Option value="30m">30m</Select.Option>
+                  <Select.Option value="1h">1h</Select.Option>
+                </Select>
+              </label>
+              <label>
+                <span>最小趋势K数</span>
+                <InputNumber min={3} max={40} value={settingsDraft.minimum_trend_check_candles} onChange={(v) => patchDraft({ minimum_trend_check_candles: Number(v || 8) })} />
+              </label>
+              <label>
+                <span>最小趋势涨幅%</span>
+                <InputNumber
+                  min={0.1}
+                  max={20}
+                  step={0.1}
+                  value={Number((settingsDraft.minimum_trend_gain_pct * 100).toFixed(2))}
+                  onChange={(v) => patchDraft({ minimum_trend_gain_pct: Number(v || 1) / 100 })}
+                />
+              </label>
+              <label>
+                <span>最小趋势效率</span>
+                <InputNumber min={0.05} max={1} step={0.05} value={settingsDraft.minimum_trend_efficiency_min} onChange={(v) => patchDraft({ minimum_trend_efficiency_min: Number(v || 0.45) })} />
+              </label>
+              <label>
+                <span>收涨比例</span>
+                <InputNumber
+                  min={10}
+                  max={100}
+                  step={5}
+                  value={Number((settingsDraft.minimum_trend_rising_ratio * 100).toFixed(0))}
+                  onChange={(v) => patchDraft({ minimum_trend_rising_ratio: Number(v || 60) / 100 })}
+                />
               </label>
             </div>
           </div>

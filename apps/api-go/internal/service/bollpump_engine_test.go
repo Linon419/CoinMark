@@ -76,6 +76,24 @@ func TestBollPumpStartupTrendScoreOnlyPenalizesWicks(t *testing.T) {
 	}
 }
 
+func TestBollPumpMinimumTrendRequiresClearFifteenMinuteUptrend(t *testing.T) {
+	cfg := DefaultBollPumpConfig()
+	clear := bollPumpFixtureClearTrend(100, 8)
+	got := bollPumpMinimumTrendGate(clear, cfg)
+	if !got.Pass {
+		t.Fatalf("clear trend pass = false, reason=%q", got.Reason)
+	}
+
+	choppy := bollPumpFixtureChoppyTrend(100, 8)
+	got = bollPumpMinimumTrendGate(choppy, cfg)
+	if got.Pass {
+		t.Fatalf("choppy trend pass = true, want false")
+	}
+	if !strings.Contains(got.Reason, "15m trend") {
+		t.Fatalf("reason = %q, want 15m trend context", got.Reason)
+	}
+}
+
 func TestBollPumpFourHourResistanceBreakoutFindsKeySwingCluster(t *testing.T) {
 	cfg := DefaultBollPumpConfig()
 	cfg.Resistance4HLookback = 40
@@ -373,6 +391,47 @@ func bollPumpFixtureFourHourResistanceBreakout() []BollPumpBar {
 			Close:       closePrice,
 			Volume:      1000 + float64(i),
 			QuoteVolume: (1000 + float64(i)) * closePrice,
+			Closed:      true,
+		})
+	}
+	return bars
+}
+
+func bollPumpFixtureClearTrend(start float64, n int) []BollPumpBar {
+	bars := make([]BollPumpBar, 0, n)
+	price := start
+	for i := 0; i < n; i++ {
+		price += 0.45 + float64(i)*0.03
+		bars = append(bars, BollPumpBar{
+			OpenTimeMs:  int64(i) * 15 * 60 * 1000,
+			CloseTimeMs: int64(i+1)*15*60*1000 - 1,
+			Open:        price - 0.25,
+			High:        price + 0.18,
+			Low:         price - 0.34,
+			Close:       price,
+			Volume:      100 + float64(i),
+			QuoteVolume: (100 + float64(i)) * price,
+			Closed:      true,
+		})
+	}
+	return bars
+}
+
+func bollPumpFixtureChoppyTrend(start float64, n int) []BollPumpBar {
+	bars := make([]BollPumpBar, 0, n)
+	moves := []float64{0.2, -0.25, 0.15, -0.2, 0.22, -0.18, 0.12, -0.1}
+	price := start
+	for i := 0; i < n; i++ {
+		price += moves[i%len(moves)]
+		bars = append(bars, BollPumpBar{
+			OpenTimeMs:  int64(i) * 15 * 60 * 1000,
+			CloseTimeMs: int64(i+1)*15*60*1000 - 1,
+			Open:        price + 0.01,
+			High:        price + 0.9,
+			Low:         price - 0.8,
+			Close:       price,
+			Volume:      100 + float64(i),
+			QuoteVolume: (100 + float64(i)) * price,
 			Closed:      true,
 		})
 	}

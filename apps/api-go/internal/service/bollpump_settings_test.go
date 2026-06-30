@@ -22,6 +22,11 @@ func TestBollPumpSettingsRoundTrip(t *testing.T) {
 	cfg.TrendWeakPenalty = -12
 	cfg.TrendWickBodyMaxRatio = 0.22
 	cfg.TrendEfficiencyMin = 0.41
+	cfg.MinimumTrendTimeframe = "30m"
+	cfg.MinimumTrendCheckCandles = 12
+	cfg.MinimumTrendGainPct = 0.02
+	cfg.MinimumTrendEfficiencyMin = 0.55
+	cfg.MinimumTrendRisingRatio = 0.7
 	cfg.Resistance4HLookback = 72
 	cfg.Resistance4HSwingSpan = 3
 	cfg.Resistance4HClusterATR = 0.7
@@ -69,6 +74,21 @@ func TestBollPumpSettingsRoundTrip(t *testing.T) {
 	}
 	if got.TrendEfficiencyMin != 0.41 {
 		t.Fatalf("trend efficiency min = %v, want 0.41", got.TrendEfficiencyMin)
+	}
+	if got.MinimumTrendTimeframe != "30m" {
+		t.Fatalf("minimum trend timeframe = %s, want 30m", got.MinimumTrendTimeframe)
+	}
+	if got.MinimumTrendCheckCandles != 12 {
+		t.Fatalf("minimum trend candles = %d, want 12", got.MinimumTrendCheckCandles)
+	}
+	if got.MinimumTrendGainPct != 0.02 {
+		t.Fatalf("minimum trend gain = %v, want 0.02", got.MinimumTrendGainPct)
+	}
+	if got.MinimumTrendEfficiencyMin != 0.55 {
+		t.Fatalf("minimum trend efficiency = %v, want 0.55", got.MinimumTrendEfficiencyMin)
+	}
+	if got.MinimumTrendRisingRatio != 0.7 {
+		t.Fatalf("minimum trend rising ratio = %v, want 0.7", got.MinimumTrendRisingRatio)
 	}
 	if got.Resistance4HLookback != 72 {
 		t.Fatalf("4h lookback = %d, want 72", got.Resistance4HLookback)

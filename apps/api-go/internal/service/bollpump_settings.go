@@ -125,6 +125,21 @@ func NormalizeBollPumpConfig(in BollPumpConfig) BollPumpConfig {
 	if in.TrendEfficiencyMin > 0 {
 		out.TrendEfficiencyMin = clampFloat(in.TrendEfficiencyMin, 0.05, 1)
 	}
+	if tf := normalizeMinimumTrendTimeframe(in.MinimumTrendTimeframe); tf != "" {
+		out.MinimumTrendTimeframe = tf
+	}
+	if in.MinimumTrendCheckCandles > 0 {
+		out.MinimumTrendCheckCandles = clampInt(in.MinimumTrendCheckCandles, 3, 40)
+	}
+	if in.MinimumTrendGainPct > 0 {
+		out.MinimumTrendGainPct = clampFloat(in.MinimumTrendGainPct, 0.001, 0.2)
+	}
+	if in.MinimumTrendEfficiencyMin > 0 {
+		out.MinimumTrendEfficiencyMin = clampFloat(in.MinimumTrendEfficiencyMin, 0.05, 1)
+	}
+	if in.MinimumTrendRisingRatio > 0 {
+		out.MinimumTrendRisingRatio = clampFloat(in.MinimumTrendRisingRatio, 0.1, 1)
+	}
 	if in.Resistance4HLookback > 0 {
 		out.Resistance4HLookback = clampInt(in.Resistance4HLookback, 20, 200)
 	}
@@ -182,6 +197,15 @@ func normalizeBollPumpTimeframes(input []string) []string {
 		}
 	}
 	return out
+}
+
+func normalizeMinimumTrendTimeframe(tf string) string {
+	switch strings.TrimSpace(tf) {
+	case "15m", "30m", "1h":
+		return strings.TrimSpace(tf)
+	default:
+		return ""
+	}
 }
 
 func mergeIntTimeframeMap(def map[string]int, input map[string]int, min, max int) map[string]int {

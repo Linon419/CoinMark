@@ -70,6 +70,11 @@ type BollPumpConfig struct {
 	TrendWeakPenalty              float64            `json:"trend_weak_penalty"`
 	TrendWickBodyMaxRatio         float64            `json:"trend_wick_body_max_ratio"`
 	TrendEfficiencyMin            float64            `json:"trend_efficiency_min"`
+	MinimumTrendTimeframe         string             `json:"minimum_trend_timeframe"`
+	MinimumTrendCheckCandles      int                `json:"minimum_trend_check_candles"`
+	MinimumTrendGainPct           float64            `json:"minimum_trend_gain_pct"`
+	MinimumTrendEfficiencyMin     float64            `json:"minimum_trend_efficiency_min"`
+	MinimumTrendRisingRatio       float64            `json:"minimum_trend_rising_ratio"`
 	Resistance4HLookback          int                `json:"resistance_4h_lookback"`
 	Resistance4HSwingSpan         int                `json:"resistance_4h_swing_span"`
 	Resistance4HClusterATR        float64            `json:"resistance_4h_cluster_atr"`

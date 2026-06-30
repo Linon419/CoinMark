@@ -43,6 +43,11 @@ func DefaultBollPumpConfig() BollPumpConfig {
 		TrendWeakPenalty:              0,
 		TrendWickBodyMaxRatio:         0.35,
 		TrendEfficiencyMin:            0.30,
+		MinimumTrendTimeframe:         "15m",
+		MinimumTrendCheckCandles:      8,
+		MinimumTrendGainPct:           0.01,
+		MinimumTrendEfficiencyMin:     0.45,
+		MinimumTrendRisingRatio:       0.60,
 		Resistance4HLookback:          60,
 		Resistance4HSwingSpan:         2,
 		Resistance4HClusterATR:        0.5,
@@ -189,6 +194,80 @@ func bollPumpStartupTrendScore(bars []BollPumpBar, startIdx, endIdx int, cfg Bol
 		reasons = append(reasons, fmt.Sprintf("clean trend %.2f", efficiency))
 	}
 	return score, reasons
+}
+
+type bollPumpMinimumTrendGateResult struct {
+	Pass   bool
+	Reason string
+}
+
+func bollPumpMinimumTrendGate(bars []BollPumpBar, cfg BollPumpConfig) bollPumpMinimumTrendGateResult {
+	cfg = NormalizeBollPumpConfig(cfg)
+	closed := make([]BollPumpBar, 0, len(bars))
+	for _, b := range bars {
+		if b.Closed && b.Close > 0 {
+			closed = append(closed, b)
+		}
+	}
+	n := cfg.MinimumTrendCheckCandles
+	if len(closed) < n {
+		return bollPumpMinimumTrendGateResult{Reason: fmt.Sprintf("%s trend insufficient candles %d/%d", cfg.MinimumTrendTimeframe, len(closed), n)}
+	}
+	start := len(closed) - n
+	window := closed[start:]
+	first := window[0].Close
+	last := window[len(window)-1].Close
+	if first <= 0 {
+		return bollPumpMinimumTrendGateResult{Reason: fmt.Sprintf("%s trend invalid price", cfg.MinimumTrendTimeframe)}
+	}
+
+	path := 0.0
+	rising := 0
+	wickHeavy := 0
+	for i := range window {
+		b := window[i]
+		rng := b.High - b.Low
+		if rng > 0 {
+			bodyRatio := math.Abs(b.Close-b.Open) / rng
+			if bodyRatio <= cfg.TrendWickBodyMaxRatio {
+				wickHeavy++
+			}
+		}
+		if i == 0 {
+			continue
+		}
+		delta := b.Close - window[i-1].Close
+		path += math.Abs(delta)
+		if delta > 0 {
+			rising++
+		}
+	}
+
+	gain := last/first - 1
+	efficiency := 0.0
+	if path > 0 && last > first {
+		efficiency = (last - first) / path
+	}
+	steps := len(window) - 1
+	risingRatio := 0.0
+	if steps > 0 {
+		risingRatio = float64(rising) / float64(steps)
+	}
+
+	pass := gain >= cfg.MinimumTrendGainPct &&
+		efficiency >= cfg.MinimumTrendEfficiencyMin &&
+		risingRatio >= cfg.MinimumTrendRisingRatio &&
+		wickHeavy*2 < len(window)
+	reason := fmt.Sprintf(
+		"%s trend gain %.2f%% efficiency %.2f rising %.0f%% wick %d/%d",
+		cfg.MinimumTrendTimeframe,
+		gain*100,
+		efficiency,
+		risingRatio*100,
+		wickHeavy,
+		len(window),
+	)
+	return bollPumpMinimumTrendGateResult{Pass: pass, Reason: reason}
 }
 
 type bollPumpResistanceBreakoutResult struct {

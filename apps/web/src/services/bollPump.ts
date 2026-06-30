@@ -66,6 +66,11 @@ export type BollPumpSettings = {
   trend_weak_penalty: number;
   trend_wick_body_max_ratio: number;
   trend_efficiency_min: number;
+  minimum_trend_timeframe: "15m" | "30m" | "1h";
+  minimum_trend_check_candles: number;
+  minimum_trend_gain_pct: number;
+  minimum_trend_efficiency_min: number;
+  minimum_trend_rising_ratio: number;
   resistance_4h_lookback: number;
   resistance_4h_swing_span: number;
   resistance_4h_cluster_atr: number;

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"coinmark/api-go/internal/config"
+	"coinmark/api-go/internal/model"
 )
 
 type fakeBollPumpSource struct {
@@ -14,6 +15,7 @@ type fakeBollPumpSource struct {
 	symbols          []string
 	symbolLimit      int
 	requestedSymbols []string
+	requestedTFs     []string
 }
 
 func (f *fakeBollPumpSource) Symbols(ctx context.Context, market string, limit int) ([]string, error) {
@@ -26,6 +28,7 @@ func (f *fakeBollPumpSource) Symbols(ctx context.Context, market string, limit i
 
 func (f *fakeBollPumpSource) Klines(ctx context.Context, market, symbol, timeframe string, limit int) ([]BollPumpBar, error) {
 	f.requestedSymbols = append(f.requestedSymbols, symbol)
+	f.requestedTFs = append(f.requestedTFs, timeframe)
 	return f.bars[timeframe], nil
 }
 
@@ -152,6 +155,50 @@ func TestBollPumpScannerAddsFourHourResistanceBreakoutScore(t *testing.T) {
 	}
 	if !strings.Contains(rows[0].Reason, "4h resistance breakout") {
 		t.Fatalf("reason = %q, want 4h resistance breakout", rows[0].Reason)
+	}
+}
+
+func TestBollPumpScannerRequiresFifteenMinuteClearUptrend(t *testing.T) {
+	ctx := context.Background()
+	store := openBollPumpTestStore(t)
+	defer store.Close()
+
+	cfg := DefaultBollPumpConfig()
+	cfg.Timeframes = []string{"1m"}
+	cfg.Resistance4HBreakoutBonus = 0
+	source := &fakeBollPumpSource{
+		bars: map[string][]BollPumpBar{
+			"1m":  bollPumpFixtureQuietBaseThenPump("1m"),
+			"15m": bollPumpFixtureChoppyTrend(100, cfg.MinimumTrendCheckCandles),
+		},
+		quote: map[string]float64{"XYZUSDT": 3_000_000},
+	}
+	if err := SaveBollPumpState(ctx, store, model.BollPumpState{
+		Market:        "swap",
+		Symbol:        "XYZUSDT",
+		Timeframe:     "1m",
+		Status:        string(BollPumpStatusWatch),
+		CurrentScore:  88,
+		PriorityScore: 88,
+		WatchScore:    88,
+	}); err != nil {
+		t.Fatalf("save state: %v", err)
+	}
+	scanner := NewBollPumpScanner(source, store, cfg)
+
+	result := scanner.ScanTimeframe(ctx, "1m")
+	if result.SignalsFound != 0 {
+		t.Fatalf("signals found = %d, want 0 when 15m trend is unclear", result.SignalsFound)
+	}
+	states, err := ListBollPumpStates(ctx, store, BollPumpStateFilter{Market: "swap", MinPriorityScore: 60, Limit: 10})
+	if err != nil {
+		t.Fatalf("list states: %v", err)
+	}
+	if len(states) != 0 {
+		t.Fatalf("active states = %d, want 0 after 15m trend invalidation", len(states))
+	}
+	if !strings.Contains(strings.Join(source.requestedTFs, ","), "15m") {
+		t.Fatalf("requested timeframes = %v, want 15m trend check", source.requestedTFs)
 	}
 }
 

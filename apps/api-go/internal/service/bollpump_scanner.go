@@ -82,6 +82,24 @@ func (s *BollPumpScanner) ScanTimeframe(ctx context.Context, timeframe string) B
 		quoteVolume, _ := s.source.QuoteVolume24h(ctx, normalizeBollPumpMarket(s.cfg.Market), symbol)
 		ind := ComputeBollPumpIndicators(bars, s.cfg.BollPeriod, s.cfg.BollStdDev, s.cfg.ATRPeriod)
 		state := s.loadRuntimeState(ctx, symbol, timeframe)
+		var trendGate bollPumpMinimumTrendGateResult
+		trendChecked := false
+		checkTrend := func() bollPumpMinimumTrendGateResult {
+			if !trendChecked {
+				trendGate = s.minimumTrendGate(ctx, symbol, timeframe, bars)
+				trendChecked = true
+			}
+			return trendGate
+		}
+		if bollPumpStateNeedsMinimumTrend(state) {
+			gate := checkTrend()
+			if !gate.Pass {
+				s.invalidateStateForMinimumTrend(ctx, &state)
+				s.persistState(ctx, state)
+				result.SymbolsScanned++
+				continue
+			}
+		}
 		latestOpen := bars[len(bars)-1].OpenTimeMs
 		var resistanceBreakout bollPumpResistanceBreakoutResult
 		resistanceChecked := false
@@ -91,10 +109,16 @@ func (s *BollPumpScanner) ScanTimeframe(ctx context.Context, timeframe string) B
 				if s.store != nil && sig.CandleStartMs != latestOpen {
 					continue
 				}
+				gate := checkTrend()
+				if !gate.Pass {
+					s.invalidateStateForMinimumTrend(ctx, &state)
+					continue
+				}
 				if !resistanceChecked {
 					resistanceBreakout = s.fourHourResistanceBreakout(ctx, symbol)
 					resistanceChecked = true
 				}
+				sig = applyBollPumpMinimumTrendGate(sig, gate)
 				sig = applyBollPumpResistanceBreakout(sig, resistanceBreakout)
 				if resistanceBreakout.Triggered {
 					state.CurrentScore = sig.Score
@@ -110,6 +134,58 @@ func (s *BollPumpScanner) ScanTimeframe(ctx context.Context, timeframe string) B
 		result.SymbolsScanned++
 	}
 	return result
+}
+
+func bollPumpStateNeedsMinimumTrend(state BollPumpRuntimeState) bool {
+	switch state.Status {
+	case string(BollPumpStatusWatch), string(BollPumpStatusPullback1Pending), string(BollPumpStatusConfirm1), string(BollPumpStatusPullback2Pending), string(BollPumpStatusConfirm2), string(BollPumpStatusCompleted):
+		return state.CurrentScore > 0 || state.WatchScore > 0
+	default:
+		return false
+	}
+}
+
+func (s *BollPumpScanner) minimumTrendGate(ctx context.Context, symbol, timeframe string, bars []BollPumpBar) bollPumpMinimumTrendGateResult {
+	if s == nil || s.source == nil {
+		return bollPumpMinimumTrendGateResult{Reason: "15m trend source unavailable"}
+	}
+	tf := NormalizeBollPumpConfig(s.cfg).MinimumTrendTimeframe
+	trendBars := bars
+	if timeframe != tf {
+		limit := s.cfg.MinimumTrendCheckCandles + s.cfg.BollPeriod + 10
+		if limit < 60 {
+			limit = 60
+		}
+		loaded, err := s.source.Klines(ctx, normalizeBollPumpMarket(s.cfg.Market), symbol, tf, limit)
+		if err != nil || len(loaded) == 0 {
+			return bollPumpMinimumTrendGateResult{Reason: fmt.Sprintf("%s trend unavailable", tf)}
+		}
+		trendBars = bollPumpClosedBars(loaded)
+	}
+	return bollPumpMinimumTrendGate(trendBars, s.cfg)
+}
+
+func (s *BollPumpScanner) invalidateStateForMinimumTrend(ctx context.Context, state *BollPumpRuntimeState) {
+	if state == nil || state.Status == "" || state.Status == string(BollPumpStatusIdle) {
+		return
+	}
+	state.Status = string(BollPumpStatusInvalidated)
+	state.CurrentScore = 0
+	state.WatchScore = 0
+	state.LastSignalLevel = ""
+	s.persistState(ctx, *state)
+}
+
+func applyBollPumpMinimumTrendGate(sig model.BollPumpSignal, gate bollPumpMinimumTrendGateResult) model.BollPumpSignal {
+	if !gate.Pass || strings.TrimSpace(gate.Reason) == "" {
+		return sig
+	}
+	if strings.TrimSpace(sig.Reason) == "" {
+		sig.Reason = gate.Reason
+	} else if !strings.Contains(sig.Reason, gate.Reason) {
+		sig.Reason += ", " + gate.Reason
+	}
+	return sig
 }
 
 func (s *BollPumpScanner) fourHourResistanceBreakout(ctx context.Context, symbol string) bollPumpResistanceBreakoutResult {
