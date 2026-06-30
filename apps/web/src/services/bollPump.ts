@@ -23,6 +23,7 @@ export type BollPumpState = {
   market: string;
   symbol: string;
   timeframe: string;
+  dominant_timeframe?: string;
   status: string;
   current_score: number;
   confluence_score: number;

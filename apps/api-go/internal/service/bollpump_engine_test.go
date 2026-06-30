@@ -192,6 +192,15 @@ func TestBollPumpRejectsWeakLowerBandBounce(t *testing.T) {
 	}
 }
 
+func TestBollPumpPullbackCandidateAllowsNearLowerBandHold(t *testing.T) {
+	in := BollPumpIndicator{Lower: 100, Middle: 110, ValidBoll: true}
+	b := BollPumpBar{Low: 105.5, Close: 106}
+
+	if !bollPumpIsPullbackCandidate(b, in) {
+		t.Fatalf("near lower-band hold should be a pullback candidate")
+	}
+}
+
 func TestBollPumpSecondLowInvalidation(t *testing.T) {
 	firstLow := 100.0
 	atr := 2.0

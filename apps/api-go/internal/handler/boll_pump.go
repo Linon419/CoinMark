@@ -23,6 +23,11 @@ func registerBollPumpRoutes(g *gin.RouterGroup, d *Deps) {
 	r.GET("/signals/:id/detail", handleBollPumpSignalDetail(d))
 }
 
+type bollPumpStateView struct {
+	model.BollPumpState
+	DominantTimeframe string `json:"dominant_timeframe"`
+}
+
 func handleBollPumpSignals(d *Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		rows, err := service.ListBollPumpSignals(c.Request.Context(), d.Store, service.BollPumpSignalFilter{
@@ -56,7 +61,82 @@ func handleBollPumpStates(d *Deps) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"items": rows, "limit": len(rows)})
+		views, err := bollPumpStateViews(c.Request.Context(), d, rows)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"items": views, "limit": len(rows)})
+	}
+}
+
+func bollPumpStateViews(ctx context.Context, d *Deps, rows []model.BollPumpState) ([]bollPumpStateView, error) {
+	out := make([]bollPumpStateView, 0, len(rows))
+	bySymbol := map[string][]model.BollPumpState{}
+	for _, row := range rows {
+		bySymbol[row.Symbol] = append(bySymbol[row.Symbol], row)
+	}
+	if d != nil && d.Store != nil {
+		seen := map[string]bool{}
+		for _, row := range rows {
+			key := row.Market + ":" + row.Symbol
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			peers, err := service.ListBollPumpStates(ctx, d.Store, service.BollPumpStateFilter{Market: row.Market, Symbol: row.Symbol, Limit: 20})
+			if err != nil {
+				return nil, err
+			}
+			bySymbol[row.Symbol] = peers
+		}
+	}
+	for _, row := range rows {
+		out = append(out, bollPumpStateView{
+			BollPumpState:     row,
+			DominantTimeframe: bollPumpDominantTimeframe(row, bySymbol[row.Symbol]),
+		})
+	}
+	return out, nil
+}
+
+func bollPumpDominantTimeframe(row model.BollPumpState, peers []model.BollPumpState) string {
+	baseRank := bollPumpTimeframeRank(row.Timeframe)
+	if baseRank < 0 {
+		return row.Timeframe
+	}
+	best := row.Timeframe
+	bestRank := 99
+	for _, peer := range peers {
+		rank := bollPumpTimeframeRank(peer.Timeframe)
+		if rank <= baseRank || rank >= bestRank {
+			continue
+		}
+		if peer.PriorityScore < 70 || peer.Status == string(service.BollPumpStatusInvalidated) {
+			continue
+		}
+		best = peer.Timeframe
+		bestRank = rank
+	}
+	return best
+}
+
+func bollPumpTimeframeRank(tf string) int {
+	switch tf {
+	case "1m":
+		return 0
+	case "3m":
+		return 1
+	case "5m":
+		return 2
+	case "15m":
+		return 3
+	case "30m":
+		return 4
+	case "1h":
+		return 5
+	default:
+		return -1
 	}
 }
 

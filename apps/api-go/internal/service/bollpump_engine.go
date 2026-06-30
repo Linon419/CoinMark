@@ -720,7 +720,13 @@ func bollPumpHasThreeMiddleClosesAfterWatch(state BollPumpRuntimeState, bars []B
 }
 
 func bollPumpIsPullbackCandidate(b BollPumpBar, in BollPumpIndicator) bool {
-	return in.ValidBoll && b.Low <= in.Lower && b.Close > in.Lower
+	if !in.ValidBoll || b.Close <= in.Lower {
+		return false
+	}
+	if b.Low <= in.Lower {
+		return true
+	}
+	return b.Low <= in.Lower+(in.Middle-in.Lower)*0.60
 }
 
 func bollPumpBounceRecovered(b BollPumpBar, in BollPumpIndicator) bool {

@@ -54,6 +54,51 @@ func TestBollPumpSignalsAPI(t *testing.T) {
 	}
 }
 
+func TestBollPumpStatesAPIAddsDominantTimeframe(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := openHandlerBollPumpStore(t)
+	defer store.Close()
+
+	ctx := context.Background()
+	if err := service.SaveBollPumpState(ctx, store, model.BollPumpState{
+		Market:        "swap",
+		Symbol:        "XYZUSDT",
+		Timeframe:     "1m",
+		Status:        "COMPLETED",
+		WatchScore:    120,
+		CurrentScore:  140,
+		PriorityScore: 140,
+		BounceCount:   2,
+		Details:       model.JSONB(`{}`),
+	}); err != nil {
+		t.Fatalf("save 1m state: %v", err)
+	}
+	if err := service.SaveBollPumpState(ctx, store, model.BollPumpState{
+		Market:        "swap",
+		Symbol:        "XYZUSDT",
+		Timeframe:     "3m",
+		Status:        "WATCH",
+		WatchScore:    85,
+		CurrentScore:  85,
+		PriorityScore: 85,
+		Details:       model.JSONB(`{}`),
+	}); err != nil {
+		t.Fatalf("save 3m state: %v", err)
+	}
+
+	r := gin.New()
+	RegisterRoutes(r, &Deps{Cfg: &config.Config{}, Store: store})
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/boll-pump/states?market=swap&symbol=XYZUSDT&timeframe=1m&limit=10", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"dominant_timeframe":"3m"`) {
+		t.Fatalf("response missing dominant timeframe: %s", w.Body.String())
+	}
+}
+
 func TestBollPumpSettingsAPI(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	store := openHandlerBollPumpStore(t)

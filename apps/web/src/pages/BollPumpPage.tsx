@@ -257,7 +257,16 @@ export default function BollPumpPage() {
   const stateColumns = useMemo(
     () => [
       { title: "Symbol", dataIndex: "symbol", width: 122, render: (v: string) => <strong className="cm-symbol">{v}</strong> },
-      { title: "周期", dataIndex: "timeframe", width: 66 },
+      { title: "触发", dataIndex: "timeframe", width: 66 },
+      {
+        title: "主导",
+        width: 74,
+        render: (_: any, r: BollPumpState) => {
+          const dominant = r.dominant_timeframe || r.timeframe;
+          const changed = dominant !== r.timeframe;
+          return <Tag className={changed ? "cm-bollDominantTfTag" : undefined} color={changed ? "gold" : "gray"}>{dominant}</Tag>;
+        },
+      },
       { title: "状态", width: 126, render: (_: any, r: BollPumpState) => <Tag color={levelColor(r.status)}>{r.status}</Tag> },
       { title: "反弹", dataIndex: "bounce_count", width: 70, align: "right" },
       { title: "共振", width: 76, align: "right", render: (_: any, r: BollPumpState) => <span className="cm-mono">+{fmtNum(Number(r.confluence_score || 0), 0)}</span> },
@@ -346,7 +355,7 @@ export default function BollPumpPage() {
               活跃状态
             </Title>
           </div>
-          <Table className="cm-bollTable" rowKey="id" size="small" columns={stateColumns as any} data={states as any} pagination={{ pageSize: 20 }} scroll={{ x: 546 }} />
+          <Table className="cm-bollTable" rowKey="id" size="small" columns={stateColumns as any} data={states as any} pagination={{ pageSize: 20 }} scroll={{ x: 620 }} />
         </div>
       </div>
 
