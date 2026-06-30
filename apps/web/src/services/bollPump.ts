@@ -25,6 +25,11 @@ export type BollPumpState = {
   timeframe: string;
   dominant_timeframe?: string;
   status: string;
+  watch_started_ms?: number | null;
+  watch_candle_start_ms?: number | null;
+  last_checked_candle_ms?: number | null;
+  expires_at_candle_ms?: number | null;
+  last_signal_level?: string | null;
   current_score: number;
   confluence_score: number;
   priority_score: number;

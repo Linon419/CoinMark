@@ -7,12 +7,14 @@ export type BollPumpCandidateState = {
   current_score?: number;
   confluence_score?: number;
   bounce_count: number;
+  expires_at_candle_ms?: number | null;
 };
 
 export type BollPumpCandidateSignal = {
   id: number;
   symbol: string;
   timeframe: string;
+  signal_level?: string;
   signal_time_ms?: number;
   reason?: string;
 };
@@ -25,9 +27,18 @@ export type BollPumpTradeCandidate = BollPumpCandidateState & {
 
 const inactiveStatuses = new Set(["IDLE", "EXPIRED", "INVALIDATED"]);
 const tradeStatuses = new Set(["CONFIRM_1", "CONFIRM_2", "COMPLETED"]);
+const confirmSignalLevels = new Set(["CONFIRM_1", "CONFIRM_2"]);
 
-export function filterActiveBollPumpStates<T extends { status: string }>(states: T[]): T[] {
-  return states.filter((state) => !inactiveStatuses.has(String(state.status || "").toUpperCase()));
+export function filterActiveBollPumpStates<T extends { status: string; expires_at_candle_ms?: number | null }>(states: T[], nowMs = Date.now()): T[] {
+  return states.filter((state) => {
+    if (inactiveStatuses.has(String(state.status || "").toUpperCase())) {
+      return false;
+    }
+    if (typeof state.expires_at_candle_ms === "number" && state.expires_at_candle_ms > 0 && state.expires_at_candle_ms <= nowMs) {
+      return false;
+    }
+    return true;
+  });
 }
 
 export function isBollPumpTradeCandidate(state: { status: string }): boolean {
@@ -38,13 +49,21 @@ export function hasBollPumpFourHourBreakout(signal?: { reason?: string | null })
   return String(signal?.reason || "").toLowerCase().includes("4h resistance breakout");
 }
 
+function isConfirmSignal(signal: BollPumpCandidateSignal): boolean {
+  return confirmSignalLevels.has(String(signal.signal_level || "").toUpperCase());
+}
+
 export function buildBollPumpTradeCandidates(
   states: BollPumpCandidateState[],
   signals: BollPumpCandidateSignal[],
   limit = 12,
+  nowMs = Date.now(),
 ): BollPumpTradeCandidate[] {
   const latestByKey = new Map<string, BollPumpCandidateSignal>();
   for (const signal of signals) {
+    if (!isConfirmSignal(signal)) {
+      continue;
+    }
     const key = `${signal.symbol}:${signal.timeframe}`;
     const prev = latestByKey.get(key);
     if (!prev || Number(signal.signal_time_ms || 0) > Number(prev.signal_time_ms || 0)) {
@@ -52,8 +71,9 @@ export function buildBollPumpTradeCandidates(
     }
   }
 
-  return filterActiveBollPumpStates(states)
+  return filterActiveBollPumpStates(states, nowMs)
     .filter(isBollPumpTradeCandidate)
+    .filter((state) => latestByKey.has(`${state.symbol}:${state.timeframe}`))
     .map((state) => {
       const latest = latestByKey.get(`${state.symbol}:${state.timeframe}`);
       const status = String(state.status || "").toUpperCase();

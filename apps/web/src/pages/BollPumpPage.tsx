@@ -123,7 +123,7 @@ export default function BollPumpPage() {
     try {
       const timeframeParam = selectedTimeframe ? `&timeframe=${encodeURIComponent(selectedTimeframe)}` : "";
       const [sig, st, stat] = await Promise.all([
-        fetchBollPumpSignals(`market=swap&limit=100${timeframeParam}`),
+        fetchBollPumpSignals(`market=swap&limit=300${timeframeParam}`),
         fetchBollPumpStates(`market=swap&limit=300&min_priority_score=60${timeframeParam}`),
         fetchBollPumpStats(),
       ]);
