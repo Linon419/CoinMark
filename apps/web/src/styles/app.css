@@ -318,6 +318,56 @@ body {
   gap: 8px;
 }
 
+.cm-bollStatButton {
+  width: 100%;
+  color: var(--cm-text);
+  font: inherit;
+  cursor: pointer;
+  appearance: none;
+  transition:
+    border-color 140ms ease,
+    background 140ms ease,
+    box-shadow 140ms ease,
+    transform 140ms ease;
+}
+
+.cm-bollStatButton:hover {
+  border-color: rgba(59, 130, 246, 0.34);
+  background: rgba(59, 130, 246, 0.08);
+  transform: translateY(-1px);
+}
+
+.cm-bollStatButton:focus-visible {
+  outline: 2px solid rgba(59, 130, 246, 0.42);
+  outline-offset: 2px;
+}
+
+.cm-bollStatButton--active {
+  border-color: rgba(59, 130, 246, 0.62);
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.15), rgba(16, 185, 129, 0.10));
+  box-shadow: inset 0 0 0 1px rgba(59, 130, 246, 0.18), 0 8px 18px rgba(59, 130, 246, 0.10);
+}
+
+.cm-bollStatButton--active .cm-muted,
+.cm-bollStatButton--active strong {
+  color: #1d4ed8;
+}
+
+:root[data-theme="dark"] .cm-bollStatButton:hover {
+  border-color: rgba(96, 165, 250, 0.44);
+  background: rgba(96, 165, 250, 0.10);
+}
+
+:root[data-theme="dark"] .cm-bollStatButton--active {
+  border-color: rgba(96, 165, 250, 0.62);
+  background: linear-gradient(135deg, rgba(96, 165, 250, 0.18), rgba(52, 211, 153, 0.10));
+}
+
+:root[data-theme="dark"] .cm-bollStatButton--active .cm-muted,
+:root[data-theme="dark"] .cm-bollStatButton--active strong {
+  color: #93c5fd;
+}
+
 .cm-bollStatItem strong {
   font-variant-numeric: tabular-nums;
 }

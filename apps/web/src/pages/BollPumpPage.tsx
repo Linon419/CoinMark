@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button, Drawer, InputNumber, Message, Select, Space, Switch, Table, Tag, Typography } from "@arco-design/web-react";
 import BollPumpChart from "../components/BollPumpChart";
 import {
@@ -104,13 +104,15 @@ export default function BollPumpPage() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
+  const [selectedTimeframe, setSelectedTimeframe] = useState<string | null>(null);
 
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
     setLoading(true);
     try {
+      const timeframeParam = selectedTimeframe ? `&timeframe=${encodeURIComponent(selectedTimeframe)}` : "";
       const [sig, st, stat] = await Promise.all([
-        fetchBollPumpSignals(),
-        fetchBollPumpStates("market=swap&limit=100&min_priority_score=60"),
+        fetchBollPumpSignals(`market=swap&limit=100${timeframeParam}`),
+        fetchBollPumpStates(`market=swap&limit=100&min_priority_score=60${timeframeParam}`),
         fetchBollPumpStats(),
       ]);
       setSignals(sig.items || []);
@@ -119,7 +121,7 @@ export default function BollPumpPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [selectedTimeframe]);
 
   const loadSettings = async () => {
     const res = await fetchBollPumpSettings();
@@ -129,11 +131,14 @@ export default function BollPumpPage() {
 
   useEffect(() => {
     void refresh();
-    void loadSettings();
     const timer = setInterval(() => {
       if (document.visibilityState === "visible") void refresh();
     }, 15000);
     return () => clearInterval(timer);
+  }, [refresh]);
+
+  useEffect(() => {
+    void loadSettings();
   }, []);
 
   const patchDraft = (patch: Partial<BollPumpSettings>) => {
@@ -304,10 +309,16 @@ export default function BollPumpPage() {
 
       <div className="cm-bollStats">
         {["1m", "3m", "5m", "15m", "30m", "1h"].map((tf) => (
-          <div key={tf} className="cm-bollStatItem">
+          <button
+            key={tf}
+            type="button"
+            className={selectedTimeframe === tf ? "cm-bollStatItem cm-bollStatButton cm-bollStatButton--active" : "cm-bollStatItem cm-bollStatButton"}
+            aria-pressed={selectedTimeframe === tf}
+            onClick={() => setSelectedTimeframe((prev) => (prev === tf ? null : tf))}
+          >
             <span className="cm-muted">{tf}</span>
             <strong>{countsByTimeframe[tf] || 0}</strong>
-          </div>
+          </button>
         ))}
       </div>
 
