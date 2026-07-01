@@ -9,12 +9,14 @@ import {
 } from "./bollPumpCandidates";
 import {
   fetchBollPumpDetail,
+  fetchBollPumpFlowSnapshots,
   fetchBollPumpSignals,
   fetchBollPumpSettings,
   fetchBollPumpStates,
   fetchBollPumpStats,
   saveBollPumpSettings,
   type BollPumpDetail,
+  type BollPumpFlowSnapshot,
   type BollPumpSettings,
   type BollPumpSignal,
   type BollPumpState,
@@ -118,6 +120,21 @@ function fmtPrice(v: number) {
   return v.toPrecision(5);
 }
 
+function fmtCompactUSD(v: number) {
+  if (!Number.isFinite(v)) return "-";
+  const abs = Math.abs(v);
+  if (abs >= 1_000_000_000) return `${(v / 1_000_000_000).toFixed(2)}B`;
+  if (abs >= 1_000_000) return `${(v / 1_000_000).toFixed(2)}M`;
+  if (abs >= 1_000) return `${(v / 1_000).toFixed(1)}K`;
+  return v.toFixed(0);
+}
+
+function flowLabel(v?: BollPumpFlowSnapshot) {
+  if (!v || !Number.isFinite(v.netNotional)) return "资金 -";
+  const prefix = v.netNotional >= 0 ? "净流入" : "净流出";
+  return `${prefix} ${fmtCompactUSD(Math.abs(v.netNotional))}`;
+}
+
 function hasFourHourResistanceBreakout(signal: BollPumpSignal) {
   return hasBollPumpFourHourBreakout(signal);
 }
@@ -141,6 +158,7 @@ export default function BollPumpPage() {
   const [selectedTimeframe, setSelectedTimeframe] = useState<string | null>(null);
   const [inactiveStateCount, setInactiveStateCount] = useState(0);
   const [candidatePage, setCandidatePage] = useState(1);
+  const [flowSnapshots, setFlowSnapshots] = useState<Record<string, BollPumpFlowSnapshot>>({});
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -338,10 +356,35 @@ export default function BollPumpPage() {
   const candidatePageEnd = Math.min(tradeCandidates.length, candidatePageStart + TRADE_CANDIDATE_PAGE_SIZE);
   const pagedTradeCandidates = useMemo(() => tradeCandidates.slice(candidatePageStart, candidatePageEnd), [tradeCandidates, candidatePageStart, candidatePageEnd]);
   const candidateRangeStart = tradeCandidates.length > 0 ? candidatePageStart + 1 : 0;
+  const candidateFlowSymbols = useMemo(() => [...new Set(pagedTradeCandidates.map((x) => x.symbol).filter(Boolean))].join(","), [pagedTradeCandidates]);
 
   useEffect(() => {
     setCandidatePage((prev) => Math.min(prev, candidatePageCount));
   }, [candidatePageCount]);
+
+  useEffect(() => {
+    if (!candidateFlowSymbols) {
+      setFlowSnapshots({});
+      return;
+    }
+    let cancelled = false;
+    const tzOffsetMin = new Date().getTimezoneOffset();
+    fetchBollPumpFlowSnapshots(`market=swap&symbols=${encodeURIComponent(candidateFlowSymbols)}&timeMode=local&tzOffsetMin=${tzOffsetMin}`)
+      .then((res) => {
+        if (cancelled) return;
+        const next: Record<string, BollPumpFlowSnapshot> = {};
+        for (const item of res.items || []) {
+          next[item.symbol] = item;
+        }
+        setFlowSnapshots(next);
+      })
+      .catch(() => {
+        if (!cancelled) setFlowSnapshots({});
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [candidateFlowSymbols]);
 
   return (
     <div className="cm-page cm-bollPage">
@@ -429,6 +472,12 @@ export default function BollPumpPage() {
                     </span>
                     <span>
                       反弹 <b>{candidate.bounce_count}</b>
+                    </span>
+                  </div>
+                  <div className="cm-bollCandidateFlow">
+                    <span className={Number(flowSnapshots[candidate.symbol]?.netNotional || 0) >= 0 ? "cm-number--pos" : "cm-number--neg"}>{flowLabel(flowSnapshots[candidate.symbol])}</span>
+                    <span>
+                      买/卖 {fmtCompactUSD(Number(flowSnapshots[candidate.symbol]?.buyNotional || 0))}/{fmtCompactUSD(Number(flowSnapshots[candidate.symbol]?.sellNotional || 0))}
                     </span>
                   </div>
                   <div className="cm-bollCandidateBottom">

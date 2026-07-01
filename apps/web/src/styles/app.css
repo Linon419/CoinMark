@@ -449,6 +449,23 @@ body {
   font-weight: 700;
 }
 
+.cm-bollCandidateFlow {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin: -2px 0 10px;
+  color: var(--cm-muted);
+  font-size: 11px;
+  line-height: 1.25;
+}
+
+.cm-bollCandidateFlow span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .cm-bollCandidateBottom {
   min-width: 0;
   justify-content: flex-start;

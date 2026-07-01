@@ -45,6 +45,14 @@ export type BollPumpDetail = {
   markers: Array<{ time: number; label: string; price: number; kind: string }>;
 };
 
+export type BollPumpFlowSnapshot = {
+  symbol: string;
+  buyNotional: number;
+  sellNotional: number;
+  netNotional: number;
+  quoteNotional: number;
+};
+
 export type BollPumpSettings = {
   enabled: boolean;
   market: "swap" | "spot";
@@ -126,6 +134,10 @@ export function fetchBollPumpStats(params = "market=swap") {
 
 export function fetchBollPumpDetail(id: number) {
   return req<BollPumpDetail>(`/api/boll-pump/signals/${id}/detail`);
+}
+
+export function fetchBollPumpFlowSnapshots(params: string) {
+  return req<{ items: BollPumpFlowSnapshot[]; market: string; dayStartMs: number; timeMode: string }>(`/api/boll-pump/flow-snapshots?${params}`);
 }
 
 export function fetchBollPumpSettings() {

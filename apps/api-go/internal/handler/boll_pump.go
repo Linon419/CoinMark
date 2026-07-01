@@ -20,6 +20,7 @@ func registerBollPumpRoutes(g *gin.RouterGroup, d *Deps) {
 	r.GET("/stats", handleBollPumpStats(d))
 	r.GET("/settings", handleBollPumpSettings(d))
 	r.PUT("/settings", handlePutBollPumpSettings(d))
+	r.GET("/flow-snapshots", handleBollPumpFlowSnapshots(d))
 	r.GET("/signals/:id/detail", handleBollPumpSignalDetail(d))
 }
 
@@ -68,6 +69,94 @@ func handleBollPumpStates(d *Deps) gin.HandlerFunc {
 		}
 		c.JSON(http.StatusOK, gin.H{"items": views, "limit": len(rows)})
 	}
+}
+
+func handleBollPumpFlowSnapshots(d *Deps) gin.HandlerFunc {
+	type item struct {
+		Symbol        string  `json:"symbol"`
+		BuyNotional   float64 `json:"buyNotional"`
+		SellNotional  float64 `json:"sellNotional"`
+		NetNotional   float64 `json:"netNotional"`
+		QuoteNotional float64 `json:"quoteNotional"`
+	}
+
+	return func(c *gin.Context) {
+		if !requireClickHouse(c, d.CH) {
+			return
+		}
+		symbols := bollPumpQuerySymbols(c.Query("symbols"), 60)
+		if len(symbols) == 0 {
+			c.JSON(http.StatusOK, gin.H{"items": []item{}})
+			return
+		}
+
+		timeMode := c.DefaultQuery("timeMode", "local")
+		if timeMode != "utc" {
+			timeMode = "local"
+		}
+		tzOffsetMin := queryInt(c, "tzOffsetMin", 0, -720, 720)
+		offsetMs := int64(0)
+		if timeMode == "local" {
+			offsetMs = int64(tzOffsetMin) * 60 * 1000
+		}
+
+		const dayMs int64 = 24 * 60 * 60 * 1000
+		nowMs := time.Now().UnixMilli()
+		dayStartMs := floorBucketStartWithOffset(nowMs, dayMs, offsetMs)
+		rows, err := d.CH.QueryTradeFlowAggRange(c.Request.Context(), queryMarket(c), symbols, "1m", dayStartMs, nowMs)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		bySymbol := make(map[string]item, len(rows))
+		for _, row := range rows {
+			net := row.BuySum - row.SellSum
+			bySymbol[row.Symbol] = item{
+				Symbol:        row.Symbol,
+				BuyNotional:   row.BuySum,
+				SellNotional:  row.SellSum,
+				NetNotional:   net,
+				QuoteNotional: row.BuySum + row.SellSum,
+			}
+		}
+
+		items := make([]item, 0, len(symbols))
+		for _, symbol := range symbols {
+			if got, ok := bySymbol[symbol]; ok {
+				items = append(items, got)
+				continue
+			}
+			items = append(items, item{Symbol: symbol})
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"market":      queryMarket(c),
+			"timeMode":    timeMode,
+			"tzOffsetMin": tzOffsetMin,
+			"dayStartMs":  dayStartMs,
+			"items":       items,
+		})
+	}
+}
+
+func bollPumpQuerySymbols(raw string, limit int) []string {
+	if limit <= 0 {
+		limit = 60
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, limit)
+	for _, part := range strings.Split(raw, ",") {
+		symbol := strings.ToUpper(strings.TrimSpace(part))
+		if symbol == "" || seen[symbol] {
+			continue
+		}
+		seen[symbol] = true
+		out = append(out, symbol)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out
 }
 
 func bollPumpStateViews(ctx context.Context, d *Deps, rows []model.BollPumpState) ([]bollPumpStateView, error) {
