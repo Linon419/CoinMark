@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"time"
@@ -17,6 +18,25 @@ func registerAnomalyRoutes(g *gin.RouterGroup, d *Deps) {
 	g.GET("/aggregate/hotMarkets", handleHotMarkets(d))
 	g.GET("/aggregate/anomalyStats", handleAnomalyStats(d))
 	g.GET("/aggregate/srLevels", handleSRLevels(d))
+	g.POST("/aggregate/whaleWallScan", handleWhaleWallScan(d))
+}
+
+func handleWhaleWallScan(d *Deps) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if d == nil || d.BN == nil || d.Store == nil || d.Cfg == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "depth scanner not configured"})
+			return
+		}
+		market := queryMarket(c)
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 90*time.Second)
+		defer cancel()
+		scanner := service.NewDepthScanner(d.BN, d.Store, d.Cfg)
+		result := scanner.ScanOnce(ctx, market)
+		c.JSON(http.StatusOK, gin.H{
+			"market": market,
+			"result": result,
+		})
+	}
 }
 
 func handleAbsorptionSignals(d *Deps) gin.HandlerFunc {

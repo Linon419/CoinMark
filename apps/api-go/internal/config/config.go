@@ -173,7 +173,7 @@ func Load() (*Config, error) {
 		HubAnomalyScanBatchSize:     getenvInt("HUB_ANOMALY_SCAN_BATCH_SIZE", 200),
 		HubClimaxScanIntervalSec:    getenvInt("HUB_CLIMAX_SCAN_INTERVAL_SEC", 60),
 
-		DepthFullscanEnabled:         getenvBool("DEPTH_FULLSCAN_ENABLED", true),
+		DepthFullscanEnabled:         getenvBool("DEPTH_FULLSCAN_ENABLED", false),
 		DepthFullscanMarket:          getenv("DEPTH_FULLSCAN_MARKET", "swap"),
 		DepthFullscanLimitSwap:       getenvInt("DEPTH_FULLSCAN_LIMIT_SWAP", 1000),
 		DepthFullscanLimitSpot:       getenvInt("DEPTH_FULLSCAN_LIMIT_SPOT", 5000),

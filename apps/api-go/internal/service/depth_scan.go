@@ -412,6 +412,16 @@ type DepthScanner struct {
 	wallState map[string]whaleWallTrack
 }
 
+type DepthScanResult struct {
+	Market      string `json:"market"`
+	Symbols     int    `json:"symbols"`
+	OK          int    `json:"ok"`
+	Failed      int    `json:"failed"`
+	Limit       int    `json:"limit"`
+	Concurrency int    `json:"concurrency"`
+	DurationMs  int64  `json:"duration_ms"`
+}
+
 func NewDepthScanner(bn *binance.Client, store *sqlite.Store, cfg *config.Config) *DepthScanner {
 	return &DepthScanner{
 		bn:        bn,
@@ -419,6 +429,33 @@ func NewDepthScanner(bn *binance.Client, store *sqlite.Store, cfg *config.Config
 		cfg:       cfg,
 		wallState: make(map[string]whaleWallTrack),
 	}
+}
+
+func (ds *DepthScanner) ScanOnce(ctx context.Context, market string) DepthScanResult {
+	if ds == nil || ds.cfg == nil {
+		return DepthScanResult{Market: "swap"}
+	}
+	market = strings.ToLower(strings.TrimSpace(market))
+	if market != "swap" && market != "spot" {
+		market = strings.ToLower(strings.TrimSpace(ds.cfg.DepthFullscanMarket))
+	}
+	if market != "swap" && market != "spot" {
+		market = "swap"
+	}
+	symbols := parseSymbols(ds.cfg.DepthFullscanSymbols)
+	limit := ds.cfg.DepthFullscanLimit()
+	if limit <= 0 {
+		if market == "spot" {
+			limit = 5000
+		} else {
+			limit = 1000
+		}
+	}
+	concurrency := ds.cfg.DepthFullscanConcurrency
+	if concurrency < 1 {
+		concurrency = 1
+	}
+	return ds.runBatch(ctx, "manual", market, symbols, limit, concurrency)
 }
 
 func (ds *DepthScanner) Run(ctx context.Context) {
@@ -484,14 +521,21 @@ func (ds *DepthScanner) loop(ctx context.Context, tag, market string, symbols []
 	}
 }
 
-func (ds *DepthScanner) runBatch(ctx context.Context, tag, market string, symbols []string, limit, concurrency int) {
+func (ds *DepthScanner) runBatch(ctx context.Context, tag, market string, symbols []string, limit, concurrency int) DepthScanResult {
+	startBatch := time.Now()
+	batchResult := DepthScanResult{
+		Market:      market,
+		Symbols:     len(symbols),
+		Limit:       limit,
+		Concurrency: concurrency,
+	}
 	sem := make(chan struct{}, concurrency)
-	type result struct {
+	type batchRow struct {
 		symbol string
 		ok     bool
 		costMs float64
 	}
-	results := make([]result, len(symbols))
+	results := make([]batchRow, len(symbols))
 	var wg sync.WaitGroup
 
 	for i, sym := range symbols {
@@ -502,7 +546,7 @@ func (ds *DepthScanner) runBatch(ctx context.Context, tag, market string, symbol
 			defer func() { <-sem }()
 			start := time.Now()
 			ok := ds.fetchOne(ctx, market, s, limit)
-			results[idx] = result{s, ok, float64(time.Since(start).Milliseconds())}
+			results[idx] = batchRow{s, ok, float64(time.Since(start).Milliseconds())}
 		}(i, sym)
 	}
 	wg.Wait()
@@ -521,6 +565,10 @@ func (ds *DepthScanner) runBatch(ctx context.Context, tag, market string, symbol
 		avgMs = totalMs / float64(len(results))
 	}
 	log.Printf("depth_scan %s market=%s symbols=%d ok=%d fail=%d avg_ms=%.1f", tag, market, len(symbols), okCount, failCount, avgMs)
+	batchResult.OK = okCount
+	batchResult.Failed = failCount
+	batchResult.DurationMs = time.Since(startBatch).Milliseconds()
+	return batchResult
 }
 
 func (ds *DepthScanner) fetchOne(ctx context.Context, market, symbol string, limit int) bool {

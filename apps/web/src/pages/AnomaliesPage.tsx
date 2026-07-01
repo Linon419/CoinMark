@@ -49,6 +49,12 @@ async function getJson<T>(path: string): Promise<T> {
   return (await r.json()) as T;
 }
 
+async function postJson<T>(path: string): Promise<T> {
+  const r = await fetch(`${API_BASE}${path}`, { method: "POST" });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return (await r.json()) as T;
+}
+
 const SINCE_OPTIONS = [
   { label: "最近 6 小时", value: 360 },
   { label: "最近 24 小时", value: 1440 },
@@ -107,6 +113,8 @@ export default function AnomaliesPage() {
   const [absorptionItems, setAbsorptionItems] = useState<AbsorptionSignalItem[]>([]);
   const [includeShortBias, setIncludeShortBias] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [scanLoading, setScanLoading] = useState(false);
+  const [scanResult, setScanResult] = useState("");
 
   const refresh = async () => {
     setLoading(true);
@@ -186,6 +194,23 @@ export default function AnomaliesPage() {
     }, 15_000);
     return () => clearInterval(timer);
   }, [market, sinceMinutes, includeShortBias]);
+
+  const manualWhaleWallScan = async () => {
+    setScanLoading(true);
+    setScanResult("");
+    try {
+      const resp = await postJson<{
+        result: { symbols: number; ok: number; failed: number; duration_ms: number };
+      }>(`/api/aggregate/whaleWallScan?market=${market}`);
+      const r = resp.result;
+      setScanResult(`扫描完成 ${r.ok}/${r.symbols}，失败 ${r.failed}`);
+      await refresh();
+    } catch (err: any) {
+      setScanResult(`扫描失败：${err?.message || String(err)}`);
+    } finally {
+      setScanLoading(false);
+    }
+  };
 
   const absorptionColumns = useMemo(
     () => [
@@ -382,7 +407,12 @@ export default function AnomaliesPage() {
             <Title heading={6} style={{ margin: 0 }}>
               类型提醒
             </Title>
-            <Text className="cm-muted">whale_wall_far / whale_wall_filled / whale_wall_canceled</Text>
+            <Space>
+              {scanResult && <Text className="cm-muted">{scanResult}</Text>}
+              <Button loading={scanLoading} onClick={manualWhaleWallScan}>
+                扫描一次
+              </Button>
+            </Space>
           </div>
           <div className="cm-table" style={{ marginBottom: 12 }}>
             <Table
