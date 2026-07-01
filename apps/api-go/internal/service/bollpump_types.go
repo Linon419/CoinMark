@@ -99,6 +99,12 @@ type BollPumpConfig struct {
 	KeyK4HMinBodyPct              float64            `json:"key_k_4h_min_body_pct"`
 	KeyK4HMaxStickyScore          float64            `json:"key_k_4h_max_sticky_score"`
 	KeyK4HTelegramThreshold       float64            `json:"key_k_4h_telegram_threshold"`
+	OIGrowthScoreEnabled          bool               `json:"oi_growth_score_enabled"`
+	OIGrowthPeriod                string             `json:"oi_growth_period"`
+	OIGrowthPeriods               int                `json:"oi_growth_periods"`
+	OIGrowthMinPct                float64            `json:"oi_growth_min_pct"`
+	OIGrowthFullPct               float64            `json:"oi_growth_full_pct"`
+	OIGrowthMaxBonus              float64            `json:"oi_growth_max_bonus"`
 	WatchTelegramThreshold        float64            `json:"watch_telegram_threshold"`
 	Confirm1TelegramThreshold     float64            `json:"confirm1_telegram_threshold"`
 	Confirm2TelegramThreshold     float64            `json:"confirm2_telegram_threshold"`

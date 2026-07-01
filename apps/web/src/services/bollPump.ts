@@ -107,6 +107,12 @@ export type BollPumpSettings = {
   key_k_4h_min_body_pct: number;
   key_k_4h_max_sticky_score: number;
   key_k_4h_telegram_threshold: number;
+  oi_growth_score_enabled: boolean;
+  oi_growth_period: "15m" | "30m" | "1h" | "4h";
+  oi_growth_periods: number;
+  oi_growth_min_pct: number;
+  oi_growth_full_pct: number;
+  oi_growth_max_bonus: number;
   watch_telegram_threshold: number;
   confirm1_telegram_threshold: number;
   confirm2_telegram_threshold: number;

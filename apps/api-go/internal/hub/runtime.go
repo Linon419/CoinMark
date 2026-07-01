@@ -82,6 +82,7 @@ func (rt *Runtime) Start(ctx context.Context) {
 			source = live
 		}
 		scanner := service.NewBollPumpScanner(source, rt.store, cfg)
+		scanner.SetOIGrowthProvider(rt.bn)
 		go scanner.Run(ctx, rt.stopCh)
 	}
 

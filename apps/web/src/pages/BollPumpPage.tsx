@@ -81,6 +81,12 @@ function defaultBollPumpSettings(): BollPumpSettings {
     key_k_4h_min_body_pct: 0.012,
     key_k_4h_max_sticky_score: 1,
     key_k_4h_telegram_threshold: 72,
+    oi_growth_score_enabled: true,
+    oi_growth_period: "15m",
+    oi_growth_periods: 4,
+    oi_growth_min_pct: 0.05,
+    oi_growth_full_pct: 0.3,
+    oi_growth_max_bonus: 12,
     watch_telegram_threshold: 70,
     confirm1_telegram_threshold: 75,
     confirm2_telegram_threshold: 80,
@@ -884,6 +890,55 @@ export default function BollPumpPage() {
               <label>
                 <span>提醒分</span>
                 <InputNumber min={0} max={200} value={settingsDraft.key_k_4h_telegram_threshold} onChange={(v) => patchDraft({ key_k_4h_telegram_threshold: Number(v || 72) })} />
+              </label>
+            </div>
+          </div>
+
+          <div className="cm-bollSettingsBlock">
+            <Title heading={6} style={{ margin: 0 }}>
+              OI增长评分
+            </Title>
+            <div className="cm-bollSettingsGrid">
+              <label>
+                <span>评分开关</span>
+                <Switch checked={settingsDraft.oi_growth_score_enabled} onChange={(v) => patchDraft({ oi_growth_score_enabled: v })} />
+              </label>
+              <label>
+                <span>OI周期</span>
+                <Select value={settingsDraft.oi_growth_period} onChange={(v) => patchDraft({ oi_growth_period: v as "15m" | "30m" | "1h" | "4h" })}>
+                  <Select.Option value="15m">15m</Select.Option>
+                  <Select.Option value="30m">30m</Select.Option>
+                  <Select.Option value="1h">1h</Select.Option>
+                  <Select.Option value="4h">4h</Select.Option>
+                </Select>
+              </label>
+              <label>
+                <span>周期数量</span>
+                <InputNumber min={1} max={24} value={settingsDraft.oi_growth_periods} onChange={(v) => patchDraft({ oi_growth_periods: Number(v || 4) })} />
+              </label>
+              <label>
+                <span>起评分%</span>
+                <InputNumber
+                  min={0}
+                  max={200}
+                  step={1}
+                  value={Number((settingsDraft.oi_growth_min_pct * 100).toFixed(2))}
+                  onChange={(v) => patchDraft({ oi_growth_min_pct: Number(v ?? 5) / 100 })}
+                />
+              </label>
+              <label>
+                <span>满分增长%</span>
+                <InputNumber
+                  min={0.1}
+                  max={300}
+                  step={1}
+                  value={Number((settingsDraft.oi_growth_full_pct * 100).toFixed(2))}
+                  onChange={(v) => patchDraft({ oi_growth_full_pct: Number(v ?? 30) / 100 })}
+                />
+              </label>
+              <label>
+                <span>最高加分</span>
+                <InputNumber min={0} max={50} value={settingsDraft.oi_growth_max_bonus} onChange={(v) => patchDraft({ oi_growth_max_bonus: Number(v ?? 12) })} />
               </label>
             </div>
           </div>

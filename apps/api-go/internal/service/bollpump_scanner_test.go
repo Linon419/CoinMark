@@ -36,6 +36,16 @@ func (f *fakeBollPumpSource) QuoteVolume24h(ctx context.Context, market, symbol 
 	return f.quote[symbol], nil
 }
 
+type fakeBollPumpOIGrowthProvider struct {
+	hist  []map[string]interface{}
+	calls int
+}
+
+func (f *fakeBollPumpOIGrowthProvider) GetOpenInterestHist(ctx context.Context, symbol, period string, limit int) ([]map[string]interface{}, error) {
+	f.calls++
+	return f.hist, nil
+}
+
 func TestBollPumpScannerScansOneTimeframe(t *testing.T) {
 	cfg := DefaultBollPumpConfig()
 	cfg.Timeframes = []string{"15m"}
@@ -161,6 +171,69 @@ func TestBollPumpScannerAddsFourHourResistanceBreakoutScore(t *testing.T) {
 	}
 	if !strings.Contains(rows[0].Reason, "4h resistance breakout") {
 		t.Fatalf("reason = %q, want 4h resistance breakout", rows[0].Reason)
+	}
+}
+
+func TestBollPumpScannerAddsOIGrowthScoreToSignalAndState(t *testing.T) {
+	ctx := context.Background()
+	store := openBollPumpTestStore(t)
+	defer store.Close()
+
+	cfg := DefaultBollPumpConfig()
+	cfg.Timeframes = []string{"15m"}
+	cfg.MinimumTrendCheckCandles = 3
+	cfg.MinimumTrendGainPct = 0.001
+	cfg.MinimumTrendRisingRatio = 0.1
+	cfg.OIGrowthPeriod = "15m"
+	cfg.OIGrowthPeriods = 4
+	cfg.OIGrowthMinPct = 0.05
+	cfg.OIGrowthFullPct = 0.30
+	cfg.OIGrowthMaxBonus = 12
+	signalBars := bollPumpFixtureUntilFirstWatch("15m", cfg)
+	source := &fakeBollPumpSource{
+		bars:  map[string][]BollPumpBar{"15m": signalBars},
+		quote: map[string]float64{"XYZUSDT": 3_000_000},
+	}
+	bucketMs := int64(15 * 60 * 1000)
+	cutoff := (signalBars[len(signalBars)-1].CloseTimeMs / bucketMs) * bucketMs
+	oi := &fakeBollPumpOIGrowthProvider{hist: []map[string]interface{}{
+		{"timestamp": float64(cutoff - 5*bucketMs), "sumOpenInterestValue": 100.0},
+		{"timestamp": float64(cutoff - 4*bucketMs), "sumOpenInterestValue": 102.0},
+		{"timestamp": float64(cutoff - 3*bucketMs), "sumOpenInterestValue": 110.0},
+		{"timestamp": float64(cutoff - 2*bucketMs), "sumOpenInterestValue": 120.0},
+		{"timestamp": float64(cutoff - bucketMs), "sumOpenInterestValue": 130.0},
+		{"timestamp": float64(cutoff), "sumOpenInterestValue": 500.0},
+	}}
+	scanner := NewBollPumpScanner(source, store, cfg)
+	scanner.SetOIGrowthProvider(oi)
+
+	result := scanner.ScanTimeframe(ctx, "15m")
+	if result.SignalsFound != 1 {
+		t.Fatalf("signals found = %d, want 1", result.SignalsFound)
+	}
+	rows, err := ListBollPumpSignals(ctx, store, BollPumpSignalFilter{Market: "swap", Limit: 10})
+	if err != nil {
+		t.Fatalf("list signals: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("signals = %d, want 1", len(rows))
+	}
+	base := EvaluateBollPumpWatch("swap", "XYZUSDT", "15m", signalBars, ComputeBollPumpIndicators(signalBars, cfg.BollPeriod, cfg.BollStdDev, cfg.ATRPeriod), 3_000_000, cfg)
+	if rows[0].Score != base.Signal.Score+12 {
+		t.Fatalf("score = %.2f, want %.2f", rows[0].Score, base.Signal.Score+12)
+	}
+	if !strings.Contains(rows[0].Reason, "OI growth") {
+		t.Fatalf("reason = %q, want OI growth", rows[0].Reason)
+	}
+	st, err := GetBollPumpState(ctx, store, "swap", "XYZUSDT", "15m")
+	if err != nil {
+		t.Fatalf("get state: %v", err)
+	}
+	if st == nil || st.CurrentScore != rows[0].Score || st.WatchScore != rows[0].Score {
+		t.Fatalf("state = %#v, want score %.2f", st, rows[0].Score)
+	}
+	if oi.calls != 1 {
+		t.Fatalf("oi calls = %d, want 1", oi.calls)
 	}
 }
 

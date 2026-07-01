@@ -207,6 +207,27 @@ func NormalizeBollPumpConfig(in BollPumpConfig) BollPumpConfig {
 	if in.KeyK4HTelegramThreshold > 0 {
 		out.KeyK4HTelegramThreshold = clampFloat(in.KeyK4HTelegramThreshold, 0, 200)
 	}
+	oiGrowthUnset := !in.OIGrowthScoreEnabled &&
+		strings.TrimSpace(in.OIGrowthPeriod) == "" &&
+		in.OIGrowthPeriods == 0 &&
+		in.OIGrowthMinPct == 0 &&
+		in.OIGrowthFullPct == 0 &&
+		in.OIGrowthMaxBonus == 0
+	if !oiGrowthUnset {
+		out.OIGrowthScoreEnabled = in.OIGrowthScoreEnabled
+		if period := normalizeBollPumpOIGrowthPeriod(in.OIGrowthPeriod); period != "" {
+			out.OIGrowthPeriod = period
+		}
+		if in.OIGrowthPeriods > 0 {
+			out.OIGrowthPeriods = clampInt(in.OIGrowthPeriods, 1, 24)
+		}
+		out.OIGrowthMinPct = clampFloat(in.OIGrowthMinPct, 0, 2)
+		out.OIGrowthFullPct = clampFloat(in.OIGrowthFullPct, 0.001, 3)
+		if out.OIGrowthFullPct <= out.OIGrowthMinPct {
+			out.OIGrowthFullPct = out.OIGrowthMinPct + 0.001
+		}
+		out.OIGrowthMaxBonus = clampFloat(in.OIGrowthMaxBonus, 0, 50)
+	}
 	if in.WatchTelegramThreshold > 0 {
 		out.WatchTelegramThreshold = clampFloat(in.WatchTelegramThreshold, 0, 100)
 	}
@@ -246,6 +267,15 @@ func normalizeMinimumTrendTimeframe(tf string) string {
 	switch strings.TrimSpace(tf) {
 	case "15m", "30m", "1h":
 		return strings.TrimSpace(tf)
+	default:
+		return ""
+	}
+}
+
+func normalizeBollPumpOIGrowthPeriod(period string) string {
+	switch strings.ToLower(strings.TrimSpace(period)) {
+	case "15m", "30m", "1h", "4h":
+		return strings.ToLower(strings.TrimSpace(period))
 	default:
 		return ""
 	}

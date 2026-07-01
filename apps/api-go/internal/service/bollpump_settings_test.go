@@ -50,6 +50,12 @@ func TestBollPumpSettingsRoundTrip(t *testing.T) {
 	cfg.KeyK4HMinBodyPct = 0.015
 	cfg.KeyK4HMaxStickyScore = 0.9
 	cfg.KeyK4HTelegramThreshold = 82
+	cfg.OIGrowthScoreEnabled = true
+	cfg.OIGrowthPeriod = "30m"
+	cfg.OIGrowthPeriods = 3
+	cfg.OIGrowthMinPct = 0.08
+	cfg.OIGrowthFullPct = 0.35
+	cfg.OIGrowthMaxBonus = 16
 
 	saved, err := SaveBollPumpConfig(ctx, store, cfg)
 	if err != nil {
@@ -173,6 +179,24 @@ func TestBollPumpSettingsRoundTrip(t *testing.T) {
 	}
 	if got.KeyK4HTelegramThreshold != 82 {
 		t.Fatalf("key K 4h telegram threshold = %v, want 82", got.KeyK4HTelegramThreshold)
+	}
+	if !got.OIGrowthScoreEnabled {
+		t.Fatalf("oi growth enabled = false, want true")
+	}
+	if got.OIGrowthPeriod != "30m" {
+		t.Fatalf("oi growth period = %s, want 30m", got.OIGrowthPeriod)
+	}
+	if got.OIGrowthPeriods != 3 {
+		t.Fatalf("oi growth periods = %d, want 3", got.OIGrowthPeriods)
+	}
+	if got.OIGrowthMinPct != 0.08 {
+		t.Fatalf("oi growth min pct = %v, want 0.08", got.OIGrowthMinPct)
+	}
+	if got.OIGrowthFullPct != 0.35 {
+		t.Fatalf("oi growth full pct = %v, want 0.35", got.OIGrowthFullPct)
+	}
+	if got.OIGrowthMaxBonus != 16 {
+		t.Fatalf("oi growth max bonus = %v, want 16", got.OIGrowthMaxBonus)
 	}
 }
 

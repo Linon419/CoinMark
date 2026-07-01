@@ -27,6 +27,7 @@ type BollPumpScanner struct {
 	store       *sqlite.Store
 	cfg         BollPumpConfig
 	symbolLimit int
+	oiGrowth    BollPumpOIGrowthProvider
 }
 
 type BollPumpScanResult struct {
@@ -41,6 +42,13 @@ type BollPumpScanResult struct {
 func NewBollPumpScanner(source BollPumpSource, store *sqlite.Store, cfg BollPumpConfig) *BollPumpScanner {
 	cfg = NormalizeBollPumpConfig(cfg)
 	return &BollPumpScanner{source: source, store: store, cfg: cfg, symbolLimit: cfg.SymbolLimit}
+}
+
+func (s *BollPumpScanner) SetOIGrowthProvider(provider BollPumpOIGrowthProvider) {
+	if s == nil {
+		return
+	}
+	s.oiGrowth = provider
 }
 
 func (s *BollPumpScanner) ScanTimeframe(ctx context.Context, timeframe string) BollPumpScanResult {
@@ -145,12 +153,8 @@ func (s *BollPumpScanner) ScanTimeframe(ctx context.Context, timeframe string) B
 				}
 				sig = applyBollPumpMinimumTrendGate(sig, gate)
 				sig = applyBollPumpResistanceBreakout(sig, resistanceBreakout)
-				if resistanceBreakout.Triggered {
-					state.CurrentScore = sig.Score
-					if sig.SignalLevel == string(BollPumpLevelWatch) {
-						state.WatchScore = sig.Score
-					}
-				}
+				sig = s.applyOIGrowthScore(ctx, sig)
+				syncBollPumpSignalScoreToState(&state, sig)
 				result.SignalsFound++
 				s.persistSignal(ctx, sig)
 			}
@@ -217,6 +221,7 @@ func (s *BollPumpScanner) ScanKeyK4H(ctx context.Context) BollPumpScanResult {
 		ind := ComputeBollPumpIndicators(bars, s.cfg.BollPeriod, s.cfg.BollStdDev, s.cfg.ATRPeriod)
 		out := EvaluateBollPumpKeyK4H(normalizeBollPumpMarket(s.cfg.Market), symbol, bars, ind, quoteVolume, s.cfg)
 		if out.Triggered {
+			out.Signal = s.applyOIGrowthScore(ctx, out.Signal)
 			if exists, err := s.signalExists(ctx, out.Signal); err != nil {
 				result.Errors++
 				result.SymbolsScanned++
@@ -350,6 +355,32 @@ func applyBollPumpResistanceBreakout(sig model.BollPumpSignal, breakout bollPump
 		sig.Reason += ", " + breakout.Reason
 	}
 	return sig
+}
+
+func syncBollPumpSignalScoreToState(state *BollPumpRuntimeState, sig model.BollPumpSignal) {
+	if state == nil || sig.Score <= 0 {
+		return
+	}
+	state.CurrentScore = sig.Score
+	if sig.SignalLevel == string(BollPumpLevelWatch) {
+		state.WatchScore = sig.Score
+	}
+}
+
+func (s *BollPumpScanner) applyOIGrowthScore(ctx context.Context, sig model.BollPumpSignal) model.BollPumpSignal {
+	if s == nil || s.oiGrowth == nil || !s.cfg.OIGrowthScoreEnabled || normalizeBollPumpMarket(sig.Market) != "swap" {
+		return sig
+	}
+	cfg := NormalizeBollPumpConfig(s.cfg)
+	hist, err := s.oiGrowth.GetOpenInterestHist(ctx, sig.Symbol, cfg.OIGrowthPeriod, bollPumpOIGrowthHistLimit(cfg))
+	if err != nil || len(hist) == 0 {
+		return sig
+	}
+	nowMs := time.Now().UnixMilli()
+	if sig.SignalTimeMs > 0 {
+		nowMs = sig.SignalTimeMs
+	}
+	return bollPumpApplyOIGrowthScore(sig, bollPumpOIGrowthScoreFromHist(hist, cfg, nowMs))
 }
 
 func (s *BollPumpScanner) Run(ctx context.Context, stopCh <-chan struct{}) {
