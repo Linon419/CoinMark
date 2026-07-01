@@ -68,7 +68,7 @@ func DefaultBollPumpConfig() BollPumpConfig {
 		KeyK4HLookback:                120,
 		KeyK4HThreshold:               0.72,
 		KeyK4HMinVolumeRatio:          0.8,
-		KeyK4HMinBodyPct:              0,
+		KeyK4HMinBodyPct:              0.012,
 		KeyK4HMaxStickyScore:          1,
 		KeyK4HTelegramThreshold:       72,
 		WatchTelegramThreshold:        70,

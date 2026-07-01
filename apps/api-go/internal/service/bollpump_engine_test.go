@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -215,6 +216,22 @@ func TestBollPumpKeyK4HTriggersOnLatestClosedKeyCandle(t *testing.T) {
 	if !strings.Contains(got.Signal.Reason, "4h key K confirmed") {
 		t.Fatalf("reason = %q, want key K reason", got.Signal.Reason)
 	}
+	if !strings.Contains(got.Signal.Reason, "body_score") {
+		t.Fatalf("reason = %q, want body score reason", got.Signal.Reason)
+	}
+	if !strings.Contains(got.Signal.Reason, "volume_score") {
+		t.Fatalf("reason = %q, want volume score reason", got.Signal.Reason)
+	}
+	var details map[string]interface{}
+	if err := json.Unmarshal(got.Signal.Details, &details); err != nil {
+		t.Fatalf("decode details: %v", err)
+	}
+	bodyKeyScore, _ := details["body_key_k_score"].(float64)
+	bodyRescueScore, _ := details["body_rescue_score"].(float64)
+	volumeScore, _ := details["volume_push_score"].(float64)
+	if bodyKeyScore <= 0 || bodyRescueScore <= 0 || volumeScore <= 0 {
+		t.Fatalf("details = %#v, want body scoring fields", details)
+	}
 }
 
 func TestBollPumpKeyK4HRequiresScoreThreshold(t *testing.T) {
@@ -229,6 +246,23 @@ func TestBollPumpKeyK4HRequiresScoreThreshold(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(got.Reasons, ","), "key_k_score") {
 		t.Fatalf("reasons = %v, want score threshold reason", got.Reasons)
+	}
+}
+
+func TestBollPumpKeyK4HRequiresMinimumBodyPct(t *testing.T) {
+	cfg := DefaultBollPumpConfig()
+	cfg.KeyK4HThreshold = 0.1
+	bars := bollPumpFixtureFourHourKeyK()
+	latest := len(bars) - 1
+	bars[latest].Open = bars[latest].Close * 0.994
+	ind := ComputeBollPumpIndicators(bars, cfg.BollPeriod, cfg.BollStdDev, cfg.ATRPeriod)
+
+	got := EvaluateBollPumpKeyK4H("swap", "XYZUSDT", bars, ind, 3_000_000, cfg)
+	if got.Triggered {
+		t.Fatalf("Triggered = true, want false with short 4h body")
+	}
+	if !strings.Contains(strings.Join(got.Reasons, ","), "body") {
+		t.Fatalf("reasons = %v, want body threshold reason", got.Reasons)
 	}
 }
 

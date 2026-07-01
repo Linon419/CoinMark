@@ -386,6 +386,11 @@ body {
   margin-bottom: 10px;
 }
 
+.cm-bollCandidateCount {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .cm-bollCandidateGrid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -468,6 +473,12 @@ body {
   border-radius: 8px;
   color: var(--cm-muted);
   background: rgba(148, 163, 184, 0.06);
+}
+
+.cm-bollCandidatePager {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 10px;
 }
 
 .cm-bollWorkbench {
@@ -959,6 +970,10 @@ body {
 
   .cm-bollCandidateGrid {
     grid-template-columns: 1fr;
+  }
+
+  .cm-bollCandidatePager {
+    justify-content: center;
   }
 
   .cm-bollPanel {

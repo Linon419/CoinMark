@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Button, Drawer, InputNumber, Message, Select, Space, Switch, Table, Tag, Typography } from "@arco-design/web-react";
+import { Button, Drawer, InputNumber, Message, Pagination, Select, Space, Switch, Table, Tag, Typography } from "@arco-design/web-react";
 import BollPumpChart from "../components/BollPumpChart";
 import {
   buildBollPumpTradeCandidates,
@@ -22,6 +22,7 @@ import {
 
 const TIMEFRAMES = ["1m", "3m", "5m", "15m", "30m", "1h"];
 const STAT_TIMEFRAMES = ["1m", "3m", "5m", "15m", "30m", "1h", "4h"];
+const TRADE_CANDIDATE_PAGE_SIZE = 12;
 
 function defaultBollPumpSettings(): BollPumpSettings {
   return {
@@ -75,7 +76,7 @@ function defaultBollPumpSettings(): BollPumpSettings {
     key_k_4h_lookback: 120,
     key_k_4h_threshold: 0.72,
     key_k_4h_min_volume_ratio: 0.8,
-    key_k_4h_min_body_pct: 0,
+    key_k_4h_min_body_pct: 0.012,
     key_k_4h_max_sticky_score: 1,
     key_k_4h_telegram_threshold: 72,
     watch_telegram_threshold: 70,
@@ -139,6 +140,7 @@ export default function BollPumpPage() {
   const [savingSettings, setSavingSettings] = useState(false);
   const [selectedTimeframe, setSelectedTimeframe] = useState<string | null>(null);
   const [inactiveStateCount, setInactiveStateCount] = useState(0);
+  const [candidatePage, setCandidatePage] = useState(1);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -176,6 +178,10 @@ export default function BollPumpPage() {
   useEffect(() => {
     void loadSettings();
   }, []);
+
+  useEffect(() => {
+    setCandidatePage(1);
+  }, [selectedTimeframe]);
 
   const patchDraft = (patch: Partial<BollPumpSettings>) => {
     setSettingsDraft((prev) => ({ ...prev, ...patch }));
@@ -325,7 +331,17 @@ export default function BollPumpPage() {
   const countsByTimeframe = stats?.countsByTimeframe || {};
   const resistanceBreakoutCount = useMemo(() => signals.filter(hasFourHourResistanceBreakout).length, [signals]);
   const keyK4HCount = useMemo(() => signals.filter(isFourHourKeyK).length, [signals]);
-  const tradeCandidates = useMemo(() => buildBollPumpTradeCandidates(states, signals, 12), [states, signals]);
+  const tradeCandidates = useMemo(() => buildBollPumpTradeCandidates(states, signals, 0), [states, signals]);
+  const candidatePageCount = Math.max(1, Math.ceil(tradeCandidates.length / TRADE_CANDIDATE_PAGE_SIZE));
+  const effectiveCandidatePage = Math.min(candidatePage, candidatePageCount);
+  const candidatePageStart = (effectiveCandidatePage - 1) * TRADE_CANDIDATE_PAGE_SIZE;
+  const candidatePageEnd = Math.min(tradeCandidates.length, candidatePageStart + TRADE_CANDIDATE_PAGE_SIZE);
+  const pagedTradeCandidates = useMemo(() => tradeCandidates.slice(candidatePageStart, candidatePageEnd), [tradeCandidates, candidatePageStart, candidatePageEnd]);
+  const candidateRangeStart = tradeCandidates.length > 0 ? candidatePageStart + 1 : 0;
+
+  useEffect(() => {
+    setCandidatePage((prev) => Math.min(prev, candidatePageCount));
+  }, [candidatePageCount]);
 
   return (
     <div className="cm-page cm-bollPage">
@@ -388,41 +404,51 @@ export default function BollPumpPage() {
             当前可交易候选
           </Title>
           <Space size={8}>
+            <Text className="cm-muted cm-bollCandidateCount">
+              {candidateRangeStart}-{candidatePageEnd} / {tradeCandidates.length}
+            </Text>
             <Tag color="orange">CONFIRM_1</Tag>
             <Tag color="red">CONFIRM_2 / COMPLETED</Tag>
           </Space>
         </div>
         {tradeCandidates.length > 0 ? (
-          <div className="cm-bollCandidateGrid">
-            {tradeCandidates.map((candidate) => (
-              <div className="cm-bollCandidateCard" key={`${candidate.symbol}-${candidate.timeframe}`}>
-                <div className="cm-bollCandidateTop">
-                  <strong className="cm-symbol">{candidate.symbol}</strong>
-                  <Tag color={candidate.trade_label === "重点" ? "red" : candidate.trade_label === "关键K" ? "purple" : "orange"}>{candidate.trade_label}</Tag>
+          <>
+            <div className="cm-bollCandidateGrid">
+              {pagedTradeCandidates.map((candidate) => (
+                <div className="cm-bollCandidateCard" key={`${candidate.symbol}-${candidate.timeframe}`}>
+                  <div className="cm-bollCandidateTop">
+                    <strong className="cm-symbol">{candidate.symbol}</strong>
+                    <Tag color={candidate.trade_label === "重点" ? "red" : candidate.trade_label === "关键K" ? "purple" : "orange"}>{candidate.trade_label}</Tag>
+                  </div>
+                  <div className="cm-bollCandidateMeta">
+                    <span>
+                      触发 <b>{candidate.timeframe}</b>
+                    </span>
+                    <span>
+                      主导 <b>{candidate.dominant_timeframe || candidate.timeframe}</b>
+                    </span>
+                    <span>
+                      反弹 <b>{candidate.bounce_count}</b>
+                    </span>
+                  </div>
+                  <div className="cm-bollCandidateBottom">
+                    <Tag color={levelColor(candidate.status)}>{candidate.status}</Tag>
+                    {candidate.is_key_k_4h ? <Tag color="purple">4H关键K</Tag> : null}
+                    {candidate.has_4h_breakout ? <Tag color="gold">4H突破</Tag> : null}
+                    <strong className="cm-mono cm-bollCandidateScore">{fmtNum(Number(candidate.priority_score || 0), 0)}</strong>
+                    <Button size="mini" disabled={!candidate.latest_signal_id} onClick={() => openSignalDetail(candidate.latest_signal_id)}>
+                      详情
+                    </Button>
+                  </div>
                 </div>
-                <div className="cm-bollCandidateMeta">
-                  <span>
-                    触发 <b>{candidate.timeframe}</b>
-                  </span>
-                  <span>
-                    主导 <b>{candidate.dominant_timeframe || candidate.timeframe}</b>
-                  </span>
-                  <span>
-                    反弹 <b>{candidate.bounce_count}</b>
-                  </span>
-                </div>
-                <div className="cm-bollCandidateBottom">
-                  <Tag color={levelColor(candidate.status)}>{candidate.status}</Tag>
-                  {candidate.is_key_k_4h ? <Tag color="purple">4H关键K</Tag> : null}
-                  {candidate.has_4h_breakout ? <Tag color="gold">4H突破</Tag> : null}
-                  <strong className="cm-mono cm-bollCandidateScore">{fmtNum(Number(candidate.priority_score || 0), 0)}</strong>
-                  <Button size="mini" disabled={!candidate.latest_signal_id} onClick={() => openSignalDetail(candidate.latest_signal_id)}>
-                    详情
-                  </Button>
-                </div>
+              ))}
+            </div>
+            {tradeCandidates.length > TRADE_CANDIDATE_PAGE_SIZE ? (
+              <div className="cm-bollCandidatePager">
+                <Pagination size="small" current={effectiveCandidatePage} pageSize={TRADE_CANDIDATE_PAGE_SIZE} total={tradeCandidates.length} onChange={(page) => setCandidatePage(page)} />
               </div>
-            ))}
-          </div>
+            ) : null}
+          </>
         ) : (
           <div className="cm-bollCandidateEmpty">暂无确认候选</div>
         )}
@@ -795,7 +821,7 @@ export default function BollPumpPage() {
               <label>
                 <span>最低实体%</span>
                 <InputNumber
-                  min={-20}
+                  min={1.2}
                   max={20}
                   step={0.1}
                   value={Number((settingsDraft.key_k_4h_min_body_pct * 100).toFixed(2))}

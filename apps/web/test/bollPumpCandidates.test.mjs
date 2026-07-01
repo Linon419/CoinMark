@@ -65,8 +65,8 @@ test("builds current trade candidates from breakout watch and confirmed states",
   assert.deepEqual(
     out.map((row) => [row.symbol, row.status, row.trade_label, row.latest_signal_id, row.has_4h_breakout]),
     [
-      ["TWOUSDT", "COMPLETED", "重点", 7, true],
       ["WATCHUSDT", "WATCH", "突破", 1, false],
+      ["TWOUSDT", "COMPLETED", "重点", 7, true],
       ["ONEUSDT", "CONFIRM_1", "可参与", 3, false],
     ],
   );

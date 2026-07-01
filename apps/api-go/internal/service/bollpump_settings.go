@@ -198,8 +198,8 @@ func NormalizeBollPumpConfig(in BollPumpConfig) BollPumpConfig {
 	if in.KeyK4HMinVolumeRatio > 0 {
 		out.KeyK4HMinVolumeRatio = clampFloat(in.KeyK4HMinVolumeRatio, 0, 20)
 	}
-	if in.KeyK4HMinBodyPct != 0 {
-		out.KeyK4HMinBodyPct = clampFloat(in.KeyK4HMinBodyPct, -0.2, 0.2)
+	if in.KeyK4HMinBodyPct > 0 {
+		out.KeyK4HMinBodyPct = clampFloat(in.KeyK4HMinBodyPct, def.KeyK4HMinBodyPct, 0.2)
 	}
 	if in.KeyK4HMaxStickyScore > 0 {
 		out.KeyK4HMaxStickyScore = clampFloat(in.KeyK4HMaxStickyScore, 0.1, 1)

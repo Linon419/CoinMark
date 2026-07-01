@@ -35,6 +35,11 @@ type bollPumpKeyKFeature struct {
 	NearLineCount5             float64 `json:"near_line_count_5"`
 	DirectionFlip5             float64 `json:"direction_flip_5"`
 	NetReturn5                 float64 `json:"net_return_5"`
+	LineTouchScore             float64 `json:"line_touch_score"`
+	BodyRescueScore            float64 `json:"body_rescue_score"`
+	BodyKeyKScore              float64 `json:"body_key_k_score"`
+	RescueShapeScore           float64 `json:"rescue_shape_score"`
+	VolumePushScore            float64 `json:"volume_push_score"`
 	ClearBounceScore           float64 `json:"clear_bounce_score"`
 	StickyScore                float64 `json:"sticky_score"`
 	KeyKScore                  float64 `json:"key_k_score"`
@@ -85,6 +90,8 @@ func EvaluateBollPumpKeyK4H(market, symbol string, bars []BollPumpBar, ind []Bol
 		"4h key K confirmed",
 		fmt.Sprintf("key_k_score %.2f", latestFeature.KeyKScore),
 		fmt.Sprintf("clear_bounce %.2f", latestFeature.ClearBounceScore),
+		fmt.Sprintf("body %.2f%% body_score %.2f", latestFeature.BodyPct*100, latestFeature.BodyKeyKScore),
+		fmt.Sprintf("volume_score %.2f", latestFeature.VolumePushScore),
 		fmt.Sprintf("sticky %.2f", latestFeature.StickyScore),
 		fmt.Sprintf("probe %s", latestFeature.ProbeLevel),
 	)
@@ -175,8 +182,15 @@ func scoreBollPumpKeyKFeature(f *bollPumpKeyKFeature) {
 		downwardCollision = 1.0
 	}
 	lineTouch := math.Max(nearLineTouch, downwardCollision)
-	rescueShape := keyKClip01(0.55*f.ClosePositionInRange + 0.30*f.LowerWickRatio + 0.15*(f.BodyPct/0.015))
+	bodyRescueScore := keyKClip01(f.BodyPct / 0.015)
+	bodyKeyKScore := keyKClip01(f.BodyPct / 0.012)
+	rescueShape := keyKClip01(0.55*f.ClosePositionInRange + 0.30*f.LowerWickRatio + 0.15*bodyRescueScore)
 	volumePush := keyKClip01((f.VolumeRatio20 - 0.8) / 1.4)
+	f.LineTouchScore = lineTouch
+	f.BodyRescueScore = bodyRescueScore
+	f.BodyKeyKScore = bodyKeyKScore
+	f.RescueShapeScore = rescueShape
+	f.VolumePushScore = volumePush
 	f.ClearBounceScore = keyKClip01(0.45*lineTouch + 0.40*rescueShape + 0.15*volumePush)
 	f.StickyScore = keyKClip01(
 		0.45*keyKClip01(f.NearLineCount5/4.0) +
@@ -185,7 +199,7 @@ func scoreBollPumpKeyKFeature(f *bollPumpKeyKFeature) {
 	)
 	f.KeyKScore = keyKClip01(
 		0.50*f.ClearBounceScore +
-			0.25*keyKClip01(f.BodyPct/0.012) +
+			0.25*bodyKeyKScore +
 			0.25*volumePush -
 			0.20*f.StickyScore,
 	)

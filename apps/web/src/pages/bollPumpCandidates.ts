@@ -129,18 +129,18 @@ export function buildBollPumpTradeCandidates(
       } satisfies BollPumpTradeCandidate;
     });
 
-  return [...stateCandidates, ...keyKCandidates]
-    .sort((a, b) => {
-      if (a.is_key_k_4h !== b.is_key_k_4h) {
-        return a.is_key_k_4h ? -1 : 1;
-      }
-      if (a.has_4h_breakout !== b.has_4h_breakout) {
-        return a.has_4h_breakout ? -1 : 1;
-      }
-      if (b.priority_score !== a.priority_score) {
-        return b.priority_score - a.priority_score;
-      }
-      return b.bounce_count - a.bounce_count;
-    })
-    .slice(0, limit);
+  const sorted = [...stateCandidates, ...keyKCandidates].sort((a, b) => {
+    if (b.priority_score !== a.priority_score) {
+      return b.priority_score - a.priority_score;
+    }
+    if (a.is_key_k_4h !== b.is_key_k_4h) {
+      return a.is_key_k_4h ? -1 : 1;
+    }
+    if (a.has_4h_breakout !== b.has_4h_breakout) {
+      return a.has_4h_breakout ? -1 : 1;
+    }
+    return b.bounce_count - a.bounce_count;
+  });
+
+  return limit > 0 ? sorted.slice(0, limit) : sorted;
 }
