@@ -72,8 +72,14 @@ func (s *BollPumpScanner) ScanTimeframe(ctx context.Context, timeframe string) B
 		default:
 		}
 		bars, err := s.source.Klines(ctx, normalizeBollPumpMarket(s.cfg.Market), symbol, timeframe, limit)
-		if err != nil || len(bars) == 0 {
+		if err != nil {
+			if bollPumpIsKlineCacheWarming(err) {
+				continue
+			}
 			result.Errors++
+			continue
+		}
+		if len(bars) == 0 {
 			continue
 		}
 		bars = bollPumpClosedBars(bars)
@@ -102,6 +108,10 @@ func (s *BollPumpScanner) ScanTimeframe(ctx context.Context, timeframe string) B
 		}
 		if bollPumpStateNeedsMinimumTrend(state) {
 			gate := checkTrend()
+			if gate.Unavailable {
+				result.SymbolsScanned++
+				continue
+			}
 			if !gate.Pass {
 				s.invalidateStateForMinimumTrend(ctx, &state)
 				s.persistState(ctx, state)
@@ -120,6 +130,10 @@ func (s *BollPumpScanner) ScanTimeframe(ctx context.Context, timeframe string) B
 					continue
 				}
 				gate := checkTrend()
+				if gate.Unavailable {
+					stopReplay = true
+					continue
+				}
 				if !gate.Pass {
 					s.invalidateStateForMinimumTrend(ctx, &state)
 					stopReplay = true
@@ -146,11 +160,74 @@ func (s *BollPumpScanner) ScanTimeframe(ctx context.Context, timeframe string) B
 		}
 		if !stopReplay && bollPumpStateNeedsMinimumTrend(state) {
 			gate := checkTrend()
-			if !gate.Pass {
+			if !gate.Unavailable && !gate.Pass {
 				s.invalidateStateForMinimumTrend(ctx, &state)
 			}
 		}
 		s.persistState(ctx, state)
+		result.SymbolsScanned++
+	}
+	return result
+}
+
+func (s *BollPumpScanner) ScanKeyK4H(ctx context.Context) BollPumpScanResult {
+	result := BollPumpScanResult{Timeframe: "4h", StartedAtMs: time.Now().UnixMilli()}
+	defer func() { result.FinishedAtMs = time.Now().UnixMilli() }()
+	if s == nil || s.source == nil {
+		result.Errors++
+		return result
+	}
+	s.refreshConfig(ctx)
+	if !s.cfg.Enabled || !s.cfg.KeyK4HEnabled {
+		return result
+	}
+	symbols, err := s.source.Symbols(ctx, normalizeBollPumpMarket(s.cfg.Market), s.symbolLimit)
+	if err != nil {
+		result.Errors++
+		return result
+	}
+	limit := s.keyK4HKlineLimit()
+	nowMs := time.Now().UnixMilli()
+	for _, symbol := range symbols {
+		if !bollPumpTradableUSDTSymbol(symbol) {
+			continue
+		}
+		select {
+		case <-ctx.Done():
+			result.Errors++
+			return result
+		default:
+		}
+		bars, err := s.source.Klines(ctx, normalizeBollPumpMarket(s.cfg.Market), symbol, "4h", limit)
+		if err != nil {
+			if bollPumpIsKlineCacheWarming(err) {
+				continue
+			}
+			result.Errors++
+			continue
+		}
+		if len(bars) == 0 {
+			continue
+		}
+		bars = bollPumpClosedBarsBefore(bars, nowMs)
+		if len(bars) == 0 {
+			continue
+		}
+		quoteVolume, _ := s.source.QuoteVolume24h(ctx, normalizeBollPumpMarket(s.cfg.Market), symbol)
+		ind := ComputeBollPumpIndicators(bars, s.cfg.BollPeriod, s.cfg.BollStdDev, s.cfg.ATRPeriod)
+		out := EvaluateBollPumpKeyK4H(normalizeBollPumpMarket(s.cfg.Market), symbol, bars, ind, quoteVolume, s.cfg)
+		if out.Triggered {
+			if exists, err := s.signalExists(ctx, out.Signal); err != nil {
+				result.Errors++
+				result.SymbolsScanned++
+				continue
+			} else if exists {
+				result.SymbolsScanned++
+				continue
+			}
+			result.SignalsFound++
+			s.persistSignal(ctx, out.Signal)
+		}
 		result.SymbolsScanned++
 	}
 	return result
@@ -205,7 +282,13 @@ func (s *BollPumpScanner) minimumTrendGate(ctx context.Context, symbol, timefram
 			limit = 60
 		}
 		loaded, err := s.source.Klines(ctx, normalizeBollPumpMarket(s.cfg.Market), symbol, tf, limit)
-		if err != nil || len(loaded) == 0 {
+		if err != nil {
+			if bollPumpIsKlineCacheWarming(err) {
+				return bollPumpMinimumTrendGateResult{Reason: fmt.Sprintf("%s trend warming", tf), Unavailable: true}
+			}
+			return bollPumpMinimumTrendGateResult{Reason: fmt.Sprintf("%s trend unavailable", tf)}
+		}
+		if len(loaded) == 0 {
 			return bollPumpMinimumTrendGateResult{Reason: fmt.Sprintf("%s trend unavailable", tf)}
 		}
 		trendBars = bollPumpClosedBars(loaded)
@@ -304,6 +387,23 @@ func (s *BollPumpScanner) Run(ctx context.Context, stopCh <-chan struct{}) {
 					log.Printf("boll_pump: tf=%s scanned=%d signals=%d errors=%d", tf, result.SymbolsScanned, result.SignalsFound, result.Errors)
 				}
 			}
+			if cfg.KeyK4HEnabled {
+				key := "key_k_4h"
+				closed := lastClosedStartForTimeframe(time.Now().UnixMilli(), "4h")
+				if closed > 0 && lastRun[key] != closed {
+					lastRun[key] = closed
+					timeoutSec := cfg.ScanTimeoutSec
+					if timeoutSec <= 0 {
+						timeoutSec = 45
+					}
+					scanCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
+					result := s.ScanKeyK4H(scanCtx)
+					cancel()
+					if result.Errors > 0 || result.SignalsFound > 0 {
+						log.Printf("boll_pump_key_k_4h: scanned=%d signals=%d errors=%d", result.SymbolsScanned, result.SignalsFound, result.Errors)
+					}
+				}
+			}
 		}
 	}
 }
@@ -356,6 +456,14 @@ func (s *BollPumpScanner) klineLimit() int {
 	return limit
 }
 
+func (s *BollPumpScanner) keyK4HKlineLimit() int {
+	limit := s.cfg.KeyK4HLookback + s.cfg.BollPeriod + 20
+	if limit < 80 {
+		return 80
+	}
+	return limit
+}
+
 func (s *BollPumpScanner) loadRuntimeState(ctx context.Context, symbol, timeframe string) BollPumpRuntimeState {
 	fresh := NewBollPumpRuntimeState(s.cfg.Market, symbol, timeframe)
 	if s.store == nil {
@@ -383,12 +491,21 @@ func (s *BollPumpScanner) persistSignal(ctx context.Context, sig model.BollPumpS
 	_, _ = SaveBollPumpSignal(ctx, s.store, sig, insertAnomaly)
 }
 
+func (s *BollPumpScanner) signalExists(ctx context.Context, sig model.BollPumpSignal) (bool, error) {
+	if s == nil || s.store == nil {
+		return false, nil
+	}
+	return BollPumpSignalExists(ctx, s.store, sig)
+}
+
 func (s *BollPumpScanner) telegramThreshold(level string) float64 {
 	switch level {
 	case string(BollPumpLevelConfirm2):
 		return s.cfg.Confirm2TelegramThreshold
 	case string(BollPumpLevelConfirm1):
 		return s.cfg.Confirm1TelegramThreshold
+	case string(BollPumpLevelKeyK4H):
+		return s.cfg.KeyK4HTelegramThreshold
 	default:
 		return s.cfg.WatchTelegramThreshold
 	}
@@ -525,6 +642,16 @@ func bollPumpClosedBars(bars []BollPumpBar) []BollPumpBar {
 	out := bars[:0]
 	for _, b := range bars {
 		if b.Closed {
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
+func bollPumpClosedBarsBefore(bars []BollPumpBar, nowMs int64) []BollPumpBar {
+	out := bars[:0]
+	for _, b := range bars {
+		if b.Closed && (b.CloseTimeMs == 0 || b.CloseTimeMs <= nowMs) {
 			out = append(out, b)
 		}
 	}

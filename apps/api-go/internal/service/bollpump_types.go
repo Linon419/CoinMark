@@ -9,6 +9,7 @@ const (
 	BollPumpLevelWatch    BollPumpSignalLevel = "WATCH"
 	BollPumpLevelConfirm1 BollPumpSignalLevel = "CONFIRM_1"
 	BollPumpLevelConfirm2 BollPumpSignalLevel = "CONFIRM_2"
+	BollPumpLevelKeyK4H   BollPumpSignalLevel = "KEY_K_4H"
 
 	BollPumpStatusIdle             BollPumpStateStatus = "IDLE"
 	BollPumpStatusWatch            BollPumpStateStatus = "WATCH"
@@ -91,6 +92,13 @@ type BollPumpConfig struct {
 	Resistance4HMaxDistancePct    float64            `json:"resistance_4h_max_distance_pct"`
 	Resistance4HMinTouches        int                `json:"resistance_4h_min_touches"`
 	Resistance4HBreakoutBonus     float64            `json:"resistance_4h_breakout_bonus"`
+	KeyK4HEnabled                 bool               `json:"key_k_4h_enabled"`
+	KeyK4HLookback                int                `json:"key_k_4h_lookback"`
+	KeyK4HThreshold               float64            `json:"key_k_4h_threshold"`
+	KeyK4HMinVolumeRatio          float64            `json:"key_k_4h_min_volume_ratio"`
+	KeyK4HMinBodyPct              float64            `json:"key_k_4h_min_body_pct"`
+	KeyK4HMaxStickyScore          float64            `json:"key_k_4h_max_sticky_score"`
+	KeyK4HTelegramThreshold       float64            `json:"key_k_4h_telegram_threshold"`
 	WatchTelegramThreshold        float64            `json:"watch_telegram_threshold"`
 	Confirm1TelegramThreshold     float64            `json:"confirm1_telegram_threshold"`
 	Confirm2TelegramThreshold     float64            `json:"confirm2_telegram_threshold"`

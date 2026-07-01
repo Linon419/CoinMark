@@ -94,15 +94,19 @@ type Config struct {
 	SQLiteVacuumIntervalSec              int
 
 	// Boll pump scanner
-	BollPumpEnabled        bool
-	BollPumpMarket         string
-	BollPumpTimeframes     string
-	BollPumpSymbolLimit    int
-	BollPumpWorkers        int
-	BollPumpRateLimitRPS   int
-	BollPumpScanTimeoutSec int
-	BollPumpJitterSec      int
-	BollPumpRetentionDays  int
+	BollPumpEnabled                 bool
+	BollPumpMarket                  string
+	BollPumpTimeframes              string
+	BollPumpSymbolLimit             int
+	BollPumpWorkers                 int
+	BollPumpRateLimitRPS            int
+	BollPumpScanTimeoutSec          int
+	BollPumpJitterSec               int
+	BollPumpRetentionDays           int
+	BollPumpWebSocketEnabled        bool
+	BollPumpWebSocketChunkSize      int
+	BollPumpWebSocketBootstrapLimit int
+	BollPumpWebSocketBootstrapRPS   int
 
 	// Rank
 	RankBucket         string
@@ -220,15 +224,19 @@ func Load() (*Config, error) {
 		OrderbookBucketRetentionDays:         getenvInt("ORDERBOOK_BUCKET_RETENTION_DAYS", 3),
 		SQLiteVacuumIntervalSec:              getenvInt("SQLITE_VACUUM_INTERVAL_SEC", 21600),
 
-		BollPumpEnabled:        getenvBool("BOLL_PUMP_ENABLED", true),
-		BollPumpMarket:         getenv("BOLL_PUMP_MARKET", "swap"),
-		BollPumpTimeframes:     getenv("BOLL_PUMP_TIMEFRAMES", "1m,3m,5m,15m,30m,1h"),
-		BollPumpSymbolLimit:    getenvInt("BOLL_PUMP_SYMBOL_LIMIT", 200),
-		BollPumpWorkers:        getenvInt("BOLL_PUMP_WORKERS", 20),
-		BollPumpRateLimitRPS:   getenvInt("BOLL_PUMP_RATE_LIMIT_RPS", 20),
-		BollPumpScanTimeoutSec: getenvInt("BOLL_PUMP_SCAN_TIMEOUT_SEC", 45),
-		BollPumpJitterSec:      getenvInt("BOLL_PUMP_JITTER_SEC", 5),
-		BollPumpRetentionDays:  getenvInt("BOLL_PUMP_RETENTION_DAYS", 30),
+		BollPumpEnabled:                 getenvBool("BOLL_PUMP_ENABLED", true),
+		BollPumpMarket:                  getenv("BOLL_PUMP_MARKET", "swap"),
+		BollPumpTimeframes:              getenv("BOLL_PUMP_TIMEFRAMES", "1m,3m,5m,15m,30m,1h"),
+		BollPumpSymbolLimit:             getenvInt("BOLL_PUMP_SYMBOL_LIMIT", 1000),
+		BollPumpWorkers:                 getenvInt("BOLL_PUMP_WORKERS", 20),
+		BollPumpRateLimitRPS:            getenvInt("BOLL_PUMP_RATE_LIMIT_RPS", 20),
+		BollPumpScanTimeoutSec:          getenvInt("BOLL_PUMP_SCAN_TIMEOUT_SEC", 45),
+		BollPumpJitterSec:               getenvInt("BOLL_PUMP_JITTER_SEC", 5),
+		BollPumpRetentionDays:           getenvInt("BOLL_PUMP_RETENTION_DAYS", 30),
+		BollPumpWebSocketEnabled:        getenvBool("BOLL_PUMP_WS_ENABLED", true),
+		BollPumpWebSocketChunkSize:      getenvInt("BOLL_PUMP_WS_CHUNK_SIZE", 200),
+		BollPumpWebSocketBootstrapLimit: getenvInt("BOLL_PUMP_WS_BOOTSTRAP_LIMIT", 240),
+		BollPumpWebSocketBootstrapRPS:   getenvInt("BOLL_PUMP_WS_BOOTSTRAP_RPS", 8),
 
 		RankBucket:         getenv("RANK_BUCKET", "15m"),
 		RankHistoryBuckets: getenvInt("RANK_HISTORY_BUCKETS", 96),

@@ -164,6 +164,54 @@ func TestBollPumpScannerAddsFourHourResistanceBreakoutScore(t *testing.T) {
 	}
 }
 
+func TestBollPumpScannerPersistsFourHourKeyKSignal(t *testing.T) {
+	ctx := context.Background()
+	store := openBollPumpTestStore(t)
+	defer store.Close()
+
+	cfg := DefaultBollPumpConfig()
+	cfg.SymbolLimit = 20
+	cfg.KeyK4HEnabled = true
+	source := &fakeBollPumpSource{
+		symbols: []string{"XYZUSDT", "ABCUSDC"},
+		bars: map[string][]BollPumpBar{
+			"4h": bollPumpFixtureFourHourKeyK(),
+		},
+		quote: map[string]float64{"XYZUSDT": 3_000_000},
+	}
+	scanner := NewBollPumpScanner(source, store, cfg)
+
+	result := scanner.ScanKeyK4H(ctx)
+	if result.SymbolsScanned != 1 {
+		t.Fatalf("symbols scanned = %d, want 1", result.SymbolsScanned)
+	}
+	if result.SignalsFound != 1 {
+		t.Fatalf("signals found = %d, want 1", result.SignalsFound)
+	}
+	rows, err := ListBollPumpSignals(ctx, store, BollPumpSignalFilter{Market: "swap", SignalLevel: string(BollPumpLevelKeyK4H), Limit: 10})
+	if err != nil {
+		t.Fatalf("list signals: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("signals = %d, want 1", len(rows))
+	}
+	if rows[0].Timeframe != "4h" || rows[0].SignalLevel != string(BollPumpLevelKeyK4H) {
+		t.Fatalf("signal = %#v, want 4h KEY_K_4H", rows[0])
+	}
+
+	result = scanner.ScanKeyK4H(ctx)
+	if result.SignalsFound != 0 {
+		t.Fatalf("second scan signals found = %d, want 0 after dedupe", result.SignalsFound)
+	}
+	rows, err = ListBollPumpSignals(ctx, store, BollPumpSignalFilter{Market: "swap", SignalLevel: string(BollPumpLevelKeyK4H), Limit: 10})
+	if err != nil {
+		t.Fatalf("list signals after dedupe: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("signals after dedupe = %d, want 1", len(rows))
+	}
+}
+
 func TestBollPumpScannerRequiresFifteenMinuteClearUptrend(t *testing.T) {
 	ctx := context.Background()
 	store := openBollPumpTestStore(t)

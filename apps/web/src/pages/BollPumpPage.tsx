@@ -5,6 +5,7 @@ import {
   buildBollPumpTradeCandidates,
   filterActiveBollPumpStates,
   hasBollPumpFourHourBreakout,
+  isBollPumpFourHourKeyK,
 } from "./bollPumpCandidates";
 import {
   fetchBollPumpDetail,
@@ -20,13 +21,14 @@ import {
 } from "../services/bollPump";
 
 const TIMEFRAMES = ["1m", "3m", "5m", "15m", "30m", "1h"];
+const STAT_TIMEFRAMES = ["1m", "3m", "5m", "15m", "30m", "1h", "4h"];
 
 function defaultBollPumpSettings(): BollPumpSettings {
   return {
     enabled: true,
     market: "swap",
     timeframes: TIMEFRAMES,
-    symbol_limit: 200,
+    symbol_limit: 1000,
     scan_timeout_sec: 45,
     boll_period: 20,
     boll_std_dev: 2,
@@ -69,6 +71,13 @@ function defaultBollPumpSettings(): BollPumpSettings {
     resistance_4h_max_distance_pct: 0.04,
     resistance_4h_min_touches: 2,
     resistance_4h_breakout_bonus: 15,
+    key_k_4h_enabled: true,
+    key_k_4h_lookback: 120,
+    key_k_4h_threshold: 0.72,
+    key_k_4h_min_volume_ratio: 0.8,
+    key_k_4h_min_body_pct: 0,
+    key_k_4h_max_sticky_score: 1,
+    key_k_4h_telegram_threshold: 72,
     watch_telegram_threshold: 70,
     confirm1_telegram_threshold: 75,
     confirm2_telegram_threshold: 80,
@@ -82,6 +91,7 @@ function cloneSettings(settings: BollPumpSettings): BollPumpSettings {
 }
 
 function levelColor(level: string) {
+  if (level === "KEY_K_4H") return "purple";
   if (level === "COMPLETED") return "red";
   if (level === "CONFIRM_2") return "red";
   if (level === "CONFIRM_1") return "orange";
@@ -109,6 +119,10 @@ function fmtPrice(v: number) {
 
 function hasFourHourResistanceBreakout(signal: BollPumpSignal) {
   return hasBollPumpFourHourBreakout(signal);
+}
+
+function isFourHourKeyK(signal: BollPumpSignal) {
+  return isBollPumpFourHourKeyK(signal);
 }
 
 export default function BollPumpPage() {
@@ -243,6 +257,11 @@ export default function BollPumpPage() {
         render: (v: string, r: BollPumpSignal) => (
           <span className="cm-bollSymbolCell">
             <strong className="cm-symbol">{v}</strong>
+            {isFourHourKeyK(r) ? (
+              <Tag className="cm-bollKeyKTag" color="purple">
+                4H关键K
+              </Tag>
+            ) : null}
             {hasFourHourResistanceBreakout(r) ? (
               <Tag className="cm-bollBreakoutTag" color="gold">
                 4H突破
@@ -305,6 +324,7 @@ export default function BollPumpPage() {
   const countsByLevel = stats?.countsByLevel || {};
   const countsByTimeframe = stats?.countsByTimeframe || {};
   const resistanceBreakoutCount = useMemo(() => signals.filter(hasFourHourResistanceBreakout).length, [signals]);
+  const keyK4HCount = useMemo(() => signals.filter(isFourHourKeyK).length, [signals]);
   const tradeCandidates = useMemo(() => buildBollPumpTradeCandidates(states, signals, 12), [states, signals]);
 
   return (
@@ -315,7 +335,7 @@ export default function BollPumpPage() {
             <Title heading={5} style={{ margin: 0 }}>
               BOLL 泵盘扫描器
             </Title>
-            <Text className="cm-muted">swap | 1m / 3m / 5m / 15m / 30m / 1h</Text>
+            <Text className="cm-muted">swap | BOLL多周期 + 4h关键K</Text>
           </div>
           <Space>
             <Button loading={loading} onClick={refresh}>
@@ -341,13 +361,14 @@ export default function BollPumpPage() {
           <span className="cm-pill">WATCH {countsByLevel.WATCH || 0}</span>
           <span className="cm-pill">CONFIRM_1 {countsByLevel.CONFIRM_1 || 0}</span>
           <span className="cm-pill">CONFIRM_2 {countsByLevel.CONFIRM_2 || 0}</span>
+          <span className="cm-pill cm-bollKeyKPill">4h关键K {countsByLevel.KEY_K_4H || keyK4HCount}</span>
           <span className="cm-pill cm-bollBreakoutPill">4h突破 {resistanceBreakoutCount}</span>
           <span className="cm-pill">更新时间 {stats?.generatedAtMs ? new Date(stats.generatedAtMs).toLocaleTimeString() : "-"}</span>
         </Space>
       </div>
 
       <div className="cm-bollStats">
-        {["1m", "3m", "5m", "15m", "30m", "1h"].map((tf) => (
+        {STAT_TIMEFRAMES.map((tf) => (
           <button
             key={tf}
             type="button"
@@ -377,7 +398,7 @@ export default function BollPumpPage() {
               <div className="cm-bollCandidateCard" key={`${candidate.symbol}-${candidate.timeframe}`}>
                 <div className="cm-bollCandidateTop">
                   <strong className="cm-symbol">{candidate.symbol}</strong>
-                  <Tag color={candidate.trade_label === "重点" ? "red" : "orange"}>{candidate.trade_label}</Tag>
+                  <Tag color={candidate.trade_label === "重点" ? "red" : candidate.trade_label === "关键K" ? "purple" : "orange"}>{candidate.trade_label}</Tag>
                 </div>
                 <div className="cm-bollCandidateMeta">
                   <span>
@@ -392,6 +413,7 @@ export default function BollPumpPage() {
                 </div>
                 <div className="cm-bollCandidateBottom">
                   <Tag color={levelColor(candidate.status)}>{candidate.status}</Tag>
+                  {candidate.is_key_k_4h ? <Tag color="purple">4H关键K</Tag> : null}
                   {candidate.has_4h_breakout ? <Tag color="gold">4H突破</Tag> : null}
                   <strong className="cm-mono cm-bollCandidateScore">{fmtNum(Number(candidate.priority_score || 0), 0)}</strong>
                   <Button size="mini" disabled={!candidate.latest_signal_id} onClick={() => openSignalDetail(candidate.latest_signal_id)}>
@@ -421,7 +443,12 @@ export default function BollPumpPage() {
             data={signals as any}
             pagination={{ pageSize: 20 }}
             scroll={{ x: 938 }}
-            rowClassName={(record) => (hasFourHourResistanceBreakout(record as BollPumpSignal) ? "cm-bollTableRow--resistanceBreakout" : "")}
+            rowClassName={(record) => {
+              const row = record as BollPumpSignal;
+              if (isFourHourKeyK(row)) return "cm-bollTableRow--keyK";
+              if (hasFourHourResistanceBreakout(row)) return "cm-bollTableRow--resistanceBreakout";
+              return "";
+            }}
           />
         </div>
         <div className="cm-card cm-bollPanel">
@@ -471,8 +498,8 @@ export default function BollPumpPage() {
                 </Select>
               </label>
               <label>
-                <span>扫描数量</span>
-                <InputNumber min={20} max={1000} step={10} value={settingsDraft.symbol_limit} onChange={(v) => patchDraft({ symbol_limit: Number(v || 200) })} />
+                <span>合约上限</span>
+                <InputNumber min={20} max={1000} step={10} value={settingsDraft.symbol_limit} onChange={(v) => patchDraft({ symbol_limit: Number(v || 1000) })} />
               </label>
               <label>
                 <span>超时秒数</span>
@@ -740,6 +767,48 @@ export default function BollPumpPage() {
               <label>
                 <span>突破加分</span>
                 <InputNumber min={1} max={50} value={settingsDraft.resistance_4h_breakout_bonus} onChange={(v) => patchDraft({ resistance_4h_breakout_bonus: Number(v || 15) })} />
+              </label>
+            </div>
+          </div>
+
+          <div className="cm-bollSettingsBlock">
+            <Title heading={6} style={{ margin: 0 }}>
+              4h关键K
+            </Title>
+            <div className="cm-bollSettingsGrid">
+              <label>
+                <span>扫描开关</span>
+                <Switch checked={settingsDraft.key_k_4h_enabled} onChange={(v) => patchDraft({ key_k_4h_enabled: v })} />
+              </label>
+              <label>
+                <span>回看K数</span>
+                <InputNumber min={30} max={500} value={settingsDraft.key_k_4h_lookback} onChange={(v) => patchDraft({ key_k_4h_lookback: Number(v || 120) })} />
+              </label>
+              <label>
+                <span>KeyK阈值</span>
+                <InputNumber min={0.1} max={1} step={0.01} value={settingsDraft.key_k_4h_threshold} onChange={(v) => patchDraft({ key_k_4h_threshold: Number(v || 0.72) })} />
+              </label>
+              <label>
+                <span>最低量比</span>
+                <InputNumber min={0} max={20} step={0.1} value={settingsDraft.key_k_4h_min_volume_ratio} onChange={(v) => patchDraft({ key_k_4h_min_volume_ratio: Number(v || 0) })} />
+              </label>
+              <label>
+                <span>最低实体%</span>
+                <InputNumber
+                  min={-20}
+                  max={20}
+                  step={0.1}
+                  value={Number((settingsDraft.key_k_4h_min_body_pct * 100).toFixed(2))}
+                  onChange={(v) => patchDraft({ key_k_4h_min_body_pct: Number(v || 0) / 100 })}
+                />
+              </label>
+              <label>
+                <span>Sticky上限</span>
+                <InputNumber min={0.1} max={1} step={0.05} value={settingsDraft.key_k_4h_max_sticky_score} onChange={(v) => patchDraft({ key_k_4h_max_sticky_score: Number(v || 1) })} />
+              </label>
+              <label>
+                <span>提醒分</span>
+                <InputNumber min={0} max={200} value={settingsDraft.key_k_4h_telegram_threshold} onChange={(v) => patchDraft({ key_k_4h_telegram_threshold: Number(v || 72) })} />
               </label>
             </div>
           </div>

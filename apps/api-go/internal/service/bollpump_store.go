@@ -202,6 +202,25 @@ func GetBollPumpSignal(ctx context.Context, store *sqlite.Store, id int64) (*mod
 	return &sig, nil
 }
 
+func BollPumpSignalExists(ctx context.Context, store *sqlite.Store, sig model.BollPumpSignal) (bool, error) {
+	if store == nil {
+		return false, fmt.Errorf("boll pump signal store is nil")
+	}
+	var count int
+	err := store.GetContext(ctx, &count, `SELECT COUNT(1) FROM boll_pump_signals
+WHERE market = ? AND symbol = ? AND timeframe = ? AND signal_level = ? AND candle_start_ms = ?`,
+		normalizeMarket(sig.Market),
+		strings.ToUpper(strings.TrimSpace(sig.Symbol)),
+		strings.TrimSpace(sig.Timeframe),
+		strings.TrimSpace(sig.SignalLevel),
+		sig.CandleStartMs,
+	)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
 func ListBollPumpSignals(ctx context.Context, store *sqlite.Store, f BollPumpSignalFilter) ([]model.BollPumpSignal, error) {
 	if store == nil {
 		return nil, fmt.Errorf("boll pump signal store is nil")

@@ -302,7 +302,7 @@ body {
 
 .cm-bollStats {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -540,13 +540,28 @@ body {
   border-bottom-color: rgba(245, 158, 11, 0.28);
 }
 
+.cm-bollTable .cm-bollTableRow--keyK .arco-table-td {
+  background: linear-gradient(90deg, rgba(124, 58, 237, 0.14), rgba(20, 184, 166, 0.08));
+  border-top-color: rgba(124, 58, 237, 0.24);
+  border-bottom-color: rgba(124, 58, 237, 0.24);
+}
+
 .cm-bollTable .cm-bollTableRow--resistanceBreakout .arco-table-td:first-child {
   box-shadow: inset 3px 0 0 rgba(245, 158, 11, 0.95);
+}
+
+.cm-bollTable .cm-bollTableRow--keyK .arco-table-td:first-child {
+  box-shadow: inset 3px 0 0 rgba(124, 58, 237, 0.95);
 }
 
 :root[data-theme="dark"] .cm-bollTable .cm-bollTableRow--resistanceBreakout .arco-table-td {
   background: linear-gradient(90deg, rgba(245, 158, 11, 0.20), rgba(20, 184, 166, 0.12));
   border-color: rgba(245, 158, 11, 0.28);
+}
+
+:root[data-theme="dark"] .cm-bollTable .cm-bollTableRow--keyK .arco-table-td {
+  background: linear-gradient(90deg, rgba(124, 58, 237, 0.22), rgba(20, 184, 166, 0.12));
+  border-color: rgba(124, 58, 237, 0.28);
 }
 
 :root[data-theme="dark"] .cm-bollTable .arco-table-td {
@@ -561,12 +576,20 @@ body {
   background: linear-gradient(90deg, rgba(245, 158, 11, 0.22), rgba(16, 185, 129, 0.12));
 }
 
+.cm-bollTable .cm-bollTableRow--keyK:hover .arco-table-td {
+  background: linear-gradient(90deg, rgba(124, 58, 237, 0.20), rgba(16, 185, 129, 0.12));
+}
+
 :root[data-theme="dark"] .cm-bollTable .arco-table-tr:hover .arco-table-td {
   background: rgba(96, 165, 250, 0.10);
 }
 
 :root[data-theme="dark"] .cm-bollTable .cm-bollTableRow--resistanceBreakout:hover .arco-table-td {
   background: linear-gradient(90deg, rgba(245, 158, 11, 0.26), rgba(20, 184, 166, 0.16));
+}
+
+:root[data-theme="dark"] .cm-bollTable .cm-bollTableRow--keyK:hover .arco-table-td {
+  background: linear-gradient(90deg, rgba(124, 58, 237, 0.28), rgba(20, 184, 166, 0.16));
 }
 
 .cm-bollTable .arco-table-pagination {
@@ -582,6 +605,12 @@ body {
 }
 
 .cm-bollBreakoutTag {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.cm-bollKeyKTag {
   flex: 0 0 auto;
   font-size: 11px;
   font-weight: 700;
@@ -606,9 +635,21 @@ body {
   font-weight: 600;
 }
 
+.cm-bollKeyKPill {
+  border-color: rgba(124, 58, 237, 0.32);
+  background: rgba(124, 58, 237, 0.12);
+  color: #5b21b6;
+  font-weight: 600;
+}
+
 :root[data-theme="dark"] .cm-bollBreakoutPill {
   color: #fbbf24;
   background: rgba(245, 158, 11, 0.16);
+}
+
+:root[data-theme="dark"] .cm-bollKeyKPill {
+  color: #c4b5fd;
+  background: rgba(124, 58, 237, 0.18);
 }
 
 .cm-bollSettings {

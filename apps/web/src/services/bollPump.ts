@@ -5,7 +5,7 @@ export type BollPumpSignal = {
   market: string;
   symbol: string;
   timeframe: string;
-  signal_level: "WATCH" | "CONFIRM_1" | "CONFIRM_2";
+  signal_level: "WATCH" | "CONFIRM_1" | "CONFIRM_2" | "KEY_K_4H";
   price: number;
   volume_ratio: number;
   boll_bandwidth: number;
@@ -92,6 +92,13 @@ export type BollPumpSettings = {
   resistance_4h_max_distance_pct: number;
   resistance_4h_min_touches: number;
   resistance_4h_breakout_bonus: number;
+  key_k_4h_enabled: boolean;
+  key_k_4h_lookback: number;
+  key_k_4h_threshold: number;
+  key_k_4h_min_volume_ratio: number;
+  key_k_4h_min_body_pct: number;
+  key_k_4h_max_sticky_score: number;
+  key_k_4h_telegram_threshold: number;
   watch_telegram_threshold: number;
   confirm1_telegram_threshold: number;
   confirm2_telegram_threshold: number;

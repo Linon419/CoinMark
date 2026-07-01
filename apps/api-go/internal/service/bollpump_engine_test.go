@@ -194,6 +194,44 @@ func TestBollPumpFourHourResistanceBreakoutRequiresCloseAboveBuffer(t *testing.T
 	}
 }
 
+func TestBollPumpKeyK4HTriggersOnLatestClosedKeyCandle(t *testing.T) {
+	cfg := DefaultBollPumpConfig()
+	bars := bollPumpFixtureFourHourKeyK()
+	ind := ComputeBollPumpIndicators(bars, cfg.BollPeriod, cfg.BollStdDev, cfg.ATRPeriod)
+
+	got := EvaluateBollPumpKeyK4H("swap", "XYZUSDT", bars, ind, 3_000_000, cfg)
+	if !got.Triggered {
+		t.Fatalf("Triggered = false, want true; reasons=%v", got.Reasons)
+	}
+	if got.Signal.SignalLevel != string(BollPumpLevelKeyK4H) {
+		t.Fatalf("level = %s, want KEY_K_4H", got.Signal.SignalLevel)
+	}
+	if got.Signal.Timeframe != "4h" {
+		t.Fatalf("timeframe = %s, want 4h", got.Signal.Timeframe)
+	}
+	if got.Signal.Score < 72 {
+		t.Fatalf("score = %.2f, want >= 72", got.Signal.Score)
+	}
+	if !strings.Contains(got.Signal.Reason, "4h key K confirmed") {
+		t.Fatalf("reason = %q, want key K reason", got.Signal.Reason)
+	}
+}
+
+func TestBollPumpKeyK4HRequiresScoreThreshold(t *testing.T) {
+	cfg := DefaultBollPumpConfig()
+	cfg.KeyK4HThreshold = 0.95
+	bars := bollPumpFixtureFourHourKeyK()
+	ind := ComputeBollPumpIndicators(bars, cfg.BollPeriod, cfg.BollStdDev, cfg.ATRPeriod)
+
+	got := EvaluateBollPumpKeyK4H("swap", "XYZUSDT", bars, ind, 3_000_000, cfg)
+	if got.Triggered {
+		t.Fatalf("Triggered = true, want false above high threshold")
+	}
+	if !strings.Contains(strings.Join(got.Reasons, ","), "key_k_score") {
+		t.Fatalf("reasons = %v, want score threshold reason", got.Reasons)
+	}
+}
+
 func TestBollPumpConfirmFlowWaitsUntilBreaksPullbackHigh(t *testing.T) {
 	cfg := DefaultBollPumpConfig()
 	bars := bollPumpFixtureWatchThenTwoConfirms()
@@ -577,6 +615,38 @@ func bollPumpFixtureFourHourResistanceBreakout() []BollPumpBar {
 			Closed:      true,
 		})
 	}
+	return bars
+}
+
+func bollPumpFixtureFourHourKeyK() []BollPumpBar {
+	bars := make([]BollPumpBar, 0, 45)
+	price := 100.0
+	for i := 0; i < 44; i++ {
+		price += float64(i%3-1) * 0.04
+		bars = append(bars, BollPumpBar{
+			OpenTimeMs:  int64(i) * 4 * 60 * 60 * 1000,
+			CloseTimeMs: int64(i+1)*4*60*60*1000 - 1,
+			Open:        price - 0.04,
+			High:        price + 0.28,
+			Low:         price - 0.25,
+			Close:       price,
+			Volume:      100,
+			QuoteVolume: 100 * price,
+			Closed:      true,
+		})
+	}
+	i := len(bars)
+	bars = append(bars, BollPumpBar{
+		OpenTimeMs:  int64(i) * 4 * 60 * 60 * 1000,
+		CloseTimeMs: int64(i+1)*4*60*60*1000 - 1,
+		Open:        101.0,
+		High:        103.0,
+		Low:         99.7,
+		Close:       102.5,
+		Volume:      300,
+		QuoteVolume: 300 * 102.5,
+		Closed:      true,
+	})
 	return bars
 }
 

@@ -16,18 +16,23 @@ export type BollPumpCandidateSignal = {
   timeframe: string;
   signal_level?: string;
   signal_time_ms?: number;
+  score?: number;
+  priority_score?: number;
   reason?: string;
 };
 
 export type BollPumpTradeCandidate = BollPumpCandidateState & {
-  trade_label: "重点" | "可参与" | "突破";
+  trade_label: "重点" | "可参与" | "突破" | "关键K";
   latest_signal_id?: number;
   has_4h_breakout: boolean;
+  is_key_k_4h?: boolean;
 };
 
 const inactiveStatuses = new Set(["IDLE", "EXPIRED", "INVALIDATED"]);
 const tradeStatuses = new Set(["WATCH", "CONFIRM_1", "CONFIRM_2", "COMPLETED"]);
 const candidateSignalLevels = new Set(["WATCH", "CONFIRM_1", "CONFIRM_2"]);
+const keyKSignalLevels = new Set(["KEY_K_4H"]);
+const keyKMaxAgeMs = 24 * 60 * 60 * 1000;
 
 export function filterActiveBollPumpStates<T extends { status: string; expires_at_candle_ms?: number | null }>(states: T[], nowMs = Date.now()): T[] {
   return states.filter((state) => {
@@ -47,6 +52,10 @@ export function isBollPumpTradeCandidate(state: { status: string }): boolean {
 
 export function hasBollPumpFourHourBreakout(signal?: { reason?: string | null }): boolean {
   return String(signal?.reason || "").toLowerCase().includes("4h resistance breakout");
+}
+
+export function isBollPumpFourHourKeyK(signal?: { signal_level?: string | null }): boolean {
+  return keyKSignalLevels.has(String(signal?.signal_level || "").toUpperCase());
 }
 
 function isCandidateSignal(signal: BollPumpCandidateSignal): boolean {
@@ -82,7 +91,7 @@ export function buildBollPumpTradeCandidates(
     }
   }
 
-  return filterActiveBollPumpStates(states, nowMs)
+  const stateCandidates = filterActiveBollPumpStates(states, nowMs)
     .filter(isBollPumpTradeCandidate)
     .filter((state) => latestByKey.has(`${state.symbol}:${state.timeframe}`))
     .map((state) => {
@@ -94,8 +103,37 @@ export function buildBollPumpTradeCandidates(
         latest_signal_id: latest?.id,
         has_4h_breakout: hasBollPumpFourHourBreakout(latest),
       } satisfies BollPumpTradeCandidate;
+    });
+
+  const keyKCandidates = signals
+    .filter(isBollPumpFourHourKeyK)
+    .filter((signal) => {
+      const ts = Number(signal.signal_time_ms || 0);
+      return ts > 0 && nowMs - ts <= keyKMaxAgeMs;
     })
+    .map((signal) => {
+      const score = Number(signal.priority_score || signal.score || 0);
+      return {
+        symbol: signal.symbol,
+        timeframe: signal.timeframe || "4h",
+        dominant_timeframe: "4h",
+        status: "KEY_K_4H",
+        priority_score: score,
+        current_score: score,
+        confluence_score: 0,
+        bounce_count: 0,
+        trade_label: "关键K",
+        latest_signal_id: signal.id,
+        has_4h_breakout: hasBollPumpFourHourBreakout(signal),
+        is_key_k_4h: true,
+      } satisfies BollPumpTradeCandidate;
+    });
+
+  return [...stateCandidates, ...keyKCandidates]
     .sort((a, b) => {
+      if (a.is_key_k_4h !== b.is_key_k_4h) {
+        return a.is_key_k_4h ? -1 : 1;
+      }
       if (a.has_4h_breakout !== b.has_4h_breakout) {
         return a.has_4h_breakout ? -1 : 1;
       }

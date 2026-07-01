@@ -15,7 +15,7 @@ func DefaultBollPumpConfig() BollPumpConfig {
 		Enabled:        true,
 		Market:         "swap",
 		Timeframes:     []string{"1m", "3m", "5m", "15m", "30m", "1h"},
-		SymbolLimit:    200,
+		SymbolLimit:    1000,
 		ScanTimeoutSec: 45,
 		BollPeriod:     20,
 		BollStdDev:     2,
@@ -64,6 +64,13 @@ func DefaultBollPumpConfig() BollPumpConfig {
 		Resistance4HMaxDistancePct:    0.04,
 		Resistance4HMinTouches:        2,
 		Resistance4HBreakoutBonus:     15,
+		KeyK4HEnabled:                 true,
+		KeyK4HLookback:                120,
+		KeyK4HThreshold:               0.72,
+		KeyK4HMinVolumeRatio:          0.8,
+		KeyK4HMinBodyPct:              0,
+		KeyK4HMaxStickyScore:          1,
+		KeyK4HTelegramThreshold:       72,
 		WatchTelegramThreshold:        70,
 		Confirm1TelegramThreshold:     75,
 		Confirm2TelegramThreshold:     80,
@@ -211,8 +218,9 @@ func bollPumpStartupTrendScore(bars []BollPumpBar, startIdx, endIdx int, cfg Bol
 }
 
 type bollPumpMinimumTrendGateResult struct {
-	Pass   bool
-	Reason string
+	Pass        bool
+	Reason      string
+	Unavailable bool
 }
 
 func bollPumpMinimumTrendGate(bars []BollPumpBar, cfg BollPumpConfig) bollPumpMinimumTrendGateResult {

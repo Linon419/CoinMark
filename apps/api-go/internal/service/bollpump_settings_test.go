@@ -43,6 +43,13 @@ func TestBollPumpSettingsRoundTrip(t *testing.T) {
 	cfg.Resistance4HMaxDistancePct = 0.05
 	cfg.Resistance4HMinTouches = 3
 	cfg.Resistance4HBreakoutBonus = 18
+	cfg.KeyK4HEnabled = true
+	cfg.KeyK4HLookback = 144
+	cfg.KeyK4HThreshold = 0.75
+	cfg.KeyK4HMinVolumeRatio = 1.1
+	cfg.KeyK4HMinBodyPct = 0.002
+	cfg.KeyK4HMaxStickyScore = 0.9
+	cfg.KeyK4HTelegramThreshold = 82
 
 	saved, err := SaveBollPumpConfig(ctx, store, cfg)
 	if err != nil {
@@ -145,5 +152,26 @@ func TestBollPumpSettingsRoundTrip(t *testing.T) {
 	}
 	if got.Resistance4HBreakoutBonus != 18 {
 		t.Fatalf("4h breakout bonus = %v, want 18", got.Resistance4HBreakoutBonus)
+	}
+	if !got.KeyK4HEnabled {
+		t.Fatalf("key K 4h enabled = false, want true")
+	}
+	if got.KeyK4HLookback != 144 {
+		t.Fatalf("key K 4h lookback = %d, want 144", got.KeyK4HLookback)
+	}
+	if got.KeyK4HThreshold != 0.75 {
+		t.Fatalf("key K 4h threshold = %v, want 0.75", got.KeyK4HThreshold)
+	}
+	if got.KeyK4HMinVolumeRatio != 1.1 {
+		t.Fatalf("key K 4h min volume = %v, want 1.1", got.KeyK4HMinVolumeRatio)
+	}
+	if got.KeyK4HMinBodyPct != 0.002 {
+		t.Fatalf("key K 4h min body = %v, want 0.002", got.KeyK4HMinBodyPct)
+	}
+	if got.KeyK4HMaxStickyScore != 0.9 {
+		t.Fatalf("key K 4h max sticky = %v, want 0.9", got.KeyK4HMaxStickyScore)
+	}
+	if got.KeyK4HTelegramThreshold != 82 {
+		t.Fatalf("key K 4h telegram threshold = %v, want 82", got.KeyK4HTelegramThreshold)
 	}
 }

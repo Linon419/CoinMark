@@ -188,6 +188,25 @@ func NormalizeBollPumpConfig(in BollPumpConfig) BollPumpConfig {
 	if in.Resistance4HBreakoutBonus > 0 {
 		out.Resistance4HBreakoutBonus = clampFloat(in.Resistance4HBreakoutBonus, 0, 50)
 	}
+	out.KeyK4HEnabled = in.KeyK4HEnabled
+	if in.KeyK4HLookback > 0 {
+		out.KeyK4HLookback = clampInt(in.KeyK4HLookback, 30, 500)
+	}
+	if in.KeyK4HThreshold > 0 {
+		out.KeyK4HThreshold = clampFloat(in.KeyK4HThreshold, 0.1, 1)
+	}
+	if in.KeyK4HMinVolumeRatio > 0 {
+		out.KeyK4HMinVolumeRatio = clampFloat(in.KeyK4HMinVolumeRatio, 0, 20)
+	}
+	if in.KeyK4HMinBodyPct != 0 {
+		out.KeyK4HMinBodyPct = clampFloat(in.KeyK4HMinBodyPct, -0.2, 0.2)
+	}
+	if in.KeyK4HMaxStickyScore > 0 {
+		out.KeyK4HMaxStickyScore = clampFloat(in.KeyK4HMaxStickyScore, 0.1, 1)
+	}
+	if in.KeyK4HTelegramThreshold > 0 {
+		out.KeyK4HTelegramThreshold = clampFloat(in.KeyK4HTelegramThreshold, 0, 200)
+	}
 	if in.WatchTelegramThreshold > 0 {
 		out.WatchTelegramThreshold = clampFloat(in.WatchTelegramThreshold, 0, 100)
 	}

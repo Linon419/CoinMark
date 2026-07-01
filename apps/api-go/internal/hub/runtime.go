@@ -69,8 +69,19 @@ func (rt *Runtime) Start(ctx context.Context) {
 	}
 
 	if rt.bn != nil {
+		cfg := service.BollPumpConfigFromRuntime(rt.cfg)
 		source := service.NewBinanceBollPumpSource(rt.bn, rt.cfg.BollPumpSymbolLimit)
-		scanner := service.NewBollPumpScanner(source, rt.store, service.BollPumpConfigFromRuntime(rt.cfg))
+		if rt.cfg.BollPumpWebSocketEnabled && cfg.Market == "swap" {
+			live := service.NewBollPumpLiveKlineSource(source, service.NewBollPumpLiveKlineSourceConfig(
+				cfg,
+				rt.cfg.BollPumpWebSocketBootstrapLimit,
+				rt.cfg.BollPumpWebSocketBootstrapRPS,
+				rt.cfg.BollPumpWebSocketChunkSize,
+			))
+			live.Start(ctx, rt.stopCh)
+			source = live
+		}
+		scanner := service.NewBollPumpScanner(source, rt.store, cfg)
 		go scanner.Run(ctx, rt.stopCh)
 	}
 
