@@ -76,7 +76,7 @@ func DefaultBollPumpConfig() BollPumpConfig {
 		OIGrowthPeriods:               4,
 		OIGrowthMinPct:                0.05,
 		OIGrowthFullPct:               0.30,
-		OIGrowthMaxBonus:              12,
+		OIGrowthMaxBonus:              20,
 		WatchTelegramThreshold:        70,
 		Confirm1TelegramThreshold:     75,
 		Confirm2TelegramThreshold:     80,

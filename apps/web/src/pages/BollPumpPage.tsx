@@ -86,7 +86,7 @@ function defaultBollPumpSettings(): BollPumpSettings {
     oi_growth_periods: 4,
     oi_growth_min_pct: 0.05,
     oi_growth_full_pct: 0.3,
-    oi_growth_max_bonus: 12,
+    oi_growth_max_bonus: 20,
     watch_telegram_threshold: 70,
     confirm1_telegram_threshold: 75,
     confirm2_telegram_threshold: 80,
@@ -938,7 +938,7 @@ export default function BollPumpPage() {
               </label>
               <label>
                 <span>最高加分</span>
-                <InputNumber min={0} max={50} value={settingsDraft.oi_growth_max_bonus} onChange={(v) => patchDraft({ oi_growth_max_bonus: Number(v ?? 12) })} />
+                <InputNumber min={0} max={50} value={settingsDraft.oi_growth_max_bonus} onChange={(v) => patchDraft({ oi_growth_max_bonus: Number(v ?? 20) })} />
               </label>
             </div>
           </div>

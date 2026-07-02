@@ -14,7 +14,7 @@ func TestBollPumpOIGrowthScoreFromHist(t *testing.T) {
 	cfg.OIGrowthPeriods = 4
 	cfg.OIGrowthMinPct = 0.05
 	cfg.OIGrowthFullPct = 0.30
-	cfg.OIGrowthMaxBonus = 12
+	cfg.OIGrowthMaxBonus = 20
 
 	bucketMs := int64(15 * 60 * 1000)
 	nowMs := int64(100) * bucketMs
@@ -34,8 +34,8 @@ func TestBollPumpOIGrowthScoreFromHist(t *testing.T) {
 	if got.GrowthPct < 0.299 || got.GrowthPct > 0.301 {
 		t.Fatalf("growth = %.6f, want 0.30", got.GrowthPct)
 	}
-	if got.Bonus != 12 {
-		t.Fatalf("bonus = %.2f, want 12", got.Bonus)
+	if got.Bonus != 20 {
+		t.Fatalf("bonus = %.2f, want 20", got.Bonus)
 	}
 }
 

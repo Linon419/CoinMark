@@ -188,7 +188,7 @@ func TestBollPumpScannerAddsOIGrowthScoreToSignalAndState(t *testing.T) {
 	cfg.OIGrowthPeriods = 4
 	cfg.OIGrowthMinPct = 0.05
 	cfg.OIGrowthFullPct = 0.30
-	cfg.OIGrowthMaxBonus = 12
+	cfg.OIGrowthMaxBonus = 20
 	signalBars := bollPumpFixtureUntilFirstWatch("15m", cfg)
 	source := &fakeBollPumpSource{
 		bars:  map[string][]BollPumpBar{"15m": signalBars},
@@ -219,8 +219,8 @@ func TestBollPumpScannerAddsOIGrowthScoreToSignalAndState(t *testing.T) {
 		t.Fatalf("signals = %d, want 1", len(rows))
 	}
 	base := EvaluateBollPumpWatch("swap", "XYZUSDT", "15m", signalBars, ComputeBollPumpIndicators(signalBars, cfg.BollPeriod, cfg.BollStdDev, cfg.ATRPeriod), 3_000_000, cfg)
-	if rows[0].Score != base.Signal.Score+12 {
-		t.Fatalf("score = %.2f, want %.2f", rows[0].Score, base.Signal.Score+12)
+	if rows[0].Score != base.Signal.Score+20 {
+		t.Fatalf("score = %.2f, want %.2f", rows[0].Score, base.Signal.Score+20)
 	}
 	if !strings.Contains(rows[0].Reason, "OI growth") {
 		t.Fatalf("reason = %q, want OI growth", rows[0].Reason)
