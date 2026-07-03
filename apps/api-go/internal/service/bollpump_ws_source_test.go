@@ -4,6 +4,7 @@ import (
 	"context"
 	"strconv"
 	"testing"
+	"time"
 
 	"coinmark/api-go/internal/model"
 )
@@ -31,23 +32,21 @@ func TestBollPumpKlineCacheSeedUpsertAndTrim(t *testing.T) {
 }
 
 func TestBollPumpLiveKlineSourceUsesCacheForKlines(t *testing.T) {
+	timeframe := "3m"
+	bars := bollPumpLiveKlineTestBars(timeframe, 90)
 	base := &fakeBollPumpSource{
-		bars:  map[string][]BollPumpBar{"3m": {{OpenTimeMs: 1000, Close: 1, Closed: true}}},
+		bars:  map[string][]BollPumpBar{timeframe: {{OpenTimeMs: 1000, Close: 1, Closed: true}}},
 		quote: map[string]float64{"XYZUSDT": 3_000_000},
 	}
 	source := NewBollPumpLiveKlineSource(base, BollPumpLiveKlineSourceConfig{
 		Market:         "swap",
 		SymbolLimit:    10,
-		Intervals:      []string{"3m"},
+		Intervals:      []string{timeframe},
 		BootstrapLimit: 120,
 	})
-	bars := make([]BollPumpBar, 90)
-	for i := range bars {
-		bars[i] = BollPumpBar{OpenTimeMs: int64(i+1) * 180000, CloseTimeMs: int64(i+2)*180000 - 1, Close: float64(i + 1), Closed: true}
-	}
-	source.cache.Seed("swap", "XYZUSDT", "3m", bars, 120)
+	source.cache.Seed("swap", "XYZUSDT", timeframe, bars, 120)
 
-	got, err := source.Klines(context.Background(), "swap", "XYZUSDT", "3m", 80)
+	got, err := source.Klines(context.Background(), "swap", "XYZUSDT", timeframe, 80)
 	if err != nil {
 		t.Fatalf("klines: %v", err)
 	}
@@ -56,6 +55,39 @@ func TestBollPumpLiveKlineSourceUsesCacheForKlines(t *testing.T) {
 	}
 	if len(base.requestedTFs) != 0 {
 		t.Fatalf("base requested timeframes = %v, want none", base.requestedTFs)
+	}
+}
+
+func TestBollPumpLiveKlineSourceRefreshesStaleCacheForKlines(t *testing.T) {
+	timeframe := "1m"
+	freshBars := bollPumpLiveKlineTestBars(timeframe, 90)
+	staleBars := bollPumpLiveKlineTestBarsEndingAt(timeframe, 90, time.Now().Add(-24*time.Hour).UnixMilli())
+	base := &fakeBollPumpSource{
+		bars:  map[string][]BollPumpBar{timeframe: freshBars},
+		quote: map[string]float64{"XYZUSDT": 3_000_000},
+	}
+	source := NewBollPumpLiveKlineSource(base, BollPumpLiveKlineSourceConfig{
+		Market:         "swap",
+		SymbolLimit:    10,
+		Intervals:      []string{timeframe},
+		BootstrapLimit: 120,
+	})
+	source.cache.Seed("swap", "XYZUSDT", timeframe, staleBars, 120)
+
+	got, err := source.Klines(context.Background(), "swap", "XYZUSDT", timeframe, 80)
+	if err != nil {
+		t.Fatalf("klines: %v", err)
+	}
+	if len(base.requestedTFs) != 1 || base.requestedTFs[0] != timeframe {
+		t.Fatalf("base requested timeframes = %v, want [%s]", base.requestedTFs, timeframe)
+	}
+	wantLatest := freshBars[len(freshBars)-1].OpenTimeMs
+	if got[len(got)-1].OpenTimeMs != wantLatest {
+		t.Fatalf("latest open = %d, want refreshed %d", got[len(got)-1].OpenTimeMs, wantLatest)
+	}
+	cached := source.cache.Klines("swap", "XYZUSDT", timeframe, 1)
+	if len(cached) != 1 || cached[0].OpenTimeMs != wantLatest {
+		t.Fatalf("cached latest = %#v, want refreshed latest %d", cached, wantLatest)
 	}
 }
 
@@ -138,6 +170,33 @@ func TestBollPumpLiveKlineSourceAggregatesOneMinuteToThreeMinute(t *testing.T) {
 	if bar.High != 1.3 || bar.Low != 0.9 || bar.Volume != 30 || bar.QuoteVolume != 36 {
 		t.Fatalf("3m volume/range = %#v, want aggregated volume and range", bar)
 	}
+}
+
+func bollPumpLiveKlineTestBars(timeframe string, count int) []BollPumpBar {
+	return bollPumpLiveKlineTestBarsEndingAt(timeframe, count, time.Now().UnixMilli())
+}
+
+func bollPumpLiveKlineTestBarsEndingAt(timeframe string, count int, endMs int64) []BollPumpBar {
+	intervalMs := bollPumpWSIntervalMs(timeframe)
+	latestOpen := (endMs/intervalMs - 1) * intervalMs
+	bars := make([]BollPumpBar, count)
+	start := latestOpen - int64(count-1)*intervalMs
+	for i := range bars {
+		openTime := start + int64(i)*intervalMs
+		closePrice := float64(i + 1)
+		bars[i] = BollPumpBar{
+			OpenTimeMs:  openTime,
+			CloseTimeMs: openTime + intervalMs - 1,
+			Open:        closePrice - 0.1,
+			High:        closePrice + 0.2,
+			Low:         closePrice - 0.2,
+			Close:       closePrice,
+			Volume:      100,
+			QuoteVolume: 1000,
+			Closed:      true,
+		}
+	}
+	return bars
 }
 
 func TestBollPumpScannerKeepsStateWhenTrendCacheIsWarming(t *testing.T) {

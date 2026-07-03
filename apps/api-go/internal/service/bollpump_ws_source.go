@@ -105,11 +105,53 @@ func (s *BollPumpLiveKlineSource) Klines(ctx context.Context, market, symbol, ti
 		return nil, fmt.Errorf("boll pump websocket source is nil")
 	}
 	bars := s.cache.Klines(market, symbol, timeframe, limit)
-	minBars := limit
-	if minBars <= 0 || minBars > 80 {
-		minBars = 80
-	}
+	minBars := bollPumpKlineMinBars(limit)
 	if len(bars) < minBars {
+		return nil, &bollPumpKlineCacheWarmingError{
+			Symbol:    strings.ToUpper(symbol),
+			Timeframe: timeframe,
+			Have:      len(bars),
+			Want:      minBars,
+		}
+	}
+	if bollPumpKlineCacheFresh(bars, timeframe, time.Now().UnixMilli()) {
+		return bars, nil
+	}
+	return s.refreshCachedKlines(ctx, market, symbol, timeframe, limit, minBars, len(bars))
+}
+
+func (s *BollPumpLiveKlineSource) refreshCachedKlines(ctx context.Context, market, symbol, timeframe string, limit, minBars, cachedBars int) ([]BollPumpBar, error) {
+	if s == nil || s.base == nil || s.cache == nil {
+		return nil, &bollPumpKlineCacheWarmingError{
+			Symbol:    strings.ToUpper(symbol),
+			Timeframe: timeframe,
+			Have:      cachedBars,
+			Want:      minBars,
+		}
+	}
+	fetchLimit := limit
+	if fetchLimit < minBars {
+		fetchLimit = minBars
+	}
+	if fetchLimit <= 0 {
+		fetchLimit = s.cfg.BootstrapLimit
+	}
+	freshBars, err := s.base.Klines(ctx, market, symbol, timeframe, fetchLimit)
+	if err != nil {
+		return nil, &bollPumpKlineCacheWarmingError{
+			Symbol:    strings.ToUpper(symbol),
+			Timeframe: timeframe,
+			Have:      cachedBars,
+			Want:      minBars,
+		}
+	}
+	cacheLimit := s.cfg.BootstrapLimit
+	if cacheLimit < fetchLimit {
+		cacheLimit = fetchLimit
+	}
+	s.cache.Seed(market, symbol, timeframe, bollPumpMarkClosedByTime(freshBars), cacheLimit)
+	bars := s.cache.Klines(market, symbol, timeframe, limit)
+	if len(bars) < minBars || !bollPumpKlineCacheFresh(bars, timeframe, time.Now().UnixMilli()) {
 		return nil, &bollPumpKlineCacheWarmingError{
 			Symbol:    strings.ToUpper(symbol),
 			Timeframe: timeframe,
@@ -429,6 +471,48 @@ func bollPumpMarkClosedByTime(bars []BollPumpBar) []BollPumpBar {
 		out[i].Closed = out[i].CloseTimeMs > 0 && out[i].CloseTimeMs <= nowMs
 	}
 	return out
+}
+
+func bollPumpKlineMinBars(limit int) int {
+	if limit > 0 && limit <= 80 {
+		return limit
+	}
+	return 80
+}
+
+func bollPumpKlineCacheFresh(bars []BollPumpBar, timeframe string, nowMs int64) bool {
+	tfMs := bollPumpWSIntervalMs(timeframe)
+	if len(bars) == 0 || tfMs <= 0 || nowMs <= 0 {
+		return false
+	}
+	latestClosedMs := int64(0)
+	for i := len(bars) - 1; i >= 0; i-- {
+		closeMs := bars[i].CloseTimeMs
+		if closeMs <= 0 && bars[i].OpenTimeMs > 0 {
+			closeMs = bars[i].OpenTimeMs + tfMs - 1
+		}
+		if bars[i].Closed && closeMs > 0 && closeMs <= nowMs {
+			latestClosedMs = closeMs
+			break
+		}
+	}
+	if latestClosedMs == 0 {
+		return false
+	}
+	return nowMs-latestClosedMs <= bollPumpKlineFreshnessThresholdMs(timeframe)
+}
+
+func bollPumpKlineFreshnessThresholdMs(timeframe string) int64 {
+	tfMs := bollPumpWSIntervalMs(timeframe)
+	if tfMs <= 0 {
+		return 0
+	}
+	threshold := tfMs*2 + int64(30*time.Second/time.Millisecond)
+	minThreshold := int64(3 * time.Minute / time.Millisecond)
+	if threshold < minThreshold {
+		return minThreshold
+	}
+	return threshold
 }
 
 func bollPumpLiveIntervals(in []string) []string {
