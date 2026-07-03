@@ -273,6 +273,8 @@ func notifyBatchTitle(events []model.AnomalyEvent) string {
 		return "【大户挂单提醒】"
 	case service.TGNotifyCategoryAbsorption:
 		return "【吸筹提醒】"
+	case service.TGNotifyCategoryBollPump:
+		return "【BOLL候选提醒】"
 	default:
 		return "【Abnormal Events】"
 	}

@@ -14,6 +14,7 @@ const (
 	TGNotifyCategoryMarketAnomaly = "market_anomaly"
 	TGNotifyCategoryWhaleWall     = "whale_wall"
 	TGNotifyCategoryAbsorption    = "absorption"
+	TGNotifyCategoryBollPump      = "boll_pump"
 )
 
 type TGNotifyPrefs struct {
@@ -21,6 +22,7 @@ type TGNotifyPrefs struct {
 	MarketAnomalyEnabled bool  `db:"market_anomaly_enabled" json:"abnormalEventsEnabled"`
 	WhaleWallEnabled     bool  `db:"whale_wall_enabled" json:"whaleWallEnabled"`
 	AbsorptionEnabled    bool  `db:"absorption_enabled" json:"absorptionEnabled"`
+	BollPumpEnabled      bool  `db:"boll_pump_enabled" json:"bollPumpEnabled"`
 	SignalLabEnabled     bool  `db:"signal_lab_enabled" json:"-"`
 	MuteAll              bool  `db:"mute_all" json:"muteAll"`
 }
@@ -31,6 +33,7 @@ func DefaultTGNotifyPrefs(chatID int64) TGNotifyPrefs {
 		MarketAnomalyEnabled: true,
 		WhaleWallEnabled:     false,
 		AbsorptionEnabled:    false,
+		BollPumpEnabled:      true,
 		SignalLabEnabled:     false,
 		MuteAll:              false,
 	}
@@ -43,7 +46,7 @@ func LoadTGNotifyPrefs(ctx context.Context, store *sqlite.Store, chatID int64) (
 	}
 
 	var row TGNotifyPrefs
-	err := store.GetContext(ctx, &row, `SELECT chat_id, market_anomaly_enabled, whale_wall_enabled, absorption_enabled, signal_lab_enabled, mute_all
+	err := store.GetContext(ctx, &row, `SELECT chat_id, market_anomaly_enabled, whale_wall_enabled, absorption_enabled, boll_pump_enabled, signal_lab_enabled, mute_all
 FROM tg_notify_prefs WHERE chat_id = ? LIMIT 1`, chatID)
 	if err == nil {
 		return row, nil
@@ -63,16 +66,17 @@ func SaveTGNotifyPrefs(ctx context.Context, store *sqlite.Store, prefs TGNotifyP
 	}
 	return store.Write(ctx, func(_ context.Context, tx *sqlx.Tx) error {
 		_, err := tx.Exec(`INSERT INTO tg_notify_prefs
-(chat_id, market_anomaly_enabled, whale_wall_enabled, absorption_enabled, signal_lab_enabled, mute_all, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+(chat_id, market_anomaly_enabled, whale_wall_enabled, absorption_enabled, boll_pump_enabled, signal_lab_enabled, mute_all, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 ON CONFLICT(chat_id) DO UPDATE SET
  market_anomaly_enabled = excluded.market_anomaly_enabled,
  whale_wall_enabled = excluded.whale_wall_enabled,
  absorption_enabled = excluded.absorption_enabled,
+ boll_pump_enabled = excluded.boll_pump_enabled,
  signal_lab_enabled = excluded.signal_lab_enabled,
  mute_all = excluded.mute_all,
  updated_at = CURRENT_TIMESTAMP`,
-			prefs.ChatID, prefs.MarketAnomalyEnabled, prefs.WhaleWallEnabled, prefs.AbsorptionEnabled, prefs.SignalLabEnabled, prefs.MuteAll,
+			prefs.ChatID, prefs.MarketAnomalyEnabled, prefs.WhaleWallEnabled, prefs.AbsorptionEnabled, prefs.BollPumpEnabled, prefs.SignalLabEnabled, prefs.MuteAll,
 		)
 		return err
 	})
@@ -85,6 +89,8 @@ func TGNotifyEventCategory(eventType string) string {
 		return TGNotifyCategoryWhaleWall
 	case "signal_lab_persistent_buy":
 		return TGNotifyCategoryAbsorption
+	case "boll_pump":
+		return TGNotifyCategoryBollPump
 	}
 	if strings.HasPrefix(et, "absorption") {
 		return TGNotifyCategoryAbsorption
@@ -101,6 +107,8 @@ func IsTGNotifyEventEnabled(eventType string, prefs TGNotifyPrefs) bool {
 		return prefs.WhaleWallEnabled
 	case TGNotifyCategoryAbsorption:
 		return prefs.AbsorptionEnabled
+	case TGNotifyCategoryBollPump:
+		return prefs.BollPumpEnabled
 	default:
 		return prefs.MarketAnomalyEnabled
 	}

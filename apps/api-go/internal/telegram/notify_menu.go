@@ -62,6 +62,8 @@ func registerNotifyMenuHandlers(b *tele.Bot, notifier *AnomalyNotifier, manageCh
 			p.WhaleWallEnabled = !p.WhaleWallEnabled
 		case "absorption":
 			p.AbsorptionEnabled = !p.AbsorptionEnabled
+		case "boll":
+			p.BollPumpEnabled = !p.BollPumpEnabled
 		case "mute":
 			p.MuteAll = !p.MuteAll
 		default:
@@ -99,6 +101,7 @@ func renderNotifyPrefsMessage(p tgNotifyPrefs) (string, *tele.ReplyMarkup) {
 		fmt.Sprintf("%s 市场异动", mark(p.MarketAnomalyEnabled)),
 		fmt.Sprintf("%s 大户挂单", mark(p.WhaleWallEnabled)),
 		fmt.Sprintf("%s 吸筹", mark(p.AbsorptionEnabled)),
+		fmt.Sprintf("%s BOLL候选", mark(p.BollPumpEnabled)),
 		fmt.Sprintf("%s 全部静音", mark(p.MuteAll)),
 		"",
 		"建议：只打开真正需要打断你的类型。",
@@ -108,12 +111,14 @@ func renderNotifyPrefsMessage(p tgNotifyPrefs) (string, *tele.ReplyMarkup) {
 	btnMarket := menu.Data(mark(p.MarketAnomalyEnabled)+" 市场异动", notifyPrefCallbackUnique, "toggle", "market")
 	btnWhale := menu.Data(mark(p.WhaleWallEnabled)+" 大户挂单", notifyPrefCallbackUnique, "toggle", "whale")
 	btnAbsorption := menu.Data(mark(p.AbsorptionEnabled)+" 吸筹", notifyPrefCallbackUnique, "toggle", "absorption")
+	btnBoll := menu.Data(mark(p.BollPumpEnabled)+" BOLL候选", notifyPrefCallbackUnique, "toggle", "boll")
 	btnMute := menu.Data(mark(p.MuteAll)+" 全部静音", notifyPrefCallbackUnique, "toggle", "mute")
 	btnRefresh := menu.Data("刷新状态", notifyPrefCallbackUnique, "refresh", strconv.FormatInt(p.ChatID, 10))
 
 	menu.Inline(
 		menu.Row(btnMarket, btnWhale),
-		menu.Row(btnAbsorption, btnMute),
+		menu.Row(btnAbsorption, btnBoll),
+		menu.Row(btnMute),
 		menu.Row(btnRefresh),
 	)
 	return text, menu

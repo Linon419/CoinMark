@@ -9,7 +9,7 @@ import (
 	"coinmark/api-go/internal/repo/sqlite"
 )
 
-func TestTGNotifyPrefsRoundTripIncludesAbsorption(t *testing.T) {
+func TestTGNotifyPrefsRoundTripIncludesBollPumpAndAbsorption(t *testing.T) {
 	ctx := context.Background()
 	store := openTGNotifyPrefsStore(t)
 	defer store.Close()
@@ -27,10 +27,14 @@ func TestTGNotifyPrefsRoundTripIncludesAbsorption(t *testing.T) {
 	if prefs.AbsorptionEnabled {
 		t.Fatalf("default absorption enabled = true, want false")
 	}
+	if !prefs.BollPumpEnabled {
+		t.Fatalf("default boll pump enabled = false, want true")
+	}
 
 	prefs.MarketAnomalyEnabled = false
 	prefs.WhaleWallEnabled = true
 	prefs.AbsorptionEnabled = true
+	prefs.BollPumpEnabled = false
 	prefs.MuteAll = true
 	if err := SaveTGNotifyPrefs(ctx, store, prefs); err != nil {
 		t.Fatalf("save prefs: %v", err)
@@ -49,6 +53,9 @@ func TestTGNotifyPrefsRoundTripIncludesAbsorption(t *testing.T) {
 	if !got.AbsorptionEnabled {
 		t.Fatalf("absorption enabled = false, want true")
 	}
+	if got.BollPumpEnabled {
+		t.Fatalf("boll pump enabled = true, want false")
+	}
 	if !got.MuteAll {
 		t.Fatalf("mute all = false, want true")
 	}
@@ -62,6 +69,7 @@ func TestTGNotifyEventCategorySeparatesAbsorption(t *testing.T) {
 		"absorption_signal":         "absorption",
 		"absorption_signal_long":    "absorption",
 		"absorption_signal_short":   "absorption",
+		"boll_pump":                 "boll_pump",
 		"breakout_up":               "market_anomaly",
 		"volume_spike":              "market_anomaly",
 		"price_rise_large_5m":       "market_anomaly",

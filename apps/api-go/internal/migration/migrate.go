@@ -20,6 +20,9 @@ func Migrate(ctx context.Context, store *sqlite.Store) error {
 		if err := ensureColumn(tx, "tg_notify_prefs", "absorption_enabled", "BOOLEAN NOT NULL DEFAULT 0"); err != nil {
 			return err
 		}
+		if err := ensureColumn(tx, "tg_notify_prefs", "boll_pump_enabled", "BOOLEAN NOT NULL DEFAULT 1"); err != nil {
+			return err
+		}
 		return nil
 	})
 }
@@ -300,6 +303,7 @@ var schemaDDL = []string{
 		market_anomaly_enabled BOOLEAN NOT NULL DEFAULT 1,
 		whale_wall_enabled BOOLEAN NOT NULL DEFAULT 0,
 		absorption_enabled BOOLEAN NOT NULL DEFAULT 0,
+		boll_pump_enabled BOOLEAN NOT NULL DEFAULT 1,
 		signal_lab_enabled BOOLEAN NOT NULL DEFAULT 0,
 		mute_all BOOLEAN NOT NULL DEFAULT 0,
 		updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP

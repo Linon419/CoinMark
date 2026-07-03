@@ -61,6 +61,29 @@ func TestPollAllowsMarketMovementWhenAbnormalEventsEnabled(t *testing.T) {
 	}
 }
 
+func TestPollRespectsBollPumpSwitchForCandidates(t *testing.T) {
+	ctx := context.Background()
+	store := openTelegramNotifyStore(t)
+	defer store.Close()
+
+	prefs := service.DefaultTGNotifyPrefs(12345)
+	prefs.BollPumpEnabled = false
+	if err := service.SaveTGNotifyPrefs(ctx, store, prefs); err != nil {
+		t.Fatalf("save prefs: %v", err)
+	}
+
+	insertTelegramNotifyEvent(t, store, "swap", "XYZUSDT", "boll_pump", "15m", "CONFIRM_2", "CONFIRM_2 XYZUSDT 15m price=0.1234 score=92", `{"signalLevel":"CONFIRM_2","score":92,"volumeRatio":2.7,"bollBandwidth":0.034,"bounceCount":2}`)
+
+	n := &AnomalyNotifier{store: store, market: "swap", minLevel: "info", chatIDInt: 12345, batchMaxItems: 5}
+	got := n.poll(ctx)
+	if len(got) != 0 {
+		t.Fatalf("poll returned %d events, want 0", len(got))
+	}
+	if n.lastID == 0 {
+		t.Fatalf("lastID = 0, want filtered rows to be acknowledged")
+	}
+}
+
 func TestFormatBatchUsesCategoryAwareHeadingAndReadableLabels(t *testing.T) {
 	store := openTelegramNotifyStore(t)
 	defer store.Close()
@@ -142,7 +165,7 @@ func TestFormatBatchUsesBollPumpDetails(t *testing.T) {
 		},
 	})
 
-	for _, want := range []string{"BOLL泵盘", "XYZUSDT", "周期: 15m", "强度: 92", "量能: 2.70x", "带宽: 0.0340", "反弹: 2"} {
+	for _, want := range []string{"【BOLL候选提醒】", "BOLL泵盘", "XYZUSDT", "周期: 15m", "强度: 92", "量能: 2.70x", "带宽: 0.0340", "反弹: 2"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("format output missing %q:\n%s", want, got)
 		}

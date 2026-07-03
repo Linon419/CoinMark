@@ -8,7 +8,7 @@ import (
 	"coinmark/api-go/internal/repo/sqlite"
 )
 
-func TestMigrateAddsAbsorptionColumnToExistingTGNotifyPrefs(t *testing.T) {
+func TestMigrateAddsNotifyCategoryColumnsToExistingTGNotifyPrefs(t *testing.T) {
 	ctx := context.Background()
 	store, err := sqlite.Open(filepath.Join(t.TempDir(), "app.db"))
 	if err != nil {
@@ -35,12 +35,14 @@ func TestMigrateAddsAbsorptionColumnToExistingTGNotifyPrefs(t *testing.T) {
 		t.Fatalf("migrate old schema twice: %v", err)
 	}
 
-	var count int
-	if err := store.GetContext(ctx, &count, `SELECT COUNT(*) FROM pragma_table_info('tg_notify_prefs') WHERE name = 'absorption_enabled'`); err != nil {
-		t.Fatalf("query table info: %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("absorption_enabled column count = %d, want 1", count)
+	for _, column := range []string{"absorption_enabled", "boll_pump_enabled"} {
+		var count int
+		if err := store.GetContext(ctx, &count, `SELECT COUNT(*) FROM pragma_table_info('tg_notify_prefs') WHERE name = ?`, column); err != nil {
+			t.Fatalf("query table info %s: %v", column, err)
+		}
+		if count != 1 {
+			t.Fatalf("%s column count = %d, want 1", column, count)
+		}
 	}
 }
 

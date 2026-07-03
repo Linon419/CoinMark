@@ -15,6 +15,7 @@ type tgNotifyPrefsPatch struct {
 	AbnormalEventsEnabled *bool `json:"abnormalEventsEnabled"`
 	WhaleWallEnabled      *bool `json:"whaleWallEnabled"`
 	AbsorptionEnabled     *bool `json:"absorptionEnabled"`
+	BollPumpEnabled       *bool `json:"bollPumpEnabled"`
 	MuteAll               *bool `json:"muteAll"`
 }
 
@@ -68,6 +69,9 @@ func handlePatchTGNotifyPrefs(d *Deps) gin.HandlerFunc {
 		if patch.AbsorptionEnabled != nil {
 			prefs.AbsorptionEnabled = *patch.AbsorptionEnabled
 		}
+		if patch.BollPumpEnabled != nil {
+			prefs.BollPumpEnabled = *patch.BollPumpEnabled
+		}
 		if patch.MuteAll != nil {
 			prefs.MuteAll = *patch.MuteAll
 		}
@@ -108,6 +112,7 @@ func writeTGNotifyPrefsResponse(c *gin.Context, d *Deps, prefs service.TGNotifyP
 		"abnormalEventsEnabled": prefs.MarketAnomalyEnabled,
 		"whaleWallEnabled":      prefs.WhaleWallEnabled,
 		"absorptionEnabled":     prefs.AbsorptionEnabled,
+		"bollPumpEnabled":       prefs.BollPumpEnabled,
 		"muteAll":               prefs.MuteAll,
 	})
 }

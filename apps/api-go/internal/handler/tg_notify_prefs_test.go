@@ -50,8 +50,11 @@ func TestTGNotifyPrefsAPIUpdatesCategorySwitches(t *testing.T) {
 	if initial["absorptionEnabled"] != false {
 		t.Fatalf("default absorptionEnabled = %v, want false", initial["absorptionEnabled"])
 	}
+	if initial["bollPumpEnabled"] != true {
+		t.Fatalf("default bollPumpEnabled = %v, want true", initial["bollPumpEnabled"])
+	}
 
-	body := bytes.NewBufferString(`{"abnormalEventsEnabled":false,"whaleWallEnabled":true,"absorptionEnabled":true}`)
+	body := bytes.NewBufferString(`{"abnormalEventsEnabled":false,"whaleWallEnabled":true,"absorptionEnabled":true,"bollPumpEnabled":false}`)
 	w = httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPatch, "/api/telegram/notify-prefs", body)
 	req.Header.Set("Content-Type", "application/json")
@@ -72,6 +75,9 @@ func TestTGNotifyPrefsAPIUpdatesCategorySwitches(t *testing.T) {
 	}
 	if updated["absorptionEnabled"] != true {
 		t.Fatalf("updated absorptionEnabled = %v, want true", updated["absorptionEnabled"])
+	}
+	if updated["bollPumpEnabled"] != false {
+		t.Fatalf("updated bollPumpEnabled = %v, want false", updated["bollPumpEnabled"])
 	}
 }
 

@@ -12,10 +12,11 @@ type TelegramPrefs = {
   abnormalEventsEnabled: boolean;
   whaleWallEnabled: boolean;
   absorptionEnabled: boolean;
+  bollPumpEnabled: boolean;
   muteAll: boolean;
 };
 
-type TelegramPrefsPatch = Partial<Pick<TelegramPrefs, "abnormalEventsEnabled" | "whaleWallEnabled" | "absorptionEnabled" | "muteAll">>;
+type TelegramPrefsPatch = Partial<Pick<TelegramPrefs, "abnormalEventsEnabled" | "whaleWallEnabled" | "absorptionEnabled" | "bollPumpEnabled" | "muteAll">>;
 
 async function requestTelegramPrefs(method: "GET" | "PATCH", patch?: TelegramPrefsPatch): Promise<TelegramPrefs> {
   const resp = await fetch(`${API_BASE}/api/telegram/notify-prefs`, {
@@ -155,6 +156,15 @@ export default function NotificationCenter() {
                 checked={!!telegramPrefs?.absorptionEnabled}
                 disabled={telegramLoading || !telegramPrefs?.configured}
                 onChange={(v) => void updateTelegramPrefs({ absorptionEnabled: v })}
+              />
+            </label>
+            <label className="cm-notifySwitchRow">
+              <span>BOLL候选</span>
+              <Switch
+                size="small"
+                checked={!!telegramPrefs?.bollPumpEnabled}
+                disabled={telegramLoading || !telegramPrefs?.configured}
+                onChange={(v) => void updateTelegramPrefs({ bollPumpEnabled: v })}
               />
             </label>
             <label className="cm-notifySwitchRow">
