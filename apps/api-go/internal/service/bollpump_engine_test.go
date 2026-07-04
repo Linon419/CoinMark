@@ -156,6 +156,63 @@ func TestBollPumpMinimumTrendUsesBollMiddleSlope(t *testing.T) {
 	}
 }
 
+func TestBollPumpChannelWatchTriggersOnEMA10MiddlePullback(t *testing.T) {
+	cfg := DefaultBollPumpConfig()
+	bars := make([]BollPumpBar, 40)
+	ind := make([]BollPumpIndicator, 40)
+	for i := range bars {
+		closePrice := 100.0
+		if i >= 30 {
+			closePrice = 100 + float64(i-29)*0.55
+		}
+		volume := 100.0
+		if i == 31 {
+			volume = 400
+		}
+		bars[i] = BollPumpBar{
+			OpenTimeMs:  int64(i) * 3 * 60 * 1000,
+			CloseTimeMs: int64(i+1)*3*60*1000 - 1,
+			Open:        closePrice - 0.1,
+			High:        closePrice + 0.3,
+			Low:         closePrice - 0.3,
+			Close:       closePrice,
+			Volume:      volume,
+			QuoteVolume: volume * closePrice,
+			Closed:      true,
+		}
+		ind[i] = BollPumpIndicator{
+			Lower:     96,
+			Middle:    100 + float64(i)*0.05,
+			Upper:     106,
+			EMA10:     100 + float64(i)*0.05 + 0.2,
+			ATR14:     0.8,
+			Bandwidth: 0.10,
+			ValidBoll: true,
+			ValidEMA:  true,
+			ValidATR:  true,
+		}
+	}
+	bars[36].Close = ind[36].Middle - 0.1
+	bars[37].Close = ind[37].Middle - 0.1
+	bars[38].Close = ind[38].Middle - 0.1
+	bars[39].Open = ind[39].EMA10 - 0.2
+	bars[39].Low = ind[39].EMA10 - 0.1
+	bars[39].High = ind[39].EMA10 + 0.5
+	bars[39].Close = ind[39].EMA10 + 0.25
+
+	got := evaluateBollPumpChannelWatch("swap", "XYZUSDT", "3m", bars, ind, 3_000_000, cfg)
+
+	if !got.Triggered {
+		t.Fatalf("Triggered = false, want channel WATCH; reasons=%v", got.Reasons)
+	}
+	if got.Signal.SignalLevel != string(BollPumpLevelWatch) {
+		t.Fatalf("level = %s, want WATCH", got.Signal.SignalLevel)
+	}
+	if !strings.Contains(got.Signal.Reason, "channel continuation pullback") {
+		t.Fatalf("reason = %q, want channel continuation pullback", got.Signal.Reason)
+	}
+}
+
 func TestBollPumpFourHourResistanceBreakoutFindsKeySwingCluster(t *testing.T) {
 	cfg := DefaultBollPumpConfig()
 	cfg.Resistance4HLookback = 40
@@ -396,22 +453,111 @@ func TestBollPumpPullbackCandidateRefreshesExpiryWindow(t *testing.T) {
 	}
 }
 
-func TestBollPumpRejectsWeakLowerBandBounce(t *testing.T) {
-	cfg := DefaultBollPumpConfig()
-	bars := bollPumpFixtureWeakLowerBandBounce()
-	ind := ComputeBollPumpIndicators(bars, cfg.BollPeriod, cfg.BollStdDev, cfg.ATRPeriod)
+func TestBollPumpWatchStartsChannelPullbackPending(t *testing.T) {
+	state := NewBollPumpRuntimeState("swap", "XYZUSDT", "3m")
+	state.Status = string(BollPumpStatusWatch)
+	state.WatchScore = 100
+	state.CurrentScore = 100
+	state.WatchCandleStartMs = 0
+	state.WatchStartedMs = 59_999
+	state.LastCheckedCandleMs = 180_000
+	state.ExpiresAtCandleMs = 600_000
+	state.LastSignalLevel = string(BollPumpLevelWatch)
 
-	state := NewBollPumpRuntimeState("swap", "XYZUSDT", "15m")
-	var signals []model.BollPumpSignal
-	for i := 0; i < len(bars); i++ {
-		out := AdvanceBollPumpState(&state, bars[:i+1], ind[:i+1], 3_000_000, cfg)
-		signals = append(signals, out.Signals...)
+	bars := []BollPumpBar{
+		{OpenTimeMs: 0, CloseTimeMs: 59_999, Open: 100, High: 101, Low: 99, Close: 100, Closed: true},
+		{OpenTimeMs: 60_000, CloseTimeMs: 119_999, Open: 100, High: 102, Low: 99.8, Close: 101.2, Closed: true},
+		{OpenTimeMs: 120_000, CloseTimeMs: 179_999, Open: 101.2, High: 103, Low: 101, Close: 102.4, Closed: true},
+		{OpenTimeMs: 180_000, CloseTimeMs: 239_999, Open: 102.4, High: 104, Low: 102.1, Close: 103.3, Closed: true},
+		{OpenTimeMs: 240_000, CloseTimeMs: 299_999, Open: 102.8, High: 103.8, Low: 102.25, Close: 103.2, Closed: true},
+	}
+	ind := []BollPumpIndicator{
+		{Lower: 95, Middle: 100, Upper: 105, EMA10: 100, ValidBoll: true, ValidEMA: true},
+		{Lower: 96, Middle: 100.5, Upper: 105.5, EMA10: 101.0, ValidBoll: true, ValidEMA: true},
+		{Lower: 97, Middle: 101.0, Upper: 106.0, EMA10: 102.0, ValidBoll: true, ValidEMA: true},
+		{Lower: 98, Middle: 101.5, Upper: 106.5, EMA10: 102.7, ValidBoll: true, ValidEMA: true},
+		{Lower: 99, Middle: 102.0, Upper: 107.0, EMA10: 102.6, ATR14: 1, ValidBoll: true, ValidEMA: true, ValidATR: true},
 	}
 
-	for _, sig := range signals {
-		if sig.SignalLevel == string(BollPumpLevelConfirm1) || sig.SignalLevel == string(BollPumpLevelConfirm2) {
-			t.Fatalf("weak bounce emitted %s, want no confirm", sig.SignalLevel)
-		}
+	out := AdvanceBollPumpState(&state, bars, ind, 3_000_000, DefaultBollPumpConfig())
+
+	if len(out.Signals) != 0 {
+		t.Fatalf("signals = %#v, want pending without confirm", out.Signals)
+	}
+	if state.Status != string(BollPumpStatusPullback1Pending) {
+		t.Fatalf("status = %s, want PULLBACK_1_PENDING", state.Status)
+	}
+	if state.PendingPullbackCandleMs != 240_000 {
+		t.Fatalf("pending candle = %d, want channel pullback candle", state.PendingPullbackCandleMs)
+	}
+}
+
+func TestBollPumpConfirmAllowsNextCandleTouchingLowerBand(t *testing.T) {
+	state := NewBollPumpRuntimeState("swap", "XYZUSDT", "3m")
+	state.Status = string(BollPumpStatusPullback1Pending)
+	state.WatchScore = 100
+	state.CurrentScore = 100
+	state.WatchCandleStartMs = 0
+	state.WatchStartedMs = 59_999
+	state.PendingPullbackCandleMs = 60_000
+	state.PendingPullbackHigh = 100
+	state.PendingPullbackLow = 94.8
+	state.LastCheckedCandleMs = 60_000
+	state.ExpiresAtCandleMs = 600_000
+	state.LastSignalLevel = string(BollPumpLevelWatch)
+
+	bars := []BollPumpBar{
+		{OpenTimeMs: 60_000, CloseTimeMs: 119_999, Open: 99, High: 100, Low: 94.8, Close: 95.6, Closed: true},
+		{OpenTimeMs: 180_000, CloseTimeMs: 239_999, Open: 95.6, High: 100.2, Low: 94.9, Close: 95.3, Closed: true},
+	}
+	ind := []BollPumpIndicator{
+		{Lower: 95, Middle: 105, Upper: 115, Bandwidth: 0.19, ValidBoll: true},
+		{Lower: 95, Middle: 105, Upper: 115, Bandwidth: 0.19, ValidBoll: true},
+	}
+
+	out := AdvanceBollPumpState(&state, bars, ind, 3_000_000, DefaultBollPumpConfig())
+
+	if state.Status != string(BollPumpStatusConfirm1) {
+		t.Fatalf("status = %s, want CONFIRM_1", state.Status)
+	}
+	if len(out.Signals) != 1 || out.Signals[0].SignalLevel != string(BollPumpLevelConfirm1) {
+		t.Fatalf("signals = %#v, want one CONFIRM_1", out.Signals)
+	}
+}
+
+func TestBollPumpConfirmWaitsWithoutPullbackHighBreak(t *testing.T) {
+	state := NewBollPumpRuntimeState("swap", "XYZUSDT", "3m")
+	state.Status = string(BollPumpStatusPullback1Pending)
+	state.WatchScore = 100
+	state.CurrentScore = 100
+	state.WatchCandleStartMs = 0
+	state.WatchStartedMs = 59_999
+	state.PendingPullbackCandleMs = 60_000
+	state.PendingPullbackHigh = 100
+	state.PendingPullbackLow = 94.8
+	state.LastCheckedCandleMs = 60_000
+	state.ExpiresAtCandleMs = 600_000
+	state.LastSignalLevel = string(BollPumpLevelWatch)
+
+	bars := []BollPumpBar{
+		{OpenTimeMs: 60_000, CloseTimeMs: 119_999, Open: 99, High: 100, Low: 94.8, Close: 95.6, Closed: true},
+		{OpenTimeMs: 180_000, CloseTimeMs: 239_999, Open: 95.6, High: 99.8, Low: 94.9, Close: 95.3, Closed: true},
+	}
+	ind := []BollPumpIndicator{
+		{Lower: 95, Middle: 105, Upper: 115, Bandwidth: 0.19, ValidBoll: true},
+		{Lower: 95, Middle: 105, Upper: 115, Bandwidth: 0.19, ValidBoll: true},
+	}
+
+	out := AdvanceBollPumpState(&state, bars, ind, 3_000_000, DefaultBollPumpConfig())
+
+	if len(out.Signals) != 0 {
+		t.Fatalf("signals = %#v, want none before pullback high break", out.Signals)
+	}
+	if state.Status != string(BollPumpStatusPullback1Pending) {
+		t.Fatalf("status = %s, want PULLBACK_1_PENDING", state.Status)
+	}
+	if state.PendingPullbackCandleMs != 180_000 {
+		t.Fatalf("pending candle = %d, want latest candidate", state.PendingPullbackCandleMs)
 	}
 }
 

@@ -114,23 +114,9 @@ func (s *BollPumpScanner) ScanTimeframe(ctx context.Context, timeframe string) B
 			}
 			return trendGate
 		}
-		if bollPumpStateNeedsMinimumTrend(state) {
-			gate := checkTrend()
-			if gate.Unavailable {
-				result.SymbolsScanned++
-				continue
-			}
-			if !gate.Pass {
-				s.invalidateStateForMinimumTrend(ctx, &state)
-				s.persistState(ctx, state)
-				result.SymbolsScanned++
-				continue
-			}
-		}
 		latestOpen := bars[len(bars)-1].OpenTimeMs
 		var resistanceBreakout bollPumpResistanceBreakoutResult
 		resistanceChecked := false
-		stopReplay := false
 		for i := 0; i < len(bars); i++ {
 			out := AdvanceBollPumpState(&state, bars[:i+1], ind[:i+1], quoteVolume, s.cfg)
 			for _, sig := range out.Signals {
@@ -138,34 +124,18 @@ func (s *BollPumpScanner) ScanTimeframe(ctx context.Context, timeframe string) B
 					continue
 				}
 				gate := checkTrend()
-				if gate.Unavailable {
-					stopReplay = true
-					continue
-				}
-				if !gate.Pass {
-					s.invalidateStateForMinimumTrend(ctx, &state)
-					stopReplay = true
-					continue
-				}
 				if !resistanceChecked {
 					resistanceBreakout = s.fourHourResistanceBreakout(ctx, symbol)
 					resistanceChecked = true
 				}
-				sig = applyBollPumpMinimumTrendGate(sig, gate)
+				if gate.Pass {
+					sig = applyBollPumpMinimumTrendBonus(sig, gate)
+				}
 				sig = applyBollPumpResistanceBreakout(sig, resistanceBreakout)
 				sig = s.applyOIGrowthScore(ctx, sig)
 				syncBollPumpSignalScoreToState(&state, sig)
 				result.SignalsFound++
 				s.persistSignal(ctx, sig)
-			}
-			if stopReplay {
-				break
-			}
-		}
-		if !stopReplay && bollPumpStateNeedsMinimumTrend(state) {
-			gate := checkTrend()
-			if !gate.Unavailable && !gate.Pass {
-				s.invalidateStateForMinimumTrend(ctx, &state)
 			}
 		}
 		s.persistState(ctx, state)
@@ -238,10 +208,6 @@ func (s *BollPumpScanner) ScanKeyK4H(ctx context.Context) BollPumpScanResult {
 	return result
 }
 
-func bollPumpStateNeedsMinimumTrend(state BollPumpRuntimeState) bool {
-	return bollPumpStatusIsActive(state.Status) && (state.CurrentScore > 0 || state.WatchScore > 0)
-}
-
 func (s *BollPumpScanner) mergeActiveStateSymbols(ctx context.Context, timeframe string, base []string) []string {
 	out := make([]string, 0, len(base))
 	seen := map[string]bool{}
@@ -301,18 +267,13 @@ func (s *BollPumpScanner) minimumTrendGate(ctx context.Context, symbol, timefram
 	return bollPumpMinimumTrendGate(trendBars, s.cfg)
 }
 
-func (s *BollPumpScanner) invalidateStateForMinimumTrend(ctx context.Context, state *BollPumpRuntimeState) {
-	if state == nil || state.Status == "" || state.Status == string(BollPumpStatusIdle) {
-		return
-	}
-	bollPumpInvalidateRuntimeState(state)
-	s.persistState(ctx, *state)
-}
-
-func applyBollPumpMinimumTrendGate(sig model.BollPumpSignal, gate bollPumpMinimumTrendGateResult) model.BollPumpSignal {
+func applyBollPumpMinimumTrendBonus(sig model.BollPumpSignal, gate bollPumpMinimumTrendGateResult) model.BollPumpSignal {
 	if !gate.Pass || strings.TrimSpace(gate.Reason) == "" {
 		return sig
 	}
+	const bonus = 10.0
+	sig.Score = bollPumpScoreFloor(sig.Score + bonus)
+	sig.PriorityScore = bollPumpScoreFloor(sig.PriorityScore + bonus)
 	if strings.TrimSpace(sig.Reason) == "" {
 		sig.Reason = gate.Reason
 	} else if !strings.Contains(sig.Reason, gate.Reason) {

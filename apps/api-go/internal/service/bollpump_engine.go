@@ -137,6 +137,9 @@ func EvaluateBollPumpWatch(market, symbol, timeframe string, bars []BollPumpBar,
 		reasons = append(reasons, "missing current timeframe resistance breakout")
 	}
 	if !gainOK || !volumeOK || !middleOK || !upperOK || !expandOK || !resistanceOK {
+		if channelWatch := evaluateBollPumpChannelWatch(market, symbol, timeframe, bars, ind, quoteVolume24h, cfg); channelWatch.Triggered {
+			return channelWatch
+		}
 		return BollPumpWatchResult{Reasons: reasons}
 	}
 
@@ -155,6 +158,71 @@ func EvaluateBollPumpWatch(market, symbol, timeframe string, bars []BollPumpBar,
 	}
 	reasons = append(reasons, trendReasons...)
 	score = bollPumpScoreFloor(score)
+	return BollPumpWatchResult{
+		Triggered:       true,
+		BackgroundScore: backgroundScore,
+		Reasons:         reasons,
+		Signal: model.BollPumpSignal{
+			Market:         normalizeBollPumpMarket(market),
+			Symbol:         strings.ToUpper(strings.TrimSpace(symbol)),
+			Timeframe:      timeframe,
+			SignalLevel:    string(BollPumpLevelWatch),
+			Price:          latest.Close,
+			VolumeRatio:    volumeRatio,
+			BollBandwidth:  latestInd.Bandwidth,
+			BounceCount:    0,
+			Score:          score,
+			PriorityScore:  score,
+			SignalTimeMs:   latest.CloseTimeMs,
+			CandleStartMs:  latest.OpenTimeMs,
+			QuoteVolume24h: quoteVolume24h,
+			Reason:         strings.Join(reasons, ", "),
+			Details:        model.JSONB(`{}`),
+		},
+	}
+}
+
+func evaluateBollPumpChannelWatch(market, symbol, timeframe string, bars []BollPumpBar, ind []BollPumpIndicator, quoteVolume24h float64, cfg BollPumpConfig) BollPumpWatchResult {
+	latestIdx := len(bars) - 1
+	if latestIdx < cfg.BollPeriod || !bollPumpIsChannelPullbackCandidate(bars, ind, latestIdx) {
+		return BollPumpWatchResult{}
+	}
+	latest := bars[latestIdx]
+	latestInd := ind[latestIdx]
+	if bollPumpUpperProximity(latest, latestInd) || !bollPumpRecentMiddlePullback(bars, ind, latestIdx, 4, 3) {
+		return BollPumpWatchResult{}
+	}
+	recentStart := latestIdx - 30
+	if recentStart < 0 {
+		recentStart = 0
+	}
+	volumeThreshold := math.Max(1.5, bollPumpVolumeThreshold(timeframe, cfg)*0.5)
+	volumeRatio, volumeOK := bollPumpWindowVolumeRatio(bars, recentStart, latestIdx, volumeThreshold)
+	bestGain := bollPumpBestWindowGain(bars, recentStart, latestIdx, bollPumpStartupWindow(timeframe, cfg))
+	if !volumeOK || bestGain < bollPumpGainThreshold(timeframe, cfg) {
+		return BollPumpWatchResult{}
+	}
+	backgroundScore, backgroundReasons := bollPumpBackgroundScore(bars, ind, latestIdx, cfg)
+	trendStart := latestIdx - bollPumpStartupWindow(timeframe, cfg) + 1
+	if trendStart < 0 {
+		trendStart = 0
+	}
+	trendScore, trendReasons := bollPumpStartupTrendScore(bars, trendStart, latestIdx, cfg)
+	reasons := []string{
+		"channel continuation pullback",
+		fmt.Sprintf("recent impulse %.2f%%", bestGain*100),
+		fmt.Sprintf("recent volume ratio %.2fx", volumeRatio),
+	}
+	reasons = append(reasons, backgroundReasons...)
+	if trendScore != 0 {
+		reasons = append(reasons, fmt.Sprintf("trend score %.0f", trendScore))
+	}
+	reasons = append(reasons, trendReasons...)
+	score := bollPumpScoreFloor(75 + backgroundScore + trendScore)
+	if quoteVolume24h > 0 && quoteVolume24h < cfg.ThinQuoteVolume24h {
+		score = bollPumpScoreFloor(score - 15)
+		reasons = append(reasons, "thin 24h quote volume")
+	}
 	return BollPumpWatchResult{
 		Triggered:       true,
 		BackgroundScore: backgroundScore,
@@ -569,6 +637,27 @@ func bollPumpWindowVolumeRatio(bars []BollPumpBar, startIdx, endIdx int, thresho
 	return best, ok
 }
 
+func bollPumpBestWindowGain(bars []BollPumpBar, startIdx, endIdx, window int) float64 {
+	if window <= 1 || startIdx < 0 || endIdx >= len(bars) || startIdx >= endIdx {
+		return 0
+	}
+	best := 0.0
+	for i := startIdx; i <= endIdx; i++ {
+		j := i + window - 1
+		if j > endIdx {
+			j = endIdx
+		}
+		if bars[i].Close <= 0 || j <= i {
+			continue
+		}
+		gain := bars[j].Close/bars[i].Close - 1
+		if gain > best {
+			best = gain
+		}
+	}
+	return best
+}
+
 func bollPumpAverageVolumeBefore(bars []BollPumpBar, idx int, window int) float64 {
 	start := idx - window
 	if start < 0 {
@@ -694,7 +783,7 @@ func AdvanceBollPumpState(state *BollPumpRuntimeState, bars []BollPumpBar, ind [
 			signals = append(signals, watch.Signal)
 		}
 	case string(BollPumpStatusWatch):
-		if bollPumpHasThreeMiddleClosesAfterWatch(*state, bars, ind) && bollPumpIsPullbackCandidate(latest, ind[latestIdx]) {
+		if bollPumpHasThreeMiddleClosesAfterWatch(*state, bars, ind) && bollPumpIsPullbackCandidateAt(bars, ind, latestIdx) {
 			state.Status = string(BollPumpStatusPullback1Pending)
 			state.PendingPullbackCandleMs = latest.OpenTimeMs
 			state.PendingPullbackHigh = latest.High
@@ -718,21 +807,7 @@ func AdvanceBollPumpState(state *BollPumpRuntimeState, bars []BollPumpBar, ind [
 			bollPumpInvalidateRuntimeState(state)
 			break
 		}
-		if bollPumpIsPullbackCandidate(latest, ind[latestIdx]) {
-			state.PendingPullbackCandleMs = latest.OpenTimeMs
-			state.PendingPullbackHigh = latest.High
-			state.PendingPullbackLow = latest.Low
-			bollPumpRefreshStageExpiry(state, latest, bars, cfg)
-			break
-		}
-		if bollPumpStageExpired(*state, latest) {
-			state.Status = string(BollPumpStatusExpired)
-			break
-		}
-		if latest.OpenTimeMs > state.PendingPullbackCandleMs && latest.High > state.PendingPullbackHigh {
-			if !bollPumpBounceRecovered(latest, ind[latestIdx]) {
-				break
-			}
+		if bollPumpConfirmsPendingPullback(*state, latest, ind[latestIdx]) {
 			state.Status = string(BollPumpStatusConfirm1)
 			state.BounceCount = 1
 			state.FirstPullbackLow = state.PendingPullbackLow
@@ -743,9 +818,21 @@ func AdvanceBollPumpState(state *BollPumpRuntimeState, bars []BollPumpBar, ind [
 			state.PendingPullbackCandleMs = 0
 			state.PendingPullbackHigh = 0
 			state.PendingPullbackLow = 0
+			break
+		}
+		if bollPumpIsPullbackCandidateAt(bars, ind, latestIdx) {
+			state.PendingPullbackCandleMs = latest.OpenTimeMs
+			state.PendingPullbackHigh = latest.High
+			state.PendingPullbackLow = latest.Low
+			bollPumpRefreshStageExpiry(state, latest, bars, cfg)
+			break
+		}
+		if bollPumpStageExpired(*state, latest) {
+			state.Status = string(BollPumpStatusExpired)
+			break
 		}
 	case string(BollPumpStatusConfirm1):
-		if bollPumpIsPullbackCandidate(latest, ind[latestIdx]) {
+		if bollPumpIsPullbackCandidateAt(bars, ind, latestIdx) {
 			if bollPumpSecondLowInvalid(state.FirstPullbackLow, latest.Low, ind[latestIdx].ATR14) {
 				bollPumpInvalidateRuntimeState(state)
 				break
@@ -769,7 +856,19 @@ func AdvanceBollPumpState(state *BollPumpRuntimeState, bars []BollPumpBar, ind [
 			bollPumpInvalidateRuntimeState(state)
 			break
 		}
-		if bollPumpIsPullbackCandidate(latest, ind[latestIdx]) {
+		if bollPumpConfirmsPendingPullback(*state, latest, ind[latestIdx]) {
+			state.Status = string(BollPumpStatusCompleted)
+			state.BounceCount = 2
+			state.SecondPullbackLow = state.PendingPullbackLow
+			state.CurrentScore = bollPumpScoreFloor(state.WatchScore + 20)
+			state.LastSignalLevel = string(BollPumpLevelConfirm2)
+			signals = append(signals, bollPumpConfirmSignal(*state, latest, ind[latestIdx], quoteVolume24h, BollPumpLevelConfirm2))
+			state.PendingPullbackCandleMs = 0
+			state.PendingPullbackHigh = 0
+			state.PendingPullbackLow = 0
+			break
+		}
+		if bollPumpIsPullbackCandidateAt(bars, ind, latestIdx) {
 			if bollPumpSecondLowInvalid(state.FirstPullbackLow, latest.Low, ind[latestIdx].ATR14) {
 				bollPumpInvalidateRuntimeState(state)
 				break
@@ -783,20 +882,6 @@ func AdvanceBollPumpState(state *BollPumpRuntimeState, bars []BollPumpBar, ind [
 		if bollPumpStageExpired(*state, latest) {
 			state.Status = string(BollPumpStatusExpired)
 			break
-		}
-		if latest.OpenTimeMs > state.PendingPullbackCandleMs && latest.High > state.PendingPullbackHigh {
-			if !bollPumpBounceRecovered(latest, ind[latestIdx]) {
-				break
-			}
-			state.Status = string(BollPumpStatusCompleted)
-			state.BounceCount = 2
-			state.SecondPullbackLow = state.PendingPullbackLow
-			state.CurrentScore = bollPumpScoreFloor(state.WatchScore + 20)
-			state.LastSignalLevel = string(BollPumpLevelConfirm2)
-			signals = append(signals, bollPumpConfirmSignal(*state, latest, ind[latestIdx], quoteVolume24h, BollPumpLevelConfirm2))
-			state.PendingPullbackCandleMs = 0
-			state.PendingPullbackHigh = 0
-			state.PendingPullbackLow = 0
 		}
 	}
 	return BollPumpAdvanceResult{State: *state, Signals: signals}
@@ -914,8 +999,93 @@ func bollPumpIsPullbackCandidate(b BollPumpBar, in BollPumpIndicator) bool {
 	return in.ValidBoll && b.Low <= in.Lower && b.Close > in.Lower
 }
 
+func bollPumpIsPullbackCandidateAt(bars []BollPumpBar, ind []BollPumpIndicator, idx int) bool {
+	if idx < 0 || idx >= len(bars) || idx >= len(ind) {
+		return false
+	}
+	if bollPumpIsPullbackCandidate(bars[idx], ind[idx]) {
+		return true
+	}
+	return bollPumpIsChannelPullbackCandidate(bars, ind, idx)
+}
+
+func bollPumpIsChannelPullbackCandidate(bars []BollPumpBar, ind []BollPumpIndicator, idx int) bool {
+	if idx < 3 || idx >= len(bars) || idx >= len(ind) {
+		return false
+	}
+	b := bars[idx]
+	in := ind[idx]
+	if !in.ValidBoll || !in.ValidEMA || in.Middle <= 0 || in.EMA10 <= 0 || b.Close <= 0 {
+		return false
+	}
+	if !bollPumpMiddleRising(ind, idx, 4) || b.Close < in.Middle || !bollPumpCloseStrong(b) {
+		return false
+	}
+	support := math.Max(in.Middle, in.EMA10)
+	tolerance := 0.003
+	if in.ValidATR && in.ATR14 > 0 {
+		tolerance = math.Max(tolerance, math.Min(0.008, in.ATR14/b.Close*0.4))
+	}
+	return b.Low <= support*(1+tolerance) && b.Close >= support
+}
+
+func bollPumpRecentMiddlePullback(bars []BollPumpBar, ind []BollPumpIndicator, idx, window, minCount int) bool {
+	if idx <= 0 || window <= 0 || minCount <= 0 {
+		return false
+	}
+	start := idx - window
+	if start < 0 {
+		start = 0
+	}
+	count := 0
+	for i := start; i < idx && i < len(bars) && i < len(ind); i++ {
+		if !ind[i].ValidBoll || ind[i].Middle <= 0 {
+			continue
+		}
+		support := ind[i].Middle
+		if ind[i].ValidEMA && ind[i].EMA10 > support {
+			support = ind[i].EMA10
+		}
+		if bars[i].Close < ind[i].Middle || bars[i].Close < support {
+			count++
+		}
+	}
+	return count >= minCount
+}
+
+func bollPumpMiddleRising(ind []BollPumpIndicator, idx, window int) bool {
+	if window < 2 || idx-window+1 < 0 || idx >= len(ind) {
+		return false
+	}
+	start := idx - window + 1
+	first := ind[start]
+	latest := ind[idx]
+	if !first.ValidBoll || !latest.ValidBoll || first.Middle <= 0 || latest.Middle <= 0 || latest.Middle <= first.Middle {
+		return false
+	}
+	rising := 0
+	steps := 0
+	for i := start + 1; i <= idx; i++ {
+		if !ind[i].ValidBoll || !ind[i-1].ValidBoll || ind[i].Middle <= 0 || ind[i-1].Middle <= 0 {
+			return false
+		}
+		steps++
+		if ind[i].Middle >= ind[i-1].Middle {
+			rising++
+		}
+	}
+	return steps > 0 && rising*3 >= steps*2
+}
+
+func bollPumpConfirmsPendingPullback(state BollPumpRuntimeState, b BollPumpBar, in BollPumpIndicator) bool {
+	return state.PendingPullbackHigh > 0 &&
+		b.OpenTimeMs > state.PendingPullbackCandleMs &&
+		b.High > state.PendingPullbackHigh &&
+		bollPumpBounceRecovered(b, in)
+}
+
 func bollPumpBounceRecovered(b BollPumpBar, in BollPumpIndicator) bool {
-	return in.ValidBoll && b.Close >= in.Middle
+	return in.ValidBoll && b.Close > in.Lower
 }
 
 func bollPumpTrendStillAdvancing(b BollPumpBar, in BollPumpIndicator) bool {
@@ -929,9 +1099,9 @@ func bollPumpPendingInvalid(b BollPumpBar, in BollPumpIndicator) bool {
 func bollPumpConfirmSignal(state BollPumpRuntimeState, b BollPumpBar, in BollPumpIndicator, quoteVolume24h float64, level BollPumpSignalLevel) model.BollPumpSignal {
 	score := state.CurrentScore
 	bounceCount := state.BounceCount
-	reason := "first lower-band confirm"
+	reason := "first pullback confirm"
 	if level == BollPumpLevelConfirm2 {
-		reason = "second lower-band confirm"
+		reason = "second pullback confirm"
 	}
 	return model.BollPumpSignal{
 		Market:         state.Market,

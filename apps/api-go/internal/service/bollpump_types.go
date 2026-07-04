@@ -38,10 +38,12 @@ type BollPumpIndicator struct {
 	Middle    float64
 	Upper     float64
 	Lower     float64
+	EMA10     float64
 	Bandwidth float64
 	ATR14     float64
 	ATRRatio  float64
 	ValidBoll bool
+	ValidEMA  bool
 	ValidATR  bool
 }
 

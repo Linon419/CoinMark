@@ -166,8 +166,8 @@ func TestBollPumpScannerAddsFourHourResistanceBreakoutScore(t *testing.T) {
 		t.Fatalf("signals = %d, want 1", len(rows))
 	}
 	base := EvaluateBollPumpWatch("swap", "XYZUSDT", "15m", signalBars, ComputeBollPumpIndicators(signalBars, cfg.BollPeriod, cfg.BollStdDev, cfg.ATRPeriod), 3_000_000, cfg)
-	if rows[0].Score != base.Signal.Score+15 {
-		t.Fatalf("score = %.2f, want %.2f", rows[0].Score, base.Signal.Score+15)
+	if rows[0].Score != base.Signal.Score+25 {
+		t.Fatalf("score = %.2f, want %.2f", rows[0].Score, base.Signal.Score+25)
 	}
 	if !strings.Contains(rows[0].Reason, "4h resistance breakout") {
 		t.Fatalf("reason = %q, want 4h resistance breakout", rows[0].Reason)
@@ -219,8 +219,8 @@ func TestBollPumpScannerAddsOIGrowthScoreToSignalAndState(t *testing.T) {
 		t.Fatalf("signals = %d, want 1", len(rows))
 	}
 	base := EvaluateBollPumpWatch("swap", "XYZUSDT", "15m", signalBars, ComputeBollPumpIndicators(signalBars, cfg.BollPeriod, cfg.BollStdDev, cfg.ATRPeriod), 3_000_000, cfg)
-	if rows[0].Score != base.Signal.Score+20 {
-		t.Fatalf("score = %.2f, want %.2f", rows[0].Score, base.Signal.Score+20)
+	if rows[0].Score != base.Signal.Score+30 {
+		t.Fatalf("score = %.2f, want %.2f", rows[0].Score, base.Signal.Score+30)
 	}
 	if !strings.Contains(rows[0].Reason, "OI growth") {
 		t.Fatalf("reason = %q, want OI growth", rows[0].Reason)
@@ -285,7 +285,7 @@ func TestBollPumpScannerPersistsFourHourKeyKSignal(t *testing.T) {
 	}
 }
 
-func TestBollPumpScannerRequiresFifteenMinuteClearUptrend(t *testing.T) {
+func TestBollPumpScannerKeepsStateWhenFifteenMinuteTrendIsUnclear(t *testing.T) {
 	ctx := context.Background()
 	store := openBollPumpTestStore(t)
 	defer store.Close()
@@ -293,21 +293,27 @@ func TestBollPumpScannerRequiresFifteenMinuteClearUptrend(t *testing.T) {
 	cfg := DefaultBollPumpConfig()
 	cfg.Timeframes = []string{"1m"}
 	cfg.Resistance4HBreakoutBonus = 0
+	oneMinuteBars := bollPumpFixtureQuietBaseThenPump("1m")
 	source := &fakeBollPumpSource{
 		bars: map[string][]BollPumpBar{
-			"1m":  bollPumpFixtureQuietBaseThenPump("1m"),
+			"1m":  oneMinuteBars,
 			"15m": bollPumpFixtureChoppyTrend(100, cfg.MinimumTrendCheckCandles),
 		},
 		quote: map[string]float64{"XYZUSDT": 3_000_000},
 	}
 	if err := SaveBollPumpState(ctx, store, model.BollPumpState{
-		Market:        "swap",
-		Symbol:        "XYZUSDT",
-		Timeframe:     "1m",
-		Status:        string(BollPumpStatusWatch),
-		CurrentScore:  88,
-		PriorityScore: 88,
-		WatchScore:    88,
+		Market:              "swap",
+		Symbol:              "XYZUSDT",
+		Timeframe:           "1m",
+		Status:              string(BollPumpStatusConfirm1),
+		CurrentScore:        88,
+		PriorityScore:       88,
+		WatchScore:          88,
+		BounceCount:         1,
+		WatchStartedMs:      ptrInt64(60_000),
+		WatchCandleStartMs:  ptrInt64(0),
+		LastCheckedCandleMs: ptrInt64(oneMinuteBars[len(oneMinuteBars)-1].OpenTimeMs),
+		LastSignalLevel:     ptrString(string(BollPumpLevelConfirm1)),
 	}); err != nil {
 		t.Fatalf("save state: %v", err)
 	}
@@ -315,17 +321,14 @@ func TestBollPumpScannerRequiresFifteenMinuteClearUptrend(t *testing.T) {
 
 	result := scanner.ScanTimeframe(ctx, "1m")
 	if result.SignalsFound != 0 {
-		t.Fatalf("signals found = %d, want 0 when 15m trend is unclear", result.SignalsFound)
+		t.Fatalf("signals found = %d, want 0 for this fixture", result.SignalsFound)
 	}
 	states, err := ListBollPumpStates(ctx, store, BollPumpStateFilter{Market: "swap", MinPriorityScore: 60, Limit: 10})
 	if err != nil {
 		t.Fatalf("list states: %v", err)
 	}
-	if len(states) != 0 {
-		t.Fatalf("active states = %d, want 0 after 15m trend invalidation", len(states))
-	}
-	if !strings.Contains(strings.Join(source.requestedTFs, ","), "15m") {
-		t.Fatalf("requested timeframes = %v, want 15m trend check", source.requestedTFs)
+	if len(states) != 1 || states[0].Status != string(BollPumpStatusConfirm1) {
+		t.Fatalf("states = %#v, want existing CONFIRM_1 retained", states)
 	}
 }
 
@@ -426,7 +429,7 @@ func TestBollPumpScannerContinuesActiveStateWithoutReplayReset(t *testing.T) {
 	}
 }
 
-func TestBollPumpScannerInvalidatesActiveStateWhenTrendFailsCurrentRules(t *testing.T) {
+func TestBollPumpScannerKeepsActiveStateWhenTrendFailsCurrentRules(t *testing.T) {
 	ctx := context.Background()
 	store := openBollPumpTestStore(t)
 	defer store.Close()
@@ -467,8 +470,8 @@ func TestBollPumpScannerInvalidatesActiveStateWhenTrendFailsCurrentRules(t *test
 	if err != nil {
 		t.Fatalf("get active state: %v", err)
 	}
-	if st == nil || st.Status != string(BollPumpStatusInvalidated) {
-		t.Fatalf("state = %#v, want INVALIDATED when active state fails current trend gate", st)
+	if st == nil || st.Status != string(BollPumpStatusConfirm1) {
+		t.Fatalf("state = %#v, want CONFIRM_1 retained when higher timeframe trend is weak", st)
 	}
 }
 

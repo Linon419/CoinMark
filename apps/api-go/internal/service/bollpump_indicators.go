@@ -7,7 +7,12 @@ import (
 
 func ComputeBollPumpIndicators(bars []BollPumpBar, bollPeriod int, stdMult float64, atrPeriod int) []BollPumpIndicator {
 	out := make([]BollPumpIndicator, len(bars))
+	ema10 := bollPumpEMA10(bars)
 	for i := range bars {
+		if i < len(ema10) {
+			out[i].EMA10 = ema10[i]
+			out[i].ValidEMA = i >= 9 && ema10[i] > 0
+		}
 		if bollPeriod > 0 && i+1 >= bollPeriod {
 			start := i + 1 - bollPeriod
 			sum := 0.0
