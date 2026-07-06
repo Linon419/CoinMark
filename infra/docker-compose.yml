@@ -1,7 +1,14 @@
-﻿services:
+﻿x-log-options: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "3"
+
+services:
   clickhouse:
     image: clickhouse/clickhouse-server:24.8
     mem_limit: 2g
+    logging: *default-logging
     environment:
       CLICKHOUSE_DB: ${CLICKHOUSE_DB:-default}
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-coinmark}
@@ -11,6 +18,7 @@
       - "9000:9000"
     volumes:
       - coinmark_ch:/var/lib/clickhouse
+      - ./clickhouse/config.d/system-log-retention.xml:/etc/clickhouse-server/config.d/system-log-retention.xml:ro
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8123/ping | grep -q 'Ok'"]
       interval: 5s
@@ -20,6 +28,7 @@
   redis:
     image: redis:7-alpine
     mem_limit: 256m
+    logging: *default-logging
     ports:
       - "6379:6379"
     volumes:
@@ -33,6 +42,7 @@
   nats:
     image: nats:2.10-alpine
     mem_limit: 768m
+    logging: *default-logging
     command: ["-js", "-m", "8222", "-sd", "/data"]
     ports:
       - "4222:4222"
@@ -46,6 +56,7 @@
       dockerfile: Dockerfile
     mem_limit: 512m
     restart: unless-stopped
+    logging: *default-logging
     env_file:
       - ../.env
     environment:
@@ -67,6 +78,7 @@
     mem_limit: 1024m
     user: "0:0"
     restart: unless-stopped
+    logging: *default-logging
     env_file:
       - ../.env
     volumes:
@@ -82,6 +94,7 @@
       context: ../apps/web
       dockerfile: Dockerfile
     mem_limit: 256m
+    logging: *default-logging
     environment:
       VITE_API_BASE: http://localhost:8000
       VITE_HUB_URL: ws://localhost:8000/api/hub/market
@@ -96,6 +109,7 @@
       dockerfile: Dockerfile
     mem_limit: 512m
     restart: unless-stopped
+    logging: *default-logging
     environment:
       COLLECTOR_MARKET: swap
       COLLECTOR_BINANCE_WS_BASE_URL: wss://fstream.binance.com/stream
@@ -122,6 +136,7 @@
       dockerfile: Dockerfile
     mem_limit: 512m
     restart: unless-stopped
+    logging: *default-logging
     environment:
       COLLECTOR_MARKET: spot
       COLLECTOR_BINANCE_WS_BASE_URL: wss://stream.binance.com:9443/stream

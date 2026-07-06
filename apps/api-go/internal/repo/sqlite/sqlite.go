@@ -39,6 +39,18 @@ func Open(dsn string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("sqlite: synchronous: %w", err)
 	}
+	if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("sqlite: busy_timeout: %w", err)
+	}
+	if _, err := db.Exec("PRAGMA wal_autocheckpoint=1000"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("sqlite: wal_autocheckpoint: %w", err)
+	}
+	if _, err := db.Exec("PRAGMA journal_size_limit=134217728"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("sqlite: journal_size_limit: %w", err)
+	}
 
 	s := &Store{
 		DB:      db,

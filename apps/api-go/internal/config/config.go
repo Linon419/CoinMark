@@ -92,6 +92,7 @@ type Config struct {
 	TradeBucketRetentionDays             int
 	OrderbookBucketRetentionDays         int
 	SQLiteVacuumIntervalSec              int
+	SQLiteCheckpointIntervalSec          int
 
 	// Boll pump scanner
 	BollPumpEnabled                 bool
@@ -223,6 +224,7 @@ func Load() (*Config, error) {
 		TradeBucketRetentionDays:             getenvInt("TRADE_BUCKET_RETENTION_DAYS", 7),
 		OrderbookBucketRetentionDays:         getenvInt("ORDERBOOK_BUCKET_RETENTION_DAYS", 3),
 		SQLiteVacuumIntervalSec:              getenvInt("SQLITE_VACUUM_INTERVAL_SEC", 21600),
+		SQLiteCheckpointIntervalSec:          getenvInt("SQLITE_CHECKPOINT_INTERVAL_SEC", 60),
 
 		BollPumpEnabled:                 getenvBool("BOLL_PUMP_ENABLED", true),
 		BollPumpMarket:                  getenv("BOLL_PUMP_MARKET", "swap"),

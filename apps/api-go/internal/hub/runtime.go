@@ -3,6 +3,8 @@ package hub
 import (
 	"context"
 	"log"
+	"os"
+	"strings"
 	"time"
 
 	"coinmark/api-go/internal/binance"
@@ -24,6 +26,13 @@ type Runtime struct {
 	lastSQLiteVacuum time.Time
 }
 
+type sqliteCheckpointResult struct {
+	Busy         int
+	Log          int
+	Checkpointed int
+	WALBytes     int64
+}
+
 func NewRuntime(cfg *config.Config, store *sqlite.Store, ch *chrepo.Client, bn *binance.Client) *Runtime {
 	mgr := NewManager(cfg.HubMaxConnections, cfg.HubHeartbeatIntervalSec, cfg.HubHeartbeatTimeoutSec)
 	pub := NewPublisher(mgr, cfg.HubDedupeWindowSec, cfg.HubBroadcastMaxEventsPerSec)
@@ -39,6 +48,7 @@ func NewRuntime(cfg *config.Config, store *sqlite.Store, ch *chrepo.Client, bn *
 func (rt *Runtime) Start(ctx context.Context) {
 	// periodic cleanup
 	go rt.cleanupLoop(ctx)
+	go rt.sqliteCheckpointLoop(ctx)
 
 	if !rt.cfg.HubEnabled {
 		log.Println("hub: disabled")
@@ -156,6 +166,41 @@ func (rt *Runtime) cleanupLoop(ctx context.Context) {
 		case <-ticker.C:
 			rt.doCleanup(ctx)
 		}
+	}
+}
+
+func (rt *Runtime) sqliteCheckpointLoop(ctx context.Context) {
+	interval := rt.cfg.SQLiteCheckpointIntervalSec
+	if interval < 10 {
+		interval = 60
+	}
+	timer := time.NewTimer(10 * time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case <-rt.stopCh:
+			return
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+			rt.maintainSQLiteWAL(ctx)
+			timer.Reset(time.Duration(interval) * time.Second)
+		}
+	}
+}
+
+func (rt *Runtime) maintainSQLiteWAL(ctx context.Context) {
+	const truncateThresholdPages = 32768 // 128 MiB at SQLite's default 4 KiB page size.
+	res, ok := rt.checkpointSQLiteWAL(ctx, "PASSIVE")
+	if !ok {
+		return
+	}
+	if res.Busy == 0 && res.Log > truncateThresholdPages && res.Checkpointed >= res.Log {
+		rt.checkpointSQLiteWAL(ctx, "TRUNCATE")
+		return
+	}
+	if res.Busy != 0 || res.Log-res.Checkpointed > truncateThresholdPages {
+		log.Printf("hub: sqlite wal pinned busy=%d log=%d checkpointed=%d wal_bytes=%d", res.Busy, res.Log, res.Checkpointed, res.WALBytes)
 	}
 }
 
@@ -303,9 +348,7 @@ func (rt *Runtime) cleanupSQLiteHistoryBuckets(ctx context.Context) {
 }
 
 func (rt *Runtime) reclaimSQLiteSpace(ctx context.Context) {
-	if _, err := rt.store.DB.ExecContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
-		log.Printf("hub: sqlite wal checkpoint error: %v", err)
-	}
+	rt.checkpointSQLiteWAL(ctx, "TRUNCATE")
 
 	interval := rt.cfg.SQLiteVacuumIntervalSec
 	if interval < 1 {
@@ -323,4 +366,47 @@ func (rt *Runtime) reclaimSQLiteSpace(ctx context.Context) {
 	}
 	rt.lastSQLiteVacuum = time.Now()
 	log.Printf("hub: sqlite vacuum completed")
+}
+
+func (rt *Runtime) checkpointSQLiteWAL(ctx context.Context, mode string) (sqliteCheckpointResult, bool) {
+	mode = strings.ToUpper(strings.TrimSpace(mode))
+	switch mode {
+	case "PASSIVE", "TRUNCATE":
+	default:
+		mode = "PASSIVE"
+	}
+	rows, err := rt.store.DB.QueryxContext(ctx, "PRAGMA wal_checkpoint("+mode+")")
+	if err != nil {
+		log.Printf("hub: sqlite wal checkpoint mode=%s error: %v", mode, err)
+		return sqliteCheckpointResult{}, false
+	}
+	defer rows.Close()
+
+	res := sqliteCheckpointResult{}
+	if rows.Next() {
+		if err := rows.Scan(&res.Busy, &res.Log, &res.Checkpointed); err != nil {
+			log.Printf("hub: sqlite wal checkpoint mode=%s scan error: %v", mode, err)
+			return res, false
+		}
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("hub: sqlite wal checkpoint mode=%s rows error: %v", mode, err)
+		return res, false
+	}
+	res.WALBytes = rt.sqliteWALBytes()
+	if mode == "TRUNCATE" || res.Busy != 0 {
+		log.Printf("hub: sqlite wal checkpoint mode=%s busy=%d log=%d checkpointed=%d wal_bytes=%d", mode, res.Busy, res.Log, res.Checkpointed, res.WALBytes)
+	}
+	return res, true
+}
+
+func (rt *Runtime) sqliteWALBytes() int64 {
+	if rt == nil || rt.cfg == nil || rt.cfg.DatabaseURL == "" {
+		return -1
+	}
+	info, err := os.Stat(rt.cfg.DatabaseURL + "-wal")
+	if err != nil {
+		return 0
+	}
+	return info.Size()
 }
