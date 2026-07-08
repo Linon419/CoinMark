@@ -46,6 +46,43 @@ func TestCleanupDeletesExpiredSQLiteHistoryBuckets(t *testing.T) {
 	assertBucketExists(t, store, "orderbook_feature_buckets", newOrderbook)
 }
 
+func TestMaintainSQLiteWALTriggersSelfHealAfterPinnedThreshold(t *testing.T) {
+	ctx := context.Background()
+	recoveries := 0
+	checkpoints := 0
+	rt := &Runtime{
+		cfg: &config.Config{
+			SQLiteWALSelfHealEnabled:  true,
+			SQLiteWALPinnedMaxChecks:  2,
+			SQLiteWALSelfHealMinBytes: 1,
+		},
+		sqliteCheckpointFn: func(context.Context, string) (sqliteCheckpointResult, bool) {
+			checkpoints++
+			return sqliteCheckpointResult{Log: 40000, Checkpointed: 1, WALBytes: 2}, true
+		},
+		sqliteWALRecoverFn: func(context.Context, sqliteCheckpointResult) bool {
+			recoveries++
+			return true
+		},
+	}
+
+	rt.maintainSQLiteWAL(ctx)
+	if recoveries != 0 {
+		t.Fatalf("recoveries after first pinned check = %d, want 0", recoveries)
+	}
+
+	rt.maintainSQLiteWAL(ctx)
+	if recoveries != 1 {
+		t.Fatalf("recoveries after second pinned check = %d, want 1", recoveries)
+	}
+	if checkpoints != 2 {
+		t.Fatalf("checkpoint calls = %d, want 2", checkpoints)
+	}
+	if rt.sqliteWALPinnedChecks != 0 {
+		t.Fatalf("pinned checks after successful recovery = %d, want 0", rt.sqliteWALPinnedChecks)
+	}
+}
+
 func openMigratedStore(t *testing.T) *sqlite.Store {
 	t.Helper()
 	store, err := sqlite.Open(filepath.Join(t.TempDir(), "app.db"))

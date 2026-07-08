@@ -93,6 +93,10 @@ type Config struct {
 	OrderbookBucketRetentionDays         int
 	SQLiteVacuumIntervalSec              int
 	SQLiteCheckpointIntervalSec          int
+	SQLiteWALSelfHealEnabled             bool
+	SQLiteWALPinnedMaxChecks             int
+	SQLiteWALSelfHealMinBytes            int64
+	SQLiteWALSelfHealMaxReopens          int
 
 	// Boll pump scanner
 	BollPumpEnabled                 bool
@@ -225,6 +229,10 @@ func Load() (*Config, error) {
 		OrderbookBucketRetentionDays:         getenvInt("ORDERBOOK_BUCKET_RETENTION_DAYS", 3),
 		SQLiteVacuumIntervalSec:              getenvInt("SQLITE_VACUUM_INTERVAL_SEC", 21600),
 		SQLiteCheckpointIntervalSec:          getenvInt("SQLITE_CHECKPOINT_INTERVAL_SEC", 60),
+		SQLiteWALSelfHealEnabled:             getenvBool("SQLITE_WAL_SELF_HEAL_ENABLED", true),
+		SQLiteWALPinnedMaxChecks:             getenvInt("SQLITE_WAL_PINNED_MAX_CHECKS", 5),
+		SQLiteWALSelfHealMinBytes:            getenvInt64("SQLITE_WAL_SELF_HEAL_MIN_BYTES", 512*1024*1024),
+		SQLiteWALSelfHealMaxReopens:          getenvInt("SQLITE_WAL_SELF_HEAL_MAX_REOPENS", 2),
 
 		BollPumpEnabled:                 getenvBool("BOLL_PUMP_ENABLED", true),
 		BollPumpMarket:                  getenv("BOLL_PUMP_MARKET", "swap"),
@@ -278,6 +286,15 @@ func getenv(key, fallback string) string {
 func getenvInt(key string, fallback int) int {
 	if v := os.Getenv(key); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return fallback
+}
+
+func getenvInt64(key string, fallback int64) int64 {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
 			return n
 		}
 	}

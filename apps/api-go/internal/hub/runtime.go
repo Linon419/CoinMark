@@ -14,16 +14,24 @@ import (
 	"coinmark/api-go/internal/service"
 )
 
+const sqliteWALTruncateThresholdPages = 32768 // 128 MiB at SQLite's default 4 KiB page size.
+const sqliteWALDefaultSelfHealMinBytes int64 = 512 * 1024 * 1024
+
 type Runtime struct {
-	Manager          *Manager
-	Pub              *Publisher
-	Stream           *AnomalyStream
-	cfg              *config.Config
-	store            *sqlite.Store
-	ch               *chrepo.Client
-	bn               *binance.Client
-	stopCh           chan struct{}
-	lastSQLiteVacuum time.Time
+	Manager               *Manager
+	Pub                   *Publisher
+	Stream                *AnomalyStream
+	cfg                   *config.Config
+	store                 *sqlite.Store
+	ch                    *chrepo.Client
+	bn                    *binance.Client
+	stopCh                chan struct{}
+	lastSQLiteVacuum      time.Time
+	sqliteWALPinnedChecks int
+	sqliteWALRecoveries   int
+	sqliteCheckpointFn    func(context.Context, string) (sqliteCheckpointResult, bool)
+	sqliteWALRecoverFn    func(context.Context, sqliteCheckpointResult) bool
+	sqliteWALRestartFn    func()
 }
 
 type sqliteCheckpointResult struct {
@@ -190,18 +198,39 @@ func (rt *Runtime) sqliteCheckpointLoop(ctx context.Context) {
 }
 
 func (rt *Runtime) maintainSQLiteWAL(ctx context.Context) {
-	const truncateThresholdPages = 32768 // 128 MiB at SQLite's default 4 KiB page size.
-	res, ok := rt.checkpointSQLiteWAL(ctx, "PASSIVE")
+	res, ok := rt.runSQLiteCheckpoint(ctx, "PASSIVE")
 	if !ok {
 		return
 	}
-	if res.Busy == 0 && res.Log > truncateThresholdPages && res.Checkpointed >= res.Log {
-		rt.checkpointSQLiteWAL(ctx, "TRUNCATE")
+	if res.Busy == 0 && res.Log > sqliteWALTruncateThresholdPages && res.Checkpointed >= res.Log {
+		rt.sqliteWALPinnedChecks = 0
+		rt.sqliteWALRecoveries = 0
+		rt.runSQLiteCheckpoint(ctx, "TRUNCATE")
 		return
 	}
-	if res.Busy != 0 || res.Log-res.Checkpointed > truncateThresholdPages {
-		log.Printf("hub: sqlite wal pinned busy=%d log=%d checkpointed=%d wal_bytes=%d", res.Busy, res.Log, res.Checkpointed, res.WALBytes)
+	pinnedPages := res.Log - res.Checkpointed
+	if pinnedPages < 0 {
+		pinnedPages = 0
 	}
+	if res.Busy != 0 || pinnedPages > sqliteWALTruncateThresholdPages {
+		rt.sqliteWALPinnedChecks++
+		log.Printf("hub: sqlite wal pinned busy=%d log=%d checkpointed=%d wal_bytes=%d", res.Busy, res.Log, res.Checkpointed, res.WALBytes)
+		if rt.sqliteWALReadyForSelfHeal(res) {
+			if rt.recoverSQLiteWAL(ctx, res) {
+				rt.sqliteWALPinnedChecks = 0
+				rt.sqliteWALRecoveries = 0
+				return
+			}
+			rt.sqliteWALRecoveries++
+			log.Printf("hub: sqlite wal self-heal recovery failed attempts=%d", rt.sqliteWALRecoveries)
+			if rt.sqliteWALMaxReopens() > 0 && rt.sqliteWALRecoveries >= rt.sqliteWALMaxReopens() {
+				rt.restartForSQLiteWAL()
+			}
+		}
+		return
+	}
+	rt.sqliteWALPinnedChecks = 0
+	rt.sqliteWALRecoveries = 0
 }
 
 func (rt *Runtime) marketYidongMinuteLoop(ctx context.Context) {
@@ -280,13 +309,13 @@ func (rt *Runtime) doCleanup(ctx context.Context) {
 
 	// heatmap: 24h
 	cutoff24h := time.Now().UnixMilli() - 24*60*60*1000
-	if _, err := rt.store.DB.ExecContext(ctx, "DELETE FROM orderbook_heatmap_1m WHERE bucket_start_ms < ?", cutoff24h); err != nil {
+	if _, err := rt.store.ExecContext(ctx, "DELETE FROM orderbook_heatmap_1m WHERE bucket_start_ms < ?", cutoff24h); err != nil {
 		log.Printf("hub: heatmap cleanup error: %v", err)
 	}
 
 	// anomaly events: 30d
 	cutoff30d := time.Now().UnixMilli() - 30*24*60*60*1000
-	if _, err := rt.store.DB.ExecContext(ctx, "DELETE FROM anomaly_events WHERE event_time_ms < ?", cutoff30d); err != nil {
+	if _, err := rt.store.ExecContext(ctx, "DELETE FROM anomaly_events WHERE event_time_ms < ?", cutoff30d); err != nil {
 		log.Printf("hub: anomaly cleanup error: %v", err)
 	}
 
@@ -332,13 +361,13 @@ func (rt *Runtime) cleanupSQLiteHistoryBuckets(ctx context.Context) {
 	tradeCutoff := nowMs - int64(tradeDays)*24*60*60*1000
 	orderbookCutoff := nowMs - int64(orderbookDays)*24*60*60*1000
 
-	if res, err := rt.store.DB.ExecContext(ctx, "DELETE FROM trade_buckets WHERE bucket_start_ms < ?", tradeCutoff); err != nil {
+	if res, err := rt.store.ExecContext(ctx, "DELETE FROM trade_buckets WHERE bucket_start_ms < ?", tradeCutoff); err != nil {
 		log.Printf("hub: trade bucket cleanup error: %v", err)
 	} else if n, _ := res.RowsAffected(); n > 0 {
 		log.Printf("hub: cleaned %d sqlite trade buckets", n)
 	}
 
-	if res, err := rt.store.DB.ExecContext(ctx, "DELETE FROM orderbook_feature_buckets WHERE bucket_start_ms < ?", orderbookCutoff); err != nil {
+	if res, err := rt.store.ExecContext(ctx, "DELETE FROM orderbook_feature_buckets WHERE bucket_start_ms < ?", orderbookCutoff); err != nil {
 		log.Printf("hub: orderbook bucket cleanup error: %v", err)
 	} else if n, _ := res.RowsAffected(); n > 0 {
 		log.Printf("hub: cleaned %d sqlite orderbook buckets", n)
@@ -360,7 +389,7 @@ func (rt *Runtime) reclaimSQLiteSpace(ctx context.Context) {
 	if !rt.lastSQLiteVacuum.IsZero() && time.Since(rt.lastSQLiteVacuum) < time.Duration(interval)*time.Second {
 		return
 	}
-	if _, err := rt.store.DB.ExecContext(ctx, "VACUUM"); err != nil {
+	if _, err := rt.store.ExecContext(ctx, "VACUUM"); err != nil {
 		log.Printf("hub: sqlite vacuum error: %v", err)
 		return
 	}
@@ -375,7 +404,7 @@ func (rt *Runtime) checkpointSQLiteWAL(ctx context.Context, mode string) (sqlite
 	default:
 		mode = "PASSIVE"
 	}
-	rows, err := rt.store.DB.QueryxContext(ctx, "PRAGMA wal_checkpoint("+mode+")")
+	rows, err := rt.store.QueryxContext(ctx, "PRAGMA wal_checkpoint("+mode+")")
 	if err != nil {
 		log.Printf("hub: sqlite wal checkpoint mode=%s error: %v", mode, err)
 		return sqliteCheckpointResult{}, false
@@ -398,6 +427,98 @@ func (rt *Runtime) checkpointSQLiteWAL(ctx context.Context, mode string) (sqlite
 		log.Printf("hub: sqlite wal checkpoint mode=%s busy=%d log=%d checkpointed=%d wal_bytes=%d", mode, res.Busy, res.Log, res.Checkpointed, res.WALBytes)
 	}
 	return res, true
+}
+
+func (rt *Runtime) runSQLiteCheckpoint(ctx context.Context, mode string) (sqliteCheckpointResult, bool) {
+	if rt.sqliteCheckpointFn != nil {
+		return rt.sqliteCheckpointFn(ctx, mode)
+	}
+	return rt.checkpointSQLiteWAL(ctx, mode)
+}
+
+func (rt *Runtime) sqliteWALReadyForSelfHeal(res sqliteCheckpointResult) bool {
+	if rt == nil || rt.cfg == nil || !rt.cfg.SQLiteWALSelfHealEnabled {
+		return false
+	}
+	if rt.sqliteWALPinnedChecks < rt.sqliteWALPinnedMaxChecks() {
+		return false
+	}
+	return res.WALBytes >= rt.sqliteWALSelfHealMinBytes()
+}
+
+func (rt *Runtime) sqliteWALPinnedMaxChecks() int {
+	if rt == nil || rt.cfg == nil || rt.cfg.SQLiteWALPinnedMaxChecks < 1 {
+		return 5
+	}
+	return rt.cfg.SQLiteWALPinnedMaxChecks
+}
+
+func (rt *Runtime) sqliteWALSelfHealMinBytes() int64 {
+	if rt == nil || rt.cfg == nil || rt.cfg.SQLiteWALSelfHealMinBytes < 1 {
+		return sqliteWALDefaultSelfHealMinBytes
+	}
+	return rt.cfg.SQLiteWALSelfHealMinBytes
+}
+
+func (rt *Runtime) sqliteWALMaxReopens() int {
+	if rt == nil || rt.cfg == nil || rt.cfg.SQLiteWALSelfHealMaxReopens < 0 {
+		return 0
+	}
+	return rt.cfg.SQLiteWALSelfHealMaxReopens
+}
+
+func (rt *Runtime) recoverSQLiteWAL(ctx context.Context, res sqliteCheckpointResult) bool {
+	if rt.sqliteWALRecoverFn != nil {
+		return rt.sqliteWALRecoverFn(ctx, res)
+	}
+	if rt == nil || rt.store == nil {
+		return false
+	}
+
+	log.Printf("hub: sqlite wal self-heal starting pinned_checks=%d recoveries=%d wal_bytes=%d", rt.sqliteWALPinnedChecks, rt.sqliteWALRecoveries, res.WALBytes)
+	rt.store.CloseIdleConnections()
+	if trunc, ok := rt.runSQLiteCheckpoint(ctx, "TRUNCATE"); ok && rt.sqliteWALRecovered(trunc) {
+		log.Printf("hub: sqlite wal self-heal truncated without reopen wal_bytes=%d", trunc.WALBytes)
+		return true
+	}
+	if err := rt.store.Reopen(ctx); err != nil {
+		log.Printf("hub: sqlite wal self-heal reopen error: %v", err)
+		return false
+	}
+	log.Printf("hub: sqlite wal self-heal reopened sqlite store")
+
+	for i := 0; i < 3; i++ {
+		if trunc, ok := rt.runSQLiteCheckpoint(ctx, "TRUNCATE"); ok && rt.sqliteWALRecovered(trunc) {
+			log.Printf("hub: sqlite wal self-heal completed wal_bytes=%d", trunc.WALBytes)
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+	return false
+}
+
+func (rt *Runtime) sqliteWALRecovered(res sqliteCheckpointResult) bool {
+	pinnedPages := res.Log - res.Checkpointed
+	if pinnedPages < 0 {
+		pinnedPages = 0
+	}
+	return res.Busy == 0 && (res.WALBytes < rt.sqliteWALSelfHealMinBytes() || pinnedPages <= sqliteWALTruncateThresholdPages)
+}
+
+func (rt *Runtime) restartForSQLiteWAL() {
+	log.Printf("hub: sqlite wal self-heal exhausted recoveries=%d, exiting for process restart", rt.sqliteWALRecoveries)
+	if rt.sqliteWALRestartFn != nil {
+		rt.sqliteWALRestartFn()
+		return
+	}
+	go func() {
+		time.Sleep(time.Second)
+		os.Exit(12)
+	}()
 }
 
 func (rt *Runtime) sqliteWALBytes() int64 {
