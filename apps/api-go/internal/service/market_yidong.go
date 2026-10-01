@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"coinmark/api-go/internal/binance"
@@ -28,6 +29,105 @@ type yidongBar struct {
 	L  float64
 	C  float64
 	QV float64
+}
+
+const (
+	// 7日/30日新高新低需要今天之前 29 天的日线（与 yidongMaxDailyBefore 的 6/29 天窗口对应）
+	yidongDailyLookbackDays = 29
+	// 收盘不足 5 分钟的日线可能还有分钟桶没写完/在修复，下一轮重新拉取
+	yidongDailyFinalDelayMs = 5 * yidongMinuteMs
+)
+
+type yidongDailyFetch func(ctx context.Context, market string, symbols []string, startMs, endMs int64) ([]model.CHTradeRow, error)
+
+// yidongDailyCache 缓存已收盘的日线。收盘的日线不会再变，
+// 避免每轮扫描都用 1m 数据把 30 天日线重算一遍（该查询曾占 ClickHouse 扫描量的大头）。
+type yidongDailyCache struct {
+	mu      sync.Mutex
+	bars    map[string]map[int64]yidongBar // market|symbol -> 日线开盘时间 -> 日线
+	finalTo map[string]int64               // market|symbol -> 已定稿的最后一天（含）
+}
+
+func newYidongDailyCache() *yidongDailyCache {
+	return &yidongDailyCache{bars: map[string]map[int64]yidongBar{}, finalTo: map[string]int64{}}
+}
+
+var yidongDaily = newYidongDailyCache()
+
+// get 返回 symbols 在 dayStart 之前 yidongDailyLookbackDays 天的日线（按时间升序），只拉缺失或未定稿的日子。
+func (c *yidongDailyCache) get(ctx context.Context, market string, symbols []string, dayStart, nowMs int64, fetch yidongDailyFetch) (map[string][]yidongBar, error) {
+	from := dayStart - yidongDailyLookbackDays*yidongDayMs
+	lastDay := dayStart - yidongDayMs
+	finalLimit := lastDay
+	if nowMs < dayStart+yidongDailyFinalDelayMs {
+		finalLimit = lastDay - yidongDayMs
+	}
+
+	groups := map[int64][]string{}
+	c.mu.Lock()
+	for _, s := range symbols {
+		start := from
+		if f, ok := c.finalTo[market+"|"+s]; ok && f >= from {
+			start = f + yidongDayMs
+		}
+		if start <= lastDay {
+			groups[start] = append(groups[start], s)
+		}
+	}
+	c.mu.Unlock()
+
+	for start, syms := range groups {
+		rows, err := fetch(ctx, market, syms, start, dayStart-1)
+		if err != nil {
+			return nil, err
+		}
+		fetched := yidongBuildBarMap(rows)
+		c.mu.Lock()
+		for _, s := range syms {
+			key := market + "|" + s
+			m := c.bars[key]
+			if m == nil {
+				m = map[int64]yidongBar{}
+				c.bars[key] = m
+			}
+			for _, b := range fetched[s] {
+				m[b.Ts] = b
+			}
+			if f, ok := c.finalTo[key]; !ok || finalLimit > f {
+				c.finalTo[key] = finalLimit
+			}
+		}
+		c.mu.Unlock()
+	}
+
+	out := make(map[string][]yidongBar, len(symbols))
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, s := range symbols {
+		m := c.bars[market+"|"+s]
+		bars := make([]yidongBar, 0, len(m))
+		for ts, b := range m {
+			if ts < from {
+				delete(m, ts)
+				continue
+			}
+			if ts < dayStart {
+				bars = append(bars, b)
+			}
+		}
+		sort.Slice(bars, func(i, j int) bool { return bars[i].Ts < bars[j].Ts })
+		out[s] = bars
+	}
+	return out, nil
+}
+
+// yidongDailyCoverage 判断日线历史是否覆盖今天之前的 7 天/30 天窗口。dayBars 需按时间升序。
+func yidongDailyCoverage(dayBars []yidongBar, dayStart int64) (has7d, has30d bool) {
+	if len(dayBars) == 0 {
+		return false, false
+	}
+	earliest := dayBars[0].Ts
+	return earliest <= dayStart-6*yidongDayMs, earliest <= dayStart-29*yidongDayMs
 }
 
 func ScanMarketYidongMinute(ctx context.Context, ch *chrepo.Client, store *sqlite.Store, bn *binance.Client, market string, topN int) (int, error) {
@@ -60,13 +160,14 @@ func ScanMarketYidongMinute(ctx context.Context, ch *chrepo.Client, store *sqlit
 	if err != nil {
 		return 0, err
 	}
-	dayRows, err := ch.QueryTradeBuckets(ctx, m, "", symbols, "1d", dayStart-29*yidongDayMs, lastClosedStart, "asc", 0)
+	dayMap, err := yidongDaily.get(ctx, m, symbols, dayStart, nowMs, func(ctx context.Context, market string, syms []string, startMs, endMs int64) ([]model.CHTradeRow, error) {
+		return ch.QueryTradeBuckets(ctx, market, "", syms, "1d", startMs, endMs, "asc", 0)
+	})
 	if err != nil {
 		return 0, err
 	}
 
 	minMap := yidongBuildBarMap(minRows)
-	dayMap := yidongBuildBarMap(dayRows)
 	events := make([]map[string]interface{}, 0, 256)
 
 	for _, sym := range symbols {
@@ -87,9 +188,7 @@ func ScanMarketYidongMinute(ctx context.Context, ch *chrepo.Client, store *sqlit
 		}
 		activeBars := bars[:lastIdx+1]
 		eventTimeMs := latest.Ts + yidongMinuteMs
-		earliestTs := activeBars[0].Ts
-		has7dCoverage := earliestTs <= dayStart-6*yidongDayMs
-		has30dCoverage := earliestTs <= dayStart-29*yidongDayMs
+		has7dCoverage, has30dCoverage := yidongDailyCoverage(dayMap[sym], dayStart)
 
 		dayBars := yidongFilterFrom(activeBars, dayStart)
 		if len(dayBars) < 2 {
