@@ -9,21 +9,25 @@ import (
 
 type Config struct {
 	BinanceWSBaseURL string
-	BinanceRESTBase  string
-	NATSURL          string
-	NATSStreamRaw    string
-	NATSSubjectTrade string
-	NATSSubjectDepth string
-	NATSClientName   string
-	Symbols          []string
-	SymbolLimit      int
-	StreamsPerConn   int
-	Market           string
-	EnableDepth      bool
-	DepthUpdateMs    int
-	DepthLevel       int
-	DepthSampleEvery int
-	LogIntervalSec   int
+	// 成交流地址。Binance 合约的 aggTrade 已迁到 /market/stream，旧 /stream 能连上但不推成交；
+	// depth 仍在 /stream（/public/stream）。不设置时与 BinanceWSBaseURL 相同。
+	BinanceWSTradeBaseURL string
+	BinanceRESTBase       string
+	NATSURL               string
+	NATSStreamRaw         string
+	NATSSubjectTrade      string
+	NATSSubjectDepth      string
+	NATSClientName        string
+	Symbols               []string
+	SymbolLimit           int
+	DepthSymbolLimit      int // 0 表示与 SymbolLimit 相同
+	StreamsPerConn        int
+	Market                string
+	EnableDepth           bool
+	DepthUpdateMs         int
+	DepthLevel            int
+	DepthSampleEvery      int
+	LogIntervalSec        int
 }
 
 func Load() (Config, error) {
@@ -79,6 +83,8 @@ func Load() (Config, error) {
 	if cfg.StreamsPerConn <= 0 {
 		cfg.StreamsPerConn = 200
 	}
+	cfg.DepthSymbolLimit = getenvInt("COLLECTOR_DEPTH_SYMBOL_LIMIT", 0)
+	cfg.BinanceWSTradeBaseURL = getenv("COLLECTOR_BINANCE_WS_TRADE_BASE_URL", cfg.BinanceWSBaseURL)
 	if cfg.SymbolLimit < 0 {
 		cfg.SymbolLimit = 0
 	}

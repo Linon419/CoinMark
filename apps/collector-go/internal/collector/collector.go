@@ -92,9 +92,16 @@ func (c *Collector) Run(ctx context.Context) error {
 		c.cfg.NATSSubjectDepth,
 	)
 
-	symbols, err := c.resolveSymbols(ctx)
+	symbols, err := c.resolveSymbols(ctx, c.cfg.SymbolLimit)
 	if err != nil {
 		return err
+	}
+	// 深度只订阅市值靠前的币：成交可以放开到全市场，深度数据量固定且小币意义不大
+	depthSymbols := symbols
+	if c.cfg.EnableDepth && c.cfg.DepthSymbolLimit > 0 && (c.cfg.SymbolLimit == 0 || c.cfg.DepthSymbolLimit < c.cfg.SymbolLimit) {
+		if depthSymbols, err = c.resolveSymbols(ctx, c.cfg.DepthSymbolLimit); err != nil {
+			return err
+		}
 	}
 
 	errCh := make(chan error, 1)
@@ -119,10 +126,10 @@ func (c *Collector) Run(ctx context.Context) error {
 
 	if c.cfg.EnableDepth {
 		depthSuffix := fmt.Sprintf("depth%d@%dms", c.cfg.DepthLevel, c.cfg.DepthUpdateMs)
-		depthChunks := buildStreamChunks(symbols, c.cfg.StreamsPerConn, depthSuffix)
+		depthChunks := buildStreamChunks(depthSymbols, c.cfg.StreamsPerConn, depthSuffix)
 		log.Printf(
 			"collector depth streams symbols=%d chunk_size=%d conn=%d update=%dms",
-			len(symbols),
+			len(depthSymbols),
 			c.cfg.StreamsPerConn,
 			len(depthChunks),
 			c.cfg.DepthUpdateMs,
@@ -177,7 +184,7 @@ func (c *Collector) Run(ctx context.Context) error {
 }
 
 func (c *Collector) runTradeLoop(ctx context.Context, streams []string) error {
-	base := strings.TrimSpace(c.cfg.BinanceWSBaseURL)
+	base := strings.TrimSpace(c.cfg.BinanceWSTradeBaseURL)
 	u, err := url.Parse(base)
 	if err != nil {
 		return fmt.Errorf("parse ws base url: %w", err)
@@ -407,11 +414,12 @@ func (c *Collector) consumeDepthConn(ctx context.Context, wsURL string) error {
 	}
 }
 
-func (c *Collector) resolveSymbols(ctx context.Context) ([]string, error) {
+// resolveSymbols 选出要订阅的币：limit>0 时按市值取前 limit 个，0 表示全部。
+func (c *Collector) resolveSymbols(ctx context.Context, limit int) ([]string, error) {
 	if len(c.cfg.Symbols) > 0 {
 		items := dedupeSymbols(c.cfg.Symbols)
-		if c.cfg.SymbolLimit > 0 && len(items) > c.cfg.SymbolLimit {
-			items = items[:c.cfg.SymbolLimit]
+		if limit > 0 && len(items) > limit {
+			items = items[:limit]
 		}
 		if len(items) == 0 {
 			return nil, fmt.Errorf("COLLECTOR_SYMBOLS is set but no valid symbol")
@@ -420,8 +428,8 @@ func (c *Collector) resolveSymbols(ctx context.Context) ([]string, error) {
 		return items, nil
 	}
 
-	if c.cfg.SymbolLimit > 0 {
-		topByCap, capErr := binance.FetchTopUSDTSymbolsByMarketCap(ctx, c.cfg.SymbolLimit, 20*time.Second)
+	if limit > 0 {
+		topByCap, capErr := binance.FetchTopUSDTSymbolsByMarketCap(ctx, limit, 20*time.Second)
 		if capErr != nil {
 			log.Printf("collector marketcap top symbols failed, fallback exchangeInfo: %v", capErr)
 		} else if len(topByCap) > 0 {
@@ -443,21 +451,21 @@ func (c *Collector) resolveSymbols(ctx context.Context) ([]string, error) {
 				marketSet[strings.ToUpper(strings.TrimSpace(sym))] = struct{}{}
 			}
 
-			filtered := make([]string, 0, c.cfg.SymbolLimit)
+			filtered := make([]string, 0, limit)
 			for _, sym := range topByCap {
 				norm := strings.ToUpper(strings.TrimSpace(sym))
 				if _, ok := marketSet[norm]; !ok {
 					continue
 				}
 				filtered = append(filtered, norm)
-				if len(filtered) >= c.cfg.SymbolLimit {
+				if len(filtered) >= limit {
 					break
 				}
 			}
 
 			filtered = dedupeSymbols(filtered)
 			if len(filtered) > 0 {
-				log.Printf("collector symbols selected by marketcap topN=%d market=%s picked=%d", c.cfg.SymbolLimit, c.cfg.Market, len(filtered))
+				log.Printf("collector symbols selected by marketcap topN=%d market=%s picked=%d", limit, c.cfg.Market, len(filtered))
 				return filtered, nil
 			}
 			log.Printf("collector marketcap selection empty after market filter, fallback exchangeInfo")
@@ -478,8 +486,8 @@ func (c *Collector) resolveSymbols(ctx context.Context) ([]string, error) {
 	}
 
 	items = dedupeSymbols(items)
-	if c.cfg.SymbolLimit > 0 && len(items) > c.cfg.SymbolLimit {
-		items = items[:c.cfg.SymbolLimit]
+	if limit > 0 && len(items) > limit {
+		items = items[:limit]
 	}
 	log.Printf("collector symbols fetched from exchangeInfo count=%d", len(items))
 	return items, nil
