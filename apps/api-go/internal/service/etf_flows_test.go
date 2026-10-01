@@ -77,3 +77,32 @@ func TestEtfFlowsUpsertAndList(t *testing.T) {
 		}
 	}
 }
+
+func TestParseSoSoPage(t *testing.T) {
+	html := `<html><body><script id="__NEXT_DATA__" type="application/json">{"props":{"pageProps":{"historyData":{"list":[
+		{"dataDate":"2026-09-30 00:00:00","totalNetInflow":-5029530.4,"totalVolume":35325463,"totalNetAssets":482952964.95,"cumNetInflow":337446953.24},
+		{"dataDate":"2026-09-29 00:00:00","totalNetInflow":1167676.95,"totalVolume":100,"totalNetAssets":1868283.12,"cumNetInflow":2}]}}}}</script></body></html>`
+	rows, err := parseSoSoPage(html, "HYPE")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || rows[0].Asset != "HYPE" || rows[0].Date != "2026-09-30" || rows[0].NetInflow != -5029530.4 || rows[0].ValueTraded != 35325463 || rows[0].NetAssets != 482952964.95 {
+		t.Fatalf("解析不对: %+v", rows)
+	}
+	if _, err := parseSoSoPage("<html>Attention Required! | Cloudflare</html>", "HYPE"); err == nil {
+		t.Fatal("没有页面数据时应返回错误")
+	}
+}
+
+func TestParseFlareSolverr(t *testing.T) {
+	html, err := parseFlareSolverr([]byte(`{"status":"ok","message":"","solution":{"status":200,"response":"<html>ok</html>"}}`))
+	if err != nil || html != "<html>ok</html>" {
+		t.Fatalf("html=%q err=%v", html, err)
+	}
+	if _, err := parseFlareSolverr([]byte(`{"status":"error","message":"timeout"}`)); err == nil {
+		t.Fatal("status 非 ok 应返回错误")
+	}
+	if _, err := parseFlareSolverr([]byte(`{"status":"ok","solution":{"status":403,"response":"blocked"}}`)); err == nil {
+		t.Fatal("目标页面非 200 应返回错误")
+	}
+}

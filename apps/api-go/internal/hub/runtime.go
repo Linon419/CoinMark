@@ -65,7 +65,8 @@ func (rt *Runtime) Start(ctx context.Context) {
 	go rt.cleanupLoop(ctx)
 
 	if rt.cfg.SoSoValueAPIKey != "" {
-		go service.RunEtfFlowSync(ctx, rt.store, rt.cfg.SoSoValueAPIKey, strings.Split(rt.cfg.EtfFlowAssets, ","), rt.stopCh)
+		go service.RunEtfFlowSync(ctx, rt.store, rt.cfg.SoSoValueAPIKey, strings.Split(rt.cfg.EtfFlowAssets, ","),
+			rt.cfg.FlareSolverrURL, strings.Split(rt.cfg.EtfFlowPageAssets, ","), rt.stopCh)
 	}
 	go rt.sqliteCheckpointLoop(ctx)
 

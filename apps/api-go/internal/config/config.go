@@ -48,6 +48,9 @@ type Config struct {
 	// 美国现货加密 ETF 每日资金流（SoSoValue），未设置 key 时不同步
 	SoSoValueAPIKey string
 	EtfFlowAssets   string
+	// OpenAPI 不支持的币经 FlareSolverr 读 SoSoValue 网页
+	FlareSolverrURL   string
+	EtfFlowPageAssets string
 
 	// Depth fullscan
 	DepthFullscanEnabled         bool
@@ -198,8 +201,10 @@ func Load() (*Config, error) {
 
 		ArchAlertsEnabled: getenvBool("ARCH_ALERTS_ENABLED", false),
 
-		SoSoValueAPIKey: getenv("SOSOVALUE_API_KEY", ""),
-		EtfFlowAssets:   getenv("ETF_FLOW_ASSETS", "BTC,ETH,SOL,XRP,LTC,HBAR,DOGE,LINK,AVAX,DOT"),
+		SoSoValueAPIKey:   getenv("SOSOVALUE_API_KEY", ""),
+		EtfFlowAssets:     getenv("ETF_FLOW_ASSETS", "BTC,ETH,SOL,XRP,LTC,HBAR,DOGE,LINK,AVAX,DOT"),
+		FlareSolverrURL:   getenv("FLARESOLVERR_URL", ""),
+		EtfFlowPageAssets: getenv("ETF_FLOW_PAGE_ASSETS", "HYPE,ZEC,BNB,TRX,NEAR"),
 
 		DepthFullscanEnabled:         getenvBool("DEPTH_FULLSCAN_ENABLED", false),
 		DepthFullscanMarket:          getenv("DEPTH_FULLSCAN_MARKET", "swap"),
