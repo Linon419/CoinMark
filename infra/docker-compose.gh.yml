@@ -59,6 +59,7 @@ services:
       - ../.env
     environment:
       TG_ENABLED: "true"
+      FLARESOLVERR_URL: http://flaresolverr:8191/v1
     volumes:
       - coinmark_appdata:/data
     depends_on:
@@ -68,6 +69,15 @@ services:
         condition: service_healthy
     ports:
       - "8000:8000"
+
+  # 过 Cloudflare 验证读取 SoSoValue 网页（OpenAPI 不支持的币的 ETF 资金流），只在内部网络使用
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    mem_limit: 1024m
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      LOG_LEVEL: info
 
   ingest:
     image: ghcr.io/linon419/coinmark-ingest:latest
