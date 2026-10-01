@@ -42,6 +42,9 @@ type Config struct {
 	MarketStateNATSStream  string
 	MarketStateNATSSubject string
 
+	// CoinArch 格式的市场异动（依赖内存市场状态）；开启后停用旧的市场异动扫描
+	ArchAlertsEnabled bool
+
 	// Depth fullscan
 	DepthFullscanEnabled         bool
 	DepthFullscanMarket          string
@@ -188,6 +191,8 @@ func Load() (*Config, error) {
 		MarketStateNATSURL:     getenv("MARKET_STATE_NATS_URL", "nats://nats:4222"),
 		MarketStateNATSStream:  getenv("MARKET_STATE_NATS_STREAM", "COINMARK_RAW"),
 		MarketStateNATSSubject: getenv("MARKET_STATE_NATS_SUBJECT", "coinmark.raw.trade"),
+
+		ArchAlertsEnabled: getenvBool("ARCH_ALERTS_ENABLED", false),
 
 		DepthFullscanEnabled:         getenvBool("DEPTH_FULLSCAN_ENABLED", false),
 		DepthFullscanMarket:          getenv("DEPTH_FULLSCAN_MARKET", "swap"),

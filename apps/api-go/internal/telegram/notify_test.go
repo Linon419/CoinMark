@@ -211,3 +211,38 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.Fatalf("insert anomaly event: %v", err)
 	}
 }
+
+func TestPollPassesArchEventsRegardlessOfLevel(t *testing.T) {
+	ctx := context.Background()
+	store := openTelegramNotifyStore(t)
+	defer store.Close()
+	if err := service.SaveTGNotifyPrefs(ctx, store, service.DefaultTGNotifyPrefs(12345)); err != nil {
+		t.Fatalf("save prefs: %v", err)
+	}
+	insertTelegramNotifyEvent(t, store, "swap", "MOVRUSDT", service.ArchEventPriceShock, "1m", "", "MOVR - ₮2.4733 (13.36%) , 5分钟涨 5.02% [3]", `{"retPct":5.02}`)
+
+	// minLevel 设得很高：旧事件会被评分过滤，arch 事件按原文直推不参与评分
+	n := &AnomalyNotifier{store: store, market: "swap", minLevel: "critical", chatIDInt: 12345, batchMaxItems: 5}
+	if got := n.poll(ctx); len(got) != 1 {
+		t.Fatalf("poll returned %d events, want 1", len(got))
+	}
+}
+
+func TestFormatArchBatchSendsTitlesVerbatim(t *testing.T) {
+	events := []model.AnomalyEvent{
+		{ID: 2, EventType: service.ArchEventVolumeSpike, Title: "HEI - ₮0.15454 (11.51%) (中继) , 60分钟成交226.06万 = 昨日80% , 今日净流出-35.98万 , 量能7.07x  [18]"},
+		{ID: 1, EventType: service.ArchEventPriceShock, Title: "MOVR - ₮2.4733 (13.36%) , 5分钟涨 5.02% [3]"},
+	}
+	got := formatArchBatch(events, time.Date(2026, 10, 1, 13, 38, 16, 0, time.UTC))
+	want := "MOVR - ₮2.4733 (13.36%) , 5分钟涨 5.02% [3]\nHEI - ₮0.15454 (11.51%) (中继) , 60分钟成交226.06万 = 昨日80% , 今日净流出-35.98万 , 量能7.07x  [18]\n\n2026-10-01 13:38:16 UTC"
+	if got != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestSplitArchEvents(t *testing.T) {
+	arch, others := splitArchEvents([]model.AnomalyEvent{{EventType: service.ArchEventFundingRate}, {EventType: "boll_pump"}, {EventType: service.ArchEventPriceShock}})
+	if len(arch) != 2 || len(others) != 1 || others[0].EventType != "boll_pump" {
+		t.Fatalf("arch=%d others=%d", len(arch), len(others))
+	}
+}
