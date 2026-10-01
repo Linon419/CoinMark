@@ -253,6 +253,22 @@ func (s *Service) refreshMarketCaps(ctx context.Context) error {
 		best[asset] = cand.row
 	}
 
+	alphaItems, alphaErr := s.binance.GetBinanceAlphaTokens(ctx)
+	if alphaErr != nil {
+		log.Printf("Marketcap alpha fetch failed: %v", alphaErr)
+	}
+	premium, premiumErr := s.binance.GetFuturesPremiumIndexAll(ctx)
+	if premiumErr != nil {
+		log.Printf("Marketcap futures mark price fetch failed: %v", premiumErr)
+	}
+	marks := make(map[string]decimal.Decimal, len(premium))
+	for _, row := range premium {
+		if mp, err := decimal.NewFromString(row.MarkPrice); err == nil && mp.GreaterThan(decimal.Zero) {
+			marks[row.Symbol] = mp
+		}
+	}
+	fillFuturesOnlyMarketCaps(best, alphaItems, marks, nowMS)
+
 	if len(best) == 0 {
 		if complianceErr != nil {
 			return complianceErr
@@ -268,6 +284,111 @@ func (s *Service) refreshMarketCaps(ctx context.Context) error {
 		values = append(values, row)
 	}
 	return s.store.UpsertMarketCaps(ctx, values)
+}
+
+// fillFuturesOnlyMarketCaps 给现货接口里没有市值的 USDT 合约补市值，已有的不覆盖：
+//  1. Binance Alpha 代币列表：覆盖只在合约上线的币；
+//  2. 1000/1000000 前缀合约（如 1000PEPE）：复制本体（PEPE）的市值，价格和流通量按倍数换算。
+//
+// 两者都要求价格与合约标记价格偏差不超过 5%，避免同名不同币。marks 的 key 为合约名（如 BTWUSDT）。
+func fillFuturesOnlyMarketCaps(best map[string]store.MarketCapRow, alpha []map[string]interface{}, marks map[string]decimal.Decimal, nowMS int64) {
+	maxDev := decimal.NewFromFloat(0.05)
+	one := decimal.NewFromInt(1)
+	priceDev := func(price, mark decimal.Decimal) decimal.Decimal {
+		return price.Div(mark).Sub(one).Abs()
+	}
+
+	type alphaCand struct {
+		row store.MarketCapRow
+		dev decimal.Decimal
+	}
+	alphaBest := map[string]alphaCand{}
+	for _, it := range alpha {
+		asset := normalizeAssetCode(toUpperString(it["symbol"]))
+		if asset == "" {
+			continue
+		}
+		if _, ok := best[asset]; ok {
+			continue
+		}
+		mark, ok := marks[asset+"USDT"]
+		if !ok {
+			continue
+		}
+		price := toDecimal(it["price"])
+		if !price.GreaterThan(decimal.Zero) {
+			continue
+		}
+		dev := priceDev(price, mark)
+		if dev.GreaterThan(maxDev) {
+			continue
+		}
+		supply := toDecimal(it["circulatingSupply"])
+		marketCap := toDecimal(it["marketCap"])
+		if !marketCap.GreaterThan(decimal.Zero) {
+			marketCap = price.Mul(supply)
+		}
+		if !marketCap.GreaterThan(decimal.Zero) {
+			continue
+		}
+		// 同一符号可能有多条链的代币，取价格最接近合约的那条
+		if prev, ok := alphaBest[asset]; ok && !dev.LessThan(prev.dev) {
+			continue
+		}
+		alphaBest[asset] = alphaCand{
+			row: store.MarketCapRow{
+				Asset:             asset,
+				PriceUSD:          price,
+				CirculatingSupply: supply,
+				MarketCapUSD:      marketCap,
+				Source:            "binance_alpha_token_list",
+				EventTimeMS:       nowMS,
+			},
+			dev: dev,
+		}
+	}
+	for asset, cand := range alphaBest {
+		best[asset] = cand.row
+	}
+
+	prefixes := []struct {
+		prefix string
+		mult   decimal.Decimal
+	}{
+		{"1000000", decimal.NewFromInt(1000000)},
+		{"1000", decimal.NewFromInt(1000)},
+	}
+	for sym, mark := range marks {
+		alias := assetFromPairSymbol(sym)
+		if alias == "" {
+			continue
+		}
+		if _, ok := best[alias]; ok {
+			continue
+		}
+		for _, p := range prefixes {
+			if !strings.HasPrefix(alias, p.prefix) || len(alias) == len(p.prefix) {
+				continue
+			}
+			base, ok := best[alias[len(p.prefix):]]
+			if !ok || !base.PriceUSD.GreaterThan(decimal.Zero) {
+				continue
+			}
+			price := base.PriceUSD.Mul(p.mult)
+			if priceDev(price, mark).GreaterThan(maxDev) {
+				continue
+			}
+			best[alias] = store.MarketCapRow{
+				Asset:             alias,
+				PriceUSD:          price,
+				CirculatingSupply: base.CirculatingSupply.Div(p.mult),
+				MarketCapUSD:      base.MarketCapUSD,
+				Source:            base.Source,
+				EventTimeMS:       nowMS,
+			}
+			break
+		}
+	}
 }
 
 func betterCandidate(a, b struct {

@@ -303,6 +303,18 @@ func (c *Client) GetBinanceComplianceSymbols(ctx context.Context) ([]map[string]
 	return resp.Data, nil
 }
 
+// GetBinanceAlphaTokens 返回 Binance Alpha 代币列表（含只在合约上线、现货接口没有的币的市值）。
+func (c *Client) GetBinanceAlphaTokens(ctx context.Context) ([]map[string]interface{}, error) {
+	var resp bapiResp
+	if err := c.getJSON(ctx, c.cfg.BinanceBapiAlpha, nil, &resp); err != nil {
+		return nil, err
+	}
+	if resp.Code != "000000" {
+		return nil, fmt.Errorf("alpha code=%s", resp.Code)
+	}
+	return resp.Data, nil
+}
+
 func (c *Client) GetKlines(ctx context.Context, market, symbol, interval string, limit int) ([][]interface{}, error) {
 	var endpoint string
 	if market == "spot" {

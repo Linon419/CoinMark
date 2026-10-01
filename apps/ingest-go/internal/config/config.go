@@ -48,6 +48,7 @@ type Config struct {
 	BinanceFuturesREST    string
 	BinanceBapiProducts   string
 	BinanceBapiCompliance string
+	BinanceBapiAlpha      string
 }
 
 func mustInt(name string, def int) int {
@@ -145,6 +146,7 @@ func Load() (*Config, error) {
 		BinanceFuturesREST:    mustString("BINANCE_FUTURES_REST", "https://fapi.binance.com"),
 		BinanceBapiProducts:   mustString("BINANCE_BAPI_PRODUCTS", "https://www.binance.com/bapi/asset/v2/public/asset-service/product/get-products"),
 		BinanceBapiCompliance: mustString("BINANCE_BAPI_COMPLIANCE", "https://www.binance.com/bapi/apex/v1/friendly/apex/marketing/complianceSymbolList"),
+		BinanceBapiAlpha:      mustString("BINANCE_BAPI_ALPHA", "https://www.binance.com/bapi/defi/v1/public/wallet-direct/buw/wallet/cex/alpha/all/token/list"),
 	}
 
 	if !c.IngestEnableSpot && !c.IngestEnableSwap {
