@@ -36,6 +36,12 @@ type Config struct {
 	HubAnomalyScanBatchSize     int
 	HubClimaxScanIntervalSec    int
 
+	// 内存市场状态（消费 NATS 原始成交）
+	MarketStateEnabled     bool
+	MarketStateNATSURL     string
+	MarketStateNATSStream  string
+	MarketStateNATSSubject string
+
 	// Depth fullscan
 	DepthFullscanEnabled         bool
 	DepthFullscanMarket          string
@@ -177,6 +183,11 @@ func Load() (*Config, error) {
 		HubAnomalyScanIntervalSec:   getenvInt("HUB_ANOMALY_SCAN_INTERVAL_SEC", 2),
 		HubAnomalyScanBatchSize:     getenvInt("HUB_ANOMALY_SCAN_BATCH_SIZE", 200),
 		HubClimaxScanIntervalSec:    getenvInt("HUB_CLIMAX_SCAN_INTERVAL_SEC", 60),
+
+		MarketStateEnabled:     getenvBool("MARKET_STATE_ENABLED", false),
+		MarketStateNATSURL:     getenv("MARKET_STATE_NATS_URL", "nats://nats:4222"),
+		MarketStateNATSStream:  getenv("MARKET_STATE_NATS_STREAM", "COINMARK_RAW"),
+		MarketStateNATSSubject: getenv("MARKET_STATE_NATS_SUBJECT", "coinmark.raw.trade"),
 
 		DepthFullscanEnabled:         getenvBool("DEPTH_FULLSCAN_ENABLED", false),
 		DepthFullscanMarket:          getenv("DEPTH_FULLSCAN_MARKET", "swap"),

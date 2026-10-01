@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"coinmark/api-go/internal/binance"
+	"coinmark/api-go/internal/marketstate"
 	"coinmark/api-go/internal/model"
 	chrepo "coinmark/api-go/internal/repo/ch"
 	"coinmark/api-go/internal/repo/sqlite"
@@ -130,7 +131,26 @@ func yidongDailyCoverage(dayBars []yidongBar, dayStart int64) (has7d, has30d boo
 	return earliest <= dayStart-6*yidongDayMs, earliest <= dayStart-29*yidongDayMs
 }
 
-func ScanMarketYidongMinute(ctx context.Context, ch *chrepo.Client, store *sqlite.Store, bn *binance.Client, market string, topN int) (int, error) {
+// yidongMinuteMap 取 [startMs, endMs] 的 1m 线：内存市场状态可用时直接读内存，否则回退到 ClickHouse。
+func yidongMinuteMap(ctx context.Context, ms *marketstate.State, nowMs int64, market string, symbols []string, startMs, endMs int64, fallback yidongDailyFetch) (map[string][]yidongBar, error) {
+	if ms == nil || !ms.Ready(nowMs) {
+		rows, err := fallback(ctx, market, symbols, startMs, endMs)
+		if err != nil {
+			return nil, err
+		}
+		return yidongBuildBarMap(rows), nil
+	}
+	out := make(map[string][]yidongBar, len(symbols))
+	for _, sym := range symbols {
+		s := strings.ToUpper(strings.TrimSpace(sym))
+		for _, b := range ms.Minutes(market, s, startMs, endMs) {
+			out[s] = append(out[s], yidongBar{Ts: b.StartMs, O: b.Open, H: b.High, L: b.Low, C: b.Close, QV: b.QuoteNotional})
+		}
+	}
+	return out, nil
+}
+
+func ScanMarketYidongMinute(ctx context.Context, ch *chrepo.Client, store *sqlite.Store, bn *binance.Client, ms *marketstate.State, market string, topN int) (int, error) {
 	m := strings.ToLower(strings.TrimSpace(market))
 	if m != "spot" && m != "swap" {
 		m = "swap"
@@ -156,7 +176,9 @@ func ScanMarketYidongMinute(ctx context.Context, ch *chrepo.Client, store *sqlit
 		return 0, err
 	}
 
-	minRows, err := ch.QueryTradeBuckets(ctx, m, "", symbols, "1m", start1m, lastClosedStart, "asc", 0)
+	minMap, err := yidongMinuteMap(ctx, ms, nowMs, m, symbols, start1m, lastClosedStart, func(ctx context.Context, market string, syms []string, startMs, endMs int64) ([]model.CHTradeRow, error) {
+		return ch.QueryTradeBuckets(ctx, market, "", syms, "1m", startMs, endMs, "asc", 0)
+	})
 	if err != nil {
 		return 0, err
 	}
@@ -167,7 +189,6 @@ func ScanMarketYidongMinute(ctx context.Context, ch *chrepo.Client, store *sqlit
 		return 0, err
 	}
 
-	minMap := yidongBuildBarMap(minRows)
 	events := make([]map[string]interface{}, 0, 256)
 
 	for _, sym := range symbols {
@@ -286,7 +307,7 @@ func ScanMarketYidongMinute(ctx context.Context, ch *chrepo.Client, store *sqlit
 	return insertAnomalyEvents(ctx, store, events)
 }
 
-func ScanMarketYidongVolume(ctx context.Context, ch *chrepo.Client, store *sqlite.Store, bn *binance.Client, market string, topN int) (int, error) {
+func ScanMarketYidongVolume(ctx context.Context, ch *chrepo.Client, store *sqlite.Store, bn *binance.Client, ms *marketstate.State, market string, topN int) (int, error) {
 	m := strings.ToLower(strings.TrimSpace(market))
 	if m != "spot" && m != "swap" {
 		m = "swap"
@@ -305,11 +326,12 @@ func ScanMarketYidongVolume(ctx context.Context, ch *chrepo.Client, store *sqlit
 	if err != nil || len(symbols) == 0 {
 		return 0, err
 	}
-	minRows, err := ch.QueryTradeBuckets(ctx, m, "", symbols, "1m", start1m, lastClosedStart, "asc", 0)
+	minMap, err := yidongMinuteMap(ctx, ms, nowMs, m, symbols, start1m, lastClosedStart, func(ctx context.Context, market string, syms []string, startMs, endMs int64) ([]model.CHTradeRow, error) {
+		return ch.QueryTradeBuckets(ctx, market, "", syms, "1m", startMs, endMs, "asc", 0)
+	})
 	if err != nil {
 		return 0, err
 	}
-	minMap := yidongBuildBarMap(minRows)
 	events := make([]map[string]interface{}, 0, 128)
 
 	for _, sym := range symbols {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"coinmark/api-go/internal/marketstate"
 	"coinmark/api-go/internal/model"
 )
 
@@ -143,5 +144,46 @@ func TestYidongDailyCacheRefetchesYesterdayUntilFinal(t *testing.T) {
 	}
 	if len(calls) != 3 {
 		t.Fatalf("昨天定稿后不应再拉: %+v", calls)
+	}
+}
+
+func TestYidongMinuteMapPrefersReadyMarketState(t *testing.T) {
+	ms := marketstate.New(1440)
+	ms.Apply(marketstate.Trade{Market: "swap", Symbol: "AUSDT", TimeMs: testDayStart + 1000, Price: 2, Qty: 3})
+	ms.Apply(marketstate.Trade{Market: "swap", Symbol: "AUSDT", TimeMs: testDayStart + yidongMinuteMs + 1, Price: 4, Qty: 1})
+	ms.Apply(marketstate.Trade{Market: "swap", Symbol: "AUSDT", TimeMs: testDayStart + 2*yidongMinuteMs + 1, Price: 9, Qty: 1}) // 超出查询范围
+	ms.MarkLoaded()
+	ms.Touch(testDayStart + 3*yidongMinuteMs)
+
+	fallbackCalls := 0
+	fallback := func(context.Context, string, []string, int64, int64) ([]model.CHTradeRow, error) {
+		fallbackCalls++
+		return nil, nil
+	}
+	got, err := yidongMinuteMap(context.Background(), ms, testDayStart+3*yidongMinuteMs, "swap", []string{"AUSDT", "BUSDT"}, testDayStart, testDayStart+yidongMinuteMs, fallback)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fallbackCalls != 0 {
+		t.Fatal("状态可用时不应查 ClickHouse")
+	}
+	a := got["AUSDT"]
+	if len(a) != 2 || a[0].O != 2 || a[0].QV != 6 || a[1].C != 4 {
+		t.Fatalf("分钟线不对: %+v", a)
+	}
+	if len(got["BUSDT"]) != 0 {
+		t.Fatalf("没成交的币应为空: %+v", got["BUSDT"])
+	}
+
+	// 断流后回退到 ClickHouse
+	if _, err := yidongMinuteMap(context.Background(), ms, testDayStart+10*yidongMinuteMs, "swap", []string{"AUSDT"}, testDayStart, testDayStart+yidongMinuteMs, fallback); err != nil {
+		t.Fatal(err)
+	}
+	if fallbackCalls != 1 {
+		t.Fatal("状态不可用时应回退到 ClickHouse")
+	}
+	// 未启用（nil）也回退
+	if _, err := yidongMinuteMap(context.Background(), nil, testDayStart, "swap", []string{"AUSDT"}, testDayStart, testDayStart, fallback); err != nil || fallbackCalls != 2 {
+		t.Fatalf("未启用时应回退: calls=%d err=%v", fallbackCalls, err)
 	}
 }

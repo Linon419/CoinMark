@@ -9,6 +9,7 @@ import (
 
 	"coinmark/api-go/internal/binance"
 	"coinmark/api-go/internal/config"
+	"coinmark/api-go/internal/marketstate"
 	chrepo "coinmark/api-go/internal/repo/ch"
 	"coinmark/api-go/internal/repo/sqlite"
 	"coinmark/api-go/internal/service"
@@ -25,6 +26,7 @@ type Runtime struct {
 	store                 *sqlite.Store
 	ch                    *chrepo.Client
 	bn                    *binance.Client
+	marketState           *marketstate.State
 	stopCh                chan struct{}
 	lastSQLiteVacuum      time.Time
 	sqliteWALPinnedChecks int
@@ -51,6 +53,11 @@ func NewRuntime(cfg *config.Config, store *sqlite.Store, ch *chrepo.Client, bn *
 		cfg: cfg, store: store, ch: ch, bn: bn,
 		stopCh: make(chan struct{}),
 	}
+}
+
+// SetMarketState 注入内存市场状态（nil 表示未启用，相关扫描回退到 ClickHouse）。须在 Start 之前调用。
+func (rt *Runtime) SetMarketState(ms *marketstate.State) {
+	rt.marketState = ms
 }
 
 func (rt *Runtime) Start(ctx context.Context) {
@@ -248,7 +255,7 @@ func (rt *Runtime) marketYidongMinuteLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			inserted, err := service.ScanMarketYidongMinute(ctx, rt.ch, rt.store, rt.bn, "swap", rt.cfg.AnomalyScanTopN)
+			inserted, err := service.ScanMarketYidongMinute(ctx, rt.ch, rt.store, rt.bn, rt.marketState, "swap", rt.cfg.AnomalyScanTopN)
 			if err != nil {
 				log.Printf("hub: market yidong minute scan error: %v", err)
 			} else if inserted > 0 {
@@ -273,7 +280,7 @@ func (rt *Runtime) marketYidongVolumeLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			inserted, err := service.ScanMarketYidongVolume(ctx, rt.ch, rt.store, rt.bn, "swap", rt.cfg.AnomalyScanTopN)
+			inserted, err := service.ScanMarketYidongVolume(ctx, rt.ch, rt.store, rt.bn, rt.marketState, "swap", rt.cfg.AnomalyScanTopN)
 			if err != nil {
 				log.Printf("hub: market yidong volume scan error: %v", err)
 			} else if inserted > 0 {

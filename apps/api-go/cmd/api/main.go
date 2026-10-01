@@ -16,7 +16,9 @@ import (
 	"coinmark/api-go/internal/config"
 	"coinmark/api-go/internal/handler"
 	"coinmark/api-go/internal/hub"
+	"coinmark/api-go/internal/marketstate"
 	"coinmark/api-go/internal/migration"
+	"coinmark/api-go/internal/model"
 	chrepo "coinmark/api-go/internal/repo/ch"
 	redisrepo "coinmark/api-go/internal/repo/redis"
 	"coinmark/api-go/internal/repo/sqlite"
@@ -66,8 +68,16 @@ func main() {
 	bnClient := binance.NewClient()
 	log.Println("binance: client ready")
 
+	// 内存市场状态
+	var marketState *marketstate.State
+	if cfg.MarketStateEnabled && chClient != nil {
+		marketState = marketstate.New(1440)
+		go runMarketState(ctx, cfg, chClient, marketState)
+	}
+
 	// Hub runtime
 	hubRT := hub.NewRuntime(cfg, sqliteStore, chClient, bnClient)
+	hubRT.SetMarketState(marketState)
 	hubRT.Start(ctx)
 	defer hubRT.Stop()
 
@@ -110,4 +120,27 @@ func main() {
 		log.Printf("api: shutdown error: %v", err)
 	}
 	log.Println("api: stopped")
+}
+
+// runMarketState 运行内存市场状态；出错（如 NATS 不可用）时 30 秒后重新加载，期间相关扫描自动回退到 ClickHouse。
+func runMarketState(ctx context.Context, cfg *config.Config, ch *chrepo.Client, ms *marketstate.State) {
+	msCfg := marketstate.Config{
+		NATSURL: cfg.MarketStateNATSURL,
+		Stream:  cfg.MarketStateNATSStream,
+		Subject: cfg.MarketStateNATSSubject,
+		Markets: []string{"swap", "spot"},
+	}
+	load := func(ctx context.Context, market string, fromMs, toMs int64) ([]model.CHTradeRow, error) {
+		return ch.QueryTradeBuckets(ctx, market, "", nil, "1m", fromMs, toMs, "asc", 0)
+	}
+	for {
+		if err := ms.Run(ctx, msCfg, load); err != nil {
+			log.Printf("marketstate: %v (30s 后重试)", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(30 * time.Second):
+		}
+	}
 }
