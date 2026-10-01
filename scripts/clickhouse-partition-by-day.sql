@@ -59,6 +59,8 @@ TTL toDateTime(bucket_start_ms / 1000) + INTERVAL 7 DAY;
 
 -- ---------------------------------------------------------------------------
 -- 1) Backfill with key-level dedup (keep latest version)
+--    不写别名：别名 version 会遮住原列，argMax(..., version) 会变成聚合套聚合；INSERT SELECT 按位置对应列。
+--    GROUP BY 与排序键一致，按序聚合，避免超出 ClickHouse 内存上限。
 -- ---------------------------------------------------------------------------
 
 INSERT INTO trade_buckets_pbyday
@@ -67,19 +69,20 @@ SELECT
     symbol,
     bucket,
     bucket_start_ms,
-    argMax(taker_buy_notional, version)  AS taker_buy_notional,
-    argMax(taker_sell_notional, version) AS taker_sell_notional,
-    argMax(quote_notional, version)      AS quote_notional,
-    toInt64(argMax(trade_count, version)) AS trade_count,
-    argMax(first_trade_ms, version)      AS first_trade_ms,
-    argMax(last_trade_ms, version)       AS last_trade_ms,
-    argMax(open_price, version)          AS open_price,
-    argMax(close_price, version)         AS close_price,
-    argMax(high_price, version)          AS high_price,
-    argMax(low_price, version)           AS low_price,
-    max(version)                         AS version
+    argMax(taker_buy_notional, version),
+    argMax(taker_sell_notional, version),
+    argMax(quote_notional, version),
+    toInt64(argMax(trade_count, version)),
+    argMax(first_trade_ms, version),
+    argMax(last_trade_ms, version),
+    argMax(open_price, version),
+    argMax(close_price, version),
+    argMax(high_price, version),
+    argMax(low_price, version),
+    max(version)
 FROM trade_buckets
-GROUP BY market, symbol, bucket, bucket_start_ms;
+GROUP BY market, symbol, bucket, bucket_start_ms
+SETTINGS optimize_aggregation_in_order = 1, max_bytes_before_external_group_by = 1000000000;
 
 INSERT INTO orderbook_feature_buckets_pbyday
 SELECT
@@ -87,18 +90,19 @@ SELECT
     symbol,
     bucket,
     bucket_start_ms,
-    argMax(spread_bps_sum, version)          AS spread_bps_sum,
-    argMax(microprice_shift_bps_sum, version) AS microprice_shift_bps_sum,
-    argMax(depth_imbalance_l20_sum, version) AS depth_imbalance_l20_sum,
-    argMax(wall_pressure_l20_sum, version)   AS wall_pressure_l20_sum,
-    toInt64(argMax(sample_count, version))   AS sample_count,
-    argMax(taker_buy_notional, version)      AS taker_buy_notional,
-    argMax(taker_sell_notional, version)     AS taker_sell_notional,
-    toInt64(argMax(depletion_events, version)) AS depletion_events,
-    toInt64(argMax(replenishment_events, version)) AS replenishment_events,
-    max(version)                             AS version
+    argMax(spread_bps_sum, version),
+    argMax(microprice_shift_bps_sum, version),
+    argMax(depth_imbalance_l20_sum, version),
+    argMax(wall_pressure_l20_sum, version),
+    toInt64(argMax(sample_count, version)),
+    argMax(taker_buy_notional, version),
+    argMax(taker_sell_notional, version),
+    toInt64(argMax(depletion_events, version)),
+    toInt64(argMax(replenishment_events, version)),
+    max(version)
 FROM orderbook_feature_buckets
-GROUP BY market, symbol, bucket, bucket_start_ms;
+GROUP BY market, symbol, bucket, bucket_start_ms
+SETTINGS optimize_aggregation_in_order = 1, max_bytes_before_external_group_by = 1000000000;
 
 -- Optional quick sanity check:
 -- SELECT 'trade_old' AS t, count() FROM trade_buckets;
