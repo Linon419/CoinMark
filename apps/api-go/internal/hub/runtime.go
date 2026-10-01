@@ -63,6 +63,10 @@ func (rt *Runtime) SetMarketState(ms *marketstate.State) {
 func (rt *Runtime) Start(ctx context.Context) {
 	// periodic cleanup
 	go rt.cleanupLoop(ctx)
+
+	if rt.cfg.SoSoValueAPIKey != "" {
+		go service.RunEtfFlowSync(ctx, rt.store, rt.cfg.SoSoValueAPIKey, strings.Split(rt.cfg.EtfFlowAssets, ","), rt.stopCh)
+	}
 	go rt.sqliteCheckpointLoop(ctx)
 
 	if !rt.cfg.HubEnabled {

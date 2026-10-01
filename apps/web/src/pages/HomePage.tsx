@@ -14,6 +14,7 @@ import {
 import { Link } from "react-router-dom";
 import EChart from "../components/EChart";
 import QuantHelp from "../components/QuantHelp";
+import EtfFlowsPanel from "../components/EtfFlowsPanel";
 
 type Market = "spot" | "swap";
 
@@ -1373,6 +1374,8 @@ export default function HomePage() {
               </div>
             </div>
           </div>
+
+          <EtfFlowsPanel />
 
           <div className="cm-section">
             <div className="cm-sectionHeader">

@@ -39,6 +39,7 @@ func RegisterRoutes(r *gin.Engine, d *Deps) {
 	registerBollPumpRoutes(api, d)
 	registerHubRoutes(api, d)
 	registerTGNotifyPrefsRoutes(api, d)
+	registerEtfRoutes(api, d)
 
 	bot := api.Group("/bot")
 	registerBotRoutes(bot, d)

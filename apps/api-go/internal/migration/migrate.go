@@ -297,6 +297,19 @@ var schemaDDL = []string{
 		updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 	)`,
 
+	// etf_flows：美国现货加密 ETF 每日资金流（SoSoValue，按币汇总）
+	`CREATE TABLE IF NOT EXISTS etf_flows (
+		asset VARCHAR(16) NOT NULL,
+		date VARCHAR(10) NOT NULL,
+		net_inflow DOUBLE PRECISION NOT NULL DEFAULT 0,
+		value_traded DOUBLE PRECISION NOT NULL DEFAULT 0,
+		net_assets DOUBLE PRECISION NOT NULL DEFAULT 0,
+		cum_net_inflow DOUBLE PRECISION NOT NULL DEFAULT 0,
+		updated_ms BIGINT NOT NULL,
+		PRIMARY KEY (asset, date)
+	)`,
+	`CREATE INDEX IF NOT EXISTS ix_etf_flows_date ON etf_flows (date)`,
+
 	// tg_notify_prefs (group-level notify switches)
 	`CREATE TABLE IF NOT EXISTS tg_notify_prefs (
 		chat_id BIGINT PRIMARY KEY,

@@ -45,6 +45,10 @@ type Config struct {
 	// CoinArch 格式的市场异动（依赖内存市场状态）；开启后停用旧的市场异动扫描
 	ArchAlertsEnabled bool
 
+	// 美国现货加密 ETF 每日资金流（SoSoValue），未设置 key 时不同步
+	SoSoValueAPIKey string
+	EtfFlowAssets   string
+
 	// Depth fullscan
 	DepthFullscanEnabled         bool
 	DepthFullscanMarket          string
@@ -193,6 +197,9 @@ func Load() (*Config, error) {
 		MarketStateNATSSubject: getenv("MARKET_STATE_NATS_SUBJECT", "coinmark.raw.trade"),
 
 		ArchAlertsEnabled: getenvBool("ARCH_ALERTS_ENABLED", false),
+
+		SoSoValueAPIKey: getenv("SOSOVALUE_API_KEY", ""),
+		EtfFlowAssets:   getenv("ETF_FLOW_ASSETS", "BTC,ETH,SOL,XRP,LTC,HBAR,DOGE,LINK,AVAX,DOT"),
 
 		DepthFullscanEnabled:         getenvBool("DEPTH_FULLSCAN_ENABLED", false),
 		DepthFullscanMarket:          getenv("DEPTH_FULLSCAN_MARKET", "swap"),
