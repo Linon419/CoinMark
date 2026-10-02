@@ -429,7 +429,7 @@ func (c *Collector) resolveSymbols(ctx context.Context, limit int) ([]string, er
 	}
 
 	if limit > 0 {
-		topByCap, capErr := binance.FetchTopUSDTSymbolsByMarketCap(ctx, limit, 20*time.Second)
+		topByCap, capErr := binance.FetchTopUSDTSymbolsByMarketCap(ctx, 20*time.Second)
 		if capErr != nil {
 			log.Printf("collector marketcap top symbols failed, fallback exchangeInfo: %v", capErr)
 		} else if len(topByCap) > 0 {

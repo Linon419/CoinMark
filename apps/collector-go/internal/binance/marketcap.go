@@ -24,11 +24,8 @@ type marketCapCandidate struct {
 	QuoteVol float64
 }
 
-func FetchTopUSDTSymbolsByMarketCap(ctx context.Context, limit int, timeout time.Duration) ([]string, error) {
-	if limit <= 0 {
-		limit = 200
-	}
-
+// FetchTopUSDTSymbolsByMarketCap 返回按市值从高到低排好的全部 USDT 交易对（不截断，由调用方按市场过滤后取前 N）。
+func FetchTopUSDTSymbolsByMarketCap(ctx context.Context, timeout time.Duration) ([]string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, binanceBAPIProductsURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("new request: %w", err)
@@ -54,8 +51,17 @@ func FetchTopUSDTSymbolsByMarketCap(ctx context.Context, limit int, timeout time
 		return nil, fmt.Errorf("bapi get-products empty data")
 	}
 
-	bestBySymbol := make(map[string]marketCapCandidate, len(payload.Data))
-	for _, row := range payload.Data {
+	return rankMarketCapRows(payload.Data), nil
+}
+
+// rankMarketCapRows 按 价格×流通量 排序。排除 bStocks（Binance 的美股代币）：它们只在现货交易且“市值”很大，
+// 会占满排名，导致合约只能选到个位数的币。
+func rankMarketCapRows(rows []map[string]any) []string {
+	bestBySymbol := make(map[string]marketCapCandidate, len(rows))
+	for _, row := range rows {
+		if isBStock(row) {
+			continue
+		}
 		base := strings.ToUpper(strings.TrimSpace(anyToString(row["b"])))
 		if base == "" {
 			continue
@@ -111,14 +117,21 @@ func FetchTopUSDTSymbolsByMarketCap(ctx context.Context, limit int, timeout time
 		return arr[i].Cap > arr[j].Cap
 	})
 
-	if len(arr) > limit {
-		arr = arr[:limit]
-	}
 	out := make([]string, 0, len(arr))
 	for _, item := range arr {
 		out = append(out, item.Symbol)
 	}
-	return out, nil
+	return out
+}
+
+func isBStock(row map[string]any) bool {
+	tags, _ := row["tags"].([]any)
+	for _, t := range tags {
+		if s, _ := t.(string); s == "bStocks" {
+			return true
+		}
+	}
+	return false
 }
 
 func anyToString(v any) string {
@@ -153,4 +166,3 @@ func anyToFloat(v any) (float64, bool) {
 	}
 	return f, true
 }
-
