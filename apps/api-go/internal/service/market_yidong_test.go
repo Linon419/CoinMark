@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"coinmark/api-go/internal/marketstate"
@@ -185,5 +186,25 @@ func TestYidongMinuteMapPrefersReadyMarketState(t *testing.T) {
 	// 未启用（nil）也回退
 	if _, err := yidongMinuteMap(context.Background(), nil, testDayStart, "swap", []string{"AUSDT"}, testDayStart, testDayStart, fallback); err != nil || fallbackCalls != 2 {
 		t.Fatalf("未启用时应回退: calls=%d err=%v", fallbackCalls, err)
+	}
+}
+
+func TestYidongDailyCacheFetchesInChunks(t *testing.T) {
+	c := newYidongDailyCache()
+	var calls []fetchCall
+	syms := make([]string, 0, 95)
+	for i := 0; i < 95; i++ {
+		syms = append(syms, fmt.Sprintf("S%dUSDT", i))
+	}
+	got, err := c.get(context.Background(), "swap", syms, testDayStart, testDayStart+10*yidongMinuteMs, fakeDailyFetch(&calls))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 一次性查几百个币 × 29 天会撑爆 ClickHouse 内存，须分批
+	if len(calls) != 3 || len(calls[0].symbols) != yidongDailyFetchChunk || len(calls[2].symbols) != 95-2*yidongDailyFetchChunk {
+		t.Fatalf("应按 %d 个一批分 3 批: %d 批", yidongDailyFetchChunk, len(calls))
+	}
+	if len(got) != 95 || len(got["S94USDT"]) != yidongDailyLookbackDays {
+		t.Fatalf("分批后结果应完整: %d", len(got))
 	}
 }

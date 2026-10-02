@@ -37,6 +37,8 @@ const (
 	yidongDailyLookbackDays = 29
 	// 收盘不足 5 分钟的日线可能还有分钟桶没写完/在修复，下一轮重新拉取
 	yidongDailyFinalDelayMs = 5 * yidongMinuteMs
+	// 每次最多查这么多币：日线由 1m 现场聚合，几百个币 × 29 天一次查会超出 ClickHouse 内存上限
+	yidongDailyFetchChunk = 40
 )
 
 type yidongDailyFetch func(ctx context.Context, market string, symbols []string, startMs, endMs int64) ([]model.CHTradeRow, error)
@@ -77,28 +79,13 @@ func (c *yidongDailyCache) get(ctx context.Context, market string, symbols []str
 	}
 	c.mu.Unlock()
 
-	for start, syms := range groups {
-		rows, err := fetch(ctx, market, syms, start, dayStart-1)
-		if err != nil {
-			return nil, err
-		}
-		fetched := yidongBuildBarMap(rows)
-		c.mu.Lock()
-		for _, s := range syms {
-			key := market + "|" + s
-			m := c.bars[key]
-			if m == nil {
-				m = map[int64]yidongBar{}
-				c.bars[key] = m
-			}
-			for _, b := range fetched[s] {
-				m[b.Ts] = b
-			}
-			if f, ok := c.finalTo[key]; !ok || finalLimit > f {
-				c.finalTo[key] = finalLimit
+	for start, all := range groups {
+		for i := 0; i < len(all); i += yidongDailyFetchChunk {
+			syms := all[i:min(i+yidongDailyFetchChunk, len(all))]
+			if err := c.fetchChunk(ctx, market, syms, start, dayStart, finalLimit, fetch); err != nil {
+				return nil, err
 			}
 		}
-		c.mu.Unlock()
 	}
 
 	out := make(map[string][]yidongBar, len(symbols))
@@ -120,6 +107,31 @@ func (c *yidongDailyCache) get(ctx context.Context, market string, symbols []str
 		out[s] = bars
 	}
 	return out, nil
+}
+
+func (c *yidongDailyCache) fetchChunk(ctx context.Context, market string, syms []string, start, dayStart, finalLimit int64, fetch yidongDailyFetch) error {
+	rows, err := fetch(ctx, market, syms, start, dayStart-1)
+	if err != nil {
+		return err
+	}
+	fetched := yidongBuildBarMap(rows)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, s := range syms {
+		key := market + "|" + s
+		m := c.bars[key]
+		if m == nil {
+			m = map[int64]yidongBar{}
+			c.bars[key] = m
+		}
+		for _, b := range fetched[s] {
+			m[b.Ts] = b
+		}
+		if f, ok := c.finalTo[key]; !ok || finalLimit > f {
+			c.finalTo[key] = finalLimit
+		}
+	}
+	return nil
 }
 
 // yidongDailyCoverage 判断日线历史是否覆盖今天之前的 7 天/30 天窗口。dayBars 需按时间升序。
