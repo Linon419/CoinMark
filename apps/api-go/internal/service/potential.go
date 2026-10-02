@@ -20,7 +20,8 @@ import (
 // 潜力区：两个名单，规则来自 2026-07~09 全市场回测（只看加密币小币）。
 //   - 观察名单（低位高积累）：3 天合约净流入 ≥ 500 万，离 30 天低点 < 30%。
 //     回测 24h 内先涨 5% 的 42%、先跌 5% 的 24%（随机为 33% / 26%），只有 20 个币，样本少。
-//   - 别追名单：3 天净流入 < 50 万，4 小时涨 ≥ 10%。回测 4h 后 58% 下跌，24h 后中位跌 4.8%。
+//   - 别追名单：3 天净流入 < 50 万（现在的，或截到 4 小时前、拉升前的，满足一个就算），4 小时涨 ≥ 10%。
+//     回测 4h 后 58% 下跌，24h 后中位跌 4.8%；其中“拉升前没积累、拉升当下放量进钱”的 173 次，24h 后中位跌 5.7%。
 //
 // 净流入 = 主动买入额 − 主动卖出额（与 CoinArch 口径一致），用已收盘的 1h K 线。
 const (
@@ -30,7 +31,7 @@ const (
 	potentialMaxOIUnknownMcap  = 5e7  // 没有市值数据时，持仓 < 5000 万算小币
 	potentialWatchMinAcc3d     = 5e6  // 观察名单：3 天积累 ≥ 500 万
 	potentialWatchMaxRise      = 0.30 // 观察名单：离 30 天低点 < 30%
-	potentialAvoidMaxAcc3d     = 5e5  // 别追名单：3 天积累 < 50 万
+	potentialAvoidMaxAcc3d     = 5e5  // 别追名单：3 天积累 < 50 万（现在或拉升前）
 	potentialAvoidMinRet4h     = 0.10 // 别追名单：4 小时涨 ≥ 10%
 	potentialEMACrossLookbackH = 4    // EMA 标签：最近 4 小时内上穿过
 	potentialRecordGapMs       = 24 * 3600 * 1000
@@ -48,6 +49,7 @@ type PotentialItem struct {
 	DecisionMs    int64   `json:"decision_ms"`
 	Price         float64 `json:"price"`
 	Acc3d         float64 `json:"acc_3d"`
+	Acc3dPre4h    float64 `json:"acc_3d_pre4h"` // 截到 4 小时前的 3 天积累（拉升前）
 	RiseFromLow30 float64 `json:"rise_from_low30"`
 	Ret4h         float64 `json:"ret_4h"`
 	Vol24         float64 `json:"vol_24h"`
@@ -57,6 +59,7 @@ type PotentialItem struct {
 }
 
 // potentialHourlyMetrics 用已收盘 1h K 线（升序，至少 72 根）算积累量、4h 涨幅、24h 成交额。
+// 不足 76 根时，拉升前积累取现在的 3 天积累。
 func potentialHourlyMetrics(h1 []BollPumpBar) (PotentialItem, bool) {
 	n := len(h1)
 	if n < 72 {
@@ -64,8 +67,16 @@ func potentialHourlyMetrics(h1 []BollPumpBar) (PotentialItem, bool) {
 	}
 	last := h1[n-1]
 	it := PotentialItem{DecisionMs: last.OpenTimeMs + 3600*1000, Price: last.Close}
+	flow := func(i int) float64 { return 2*h1[i].TakerBuyQuote - h1[i].QuoteVolume }
 	for i := n - 72; i < n; i++ {
-		it.Acc3d += 2*h1[i].TakerBuyQuote - h1[i].QuoteVolume
+		it.Acc3d += flow(i)
+	}
+	it.Acc3dPre4h = it.Acc3d
+	if n >= 76 {
+		it.Acc3dPre4h = 0
+		for i := n - 76; i < n-4; i++ {
+			it.Acc3dPre4h += flow(i)
+		}
 	}
 	for i := n - 24; i < n; i++ {
 		it.Vol24 += h1[i].QuoteVolume
@@ -112,6 +123,12 @@ func potentialEMACrossRecent(bars []BollPumpBar, lookback int) bool {
 		}
 	}
 	return false
+}
+
+// potentialIsAvoid 别追名单：4 小时涨 ≥ 10%，且没有积累——现在的或拉升前的 3 天积累 < 50 万，满足一个就算
+// （只看现在的会漏掉“拉升前没积累、拉升当下放量进钱”的，例如 2026-10-02 的 SAND）。
+func potentialIsAvoid(it PotentialItem) bool {
+	return it.Ret4h >= potentialAvoidMinRet4h && (it.Acc3d < potentialAvoidMaxAcc3d || it.Acc3dPre4h < potentialAvoidMaxAcc3d)
 }
 
 // potentialIsSmallCoin 市值 < 10 亿；没有市值数据时用持仓 < 5000 万代替。
@@ -323,7 +340,7 @@ func (s *PotentialScanner) scan(ctx context.Context) {
 			it.RiseFromLow30 = rise
 			isWatch = ok && rise < potentialWatchMaxRise
 		}
-		isAvoid = it.Acc3d < potentialAvoidMaxAcc3d && it.Ret4h >= potentialAvoidMinRet4h
+		isAvoid = potentialIsAvoid(it)
 		if !isWatch && !isAvoid {
 			continue
 		}

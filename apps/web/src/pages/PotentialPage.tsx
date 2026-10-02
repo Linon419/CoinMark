@@ -12,6 +12,7 @@ type Item = {
   decision_ms: number;
   price: number;
   acc_3d: number;
+  acc_3d_pre4h: number;
   rise_from_low30: number;
   ret_4h: number;
   vol_24h: number;
@@ -150,8 +151,14 @@ export default function PotentialPage() {
     },
   ];
 
+  // 别追名单多一列“拉升前积累”（截到 4 小时前的 3 天积累）
+  const avoidColumns = [
+    ...itemColumns.slice(0, 3),
+    { title: "拉升前积累", render: (_: any, r: Item) => <span style={{ color: tone(r.acc_3d_pre4h) }}>{fmtUsdCn(r.acc_3d_pre4h)}</span> },
+    ...itemColumns.slice(3),
+  ];
   const statOf = (list: string) => stats.find((s) => s.list === list);
-  const table = (data: Item[]) => <Table rowKey="symbol" loading={loading} columns={itemColumns} data={data} pagination={false} scroll={{ x: true }} border={false} />;
+  const table = (data: Item[], columns = itemColumns) => <Table rowKey="symbol" loading={loading} columns={columns} data={data} pagination={false} scroll={{ x: true }} border={false} />;
 
   return (
     <>
@@ -179,10 +186,10 @@ export default function PotentialPage() {
           </Title>
         </div>
         <Text className="cm-muted" style={{ display: "block", marginBottom: 4 }}>
-          条件：同样的小币范围；近 3 天净流入 &lt; 50 万，4 小时涨幅 ≥ 10%。
+          条件：同样的小币范围；4 小时涨幅 ≥ 10%，并且没有积累——现在的 3 天净流入 &lt; 50 万，或拉升前（截到 4 小时前）的 3 天净流入 &lt; 50 万，满足一个就算（拉升当下才放量进钱的也算）。
         </Text>
-        <StatsLine s={statOf("avoid")} backtest="4h 后 58% 下跌，24h 后中位跌 4.8%（1452 次、363 个币，前后两段一致）；偶尔会被继续暴拉，不建议直接做空。" />
-        {table(avoid)}
+        <StatsLine s={statOf("avoid")} backtest="4h 后 58% 下跌，24h 后中位跌 4.8%（1452 次、363 个币，前后两段一致）；其中拉升当下才放量进钱的 173 次，24h 后中位跌 5.7%。偶尔会被继续暴拉，不建议直接做空。" />
+        {table(avoid, avoidColumns)}
       </div>
 
       <div className="cm-section">
