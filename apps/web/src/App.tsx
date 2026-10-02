@@ -74,6 +74,9 @@ export default function App() {
             <NavLink to="/boll-pump" className={({ isActive }) => `cm-navLink ${isActive ? "cm-navLink--active" : ""}`}>
               BOLL扫描
             </NavLink>
+            <NavLink to="/boll-squeeze" className={({ isActive }) => `cm-navLink ${isActive ? "cm-navLink--active" : ""}`}>
+              布林回踩
+            </NavLink>
           </Space>
 
           <Space className="cm-statusGroup">

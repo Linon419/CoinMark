@@ -27,6 +27,7 @@ type Runtime struct {
 	ch                    *chrepo.Client
 	bn                    *binance.Client
 	marketState           *marketstate.State
+	bollSqueeze           *service.BollSqueezeScanner
 	stopCh                chan struct{}
 	lastSQLiteVacuum      time.Time
 	sqliteWALPinnedChecks int
@@ -117,6 +118,9 @@ func (rt *Runtime) Start(ctx context.Context) {
 			))
 			live.Start(ctx, rt.stopCh)
 			source = live
+			// 布林回踩只读 WS 缓存；不用 REST 源，避免每分钟全市场拉 K 线
+			rt.bollSqueeze = service.NewBollSqueezeScanner(live, cfg.Market)
+			go rt.bollSqueeze.Run(ctx, rt.stopCh)
 		}
 		scanner := service.NewBollPumpScanner(source, rt.store, cfg)
 		scanner.SetOIGrowthProvider(rt.bn)
@@ -135,6 +139,11 @@ func (rt *Runtime) Start(ctx context.Context) {
 			}
 		}()
 	}
+}
+
+// BollSqueeze 返回布林回踩扫描器；未启用 BOLL WS 缓存时为 nil。
+func (rt *Runtime) BollSqueeze() *service.BollSqueezeScanner {
+	return rt.bollSqueeze
 }
 
 func (rt *Runtime) Stop() {

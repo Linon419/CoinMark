@@ -40,6 +40,7 @@ func RegisterRoutes(r *gin.Engine, d *Deps) {
 	registerHubRoutes(api, d)
 	registerTGNotifyPrefsRoutes(api, d)
 	registerEtfRoutes(api, d)
+	registerBollSqueezeRoutes(api, d)
 
 	bot := api.Group("/bot")
 	registerBotRoutes(bot, d)
