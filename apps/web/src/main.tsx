@@ -11,6 +11,7 @@ import IntradayPage from "./pages/IntradayPage";
 import SignalLabPage from "./pages/SignalLabPage";
 import BollPumpPage from "./pages/BollPumpPage";
 import BollSqueezePage from "./pages/BollSqueezePage";
+import EmaPullbackPage from "./pages/EmaPullbackPage";
 import PotentialPage from "./pages/PotentialPage";
 import { NotificationCenterProvider } from "./stores/notificationCenter";
 
@@ -28,6 +29,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
             <Route path="signal-lab" element={<SignalLabPage />} />
             <Route path="boll-pump" element={<BollPumpPage />} />
             <Route path="boll-squeeze" element={<BollSqueezePage />} />
+            <Route path="ema-pullback" element={<EmaPullbackPage />} />
             <Route path="potential" element={<PotentialPage />} />
           </Route>
         </Routes>

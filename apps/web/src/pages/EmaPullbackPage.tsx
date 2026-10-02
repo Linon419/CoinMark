@@ -11,40 +11,38 @@ const REFRESH_MS = 60 * 1000; // 后端每分钟扫一次
 type Hit = {
   timeframe: string;
   candle_start_ms: number;
+  line: "EMA100" | "EMA200";
   close: number;
-  lower: number;
-  upper: number;
+  low: number;
   ema100: number;
   ema200: number;
-  percent_b: number;
-  bandwidth: number;
-  bandwidth_max20: number;
+  distance_pct: number;
 };
 type Row = { symbol: string; quote_volume_24h: number; hits: Hit[] };
 
 function HitCell({ hit }: { hit?: Hit }) {
   if (!hit) return <Text className="cm-muted">—</Text>;
-  const title = `收盘 ${hit.close}｜下轨 ${hit.lower.toPrecision(6)}｜EMA200 ${hit.ema200.toPrecision(6)}｜带宽 ${(hit.bandwidth * 100).toFixed(1)}%（近20根最大 ${(hit.bandwidth_max20 * 100).toFixed(1)}%）`;
+  const title = `收盘 ${hit.close}｜最低 ${hit.low}｜EMA100 ${hit.ema100.toPrecision(6)}｜EMA200 ${hit.ema200.toPrecision(6)}`;
   return (
-    <span title={title} style={{ color: "var(--cm-success)", fontVariantNumeric: "tabular-nums" }}>
-      %B {hit.percent_b.toFixed(2)}
+    <span title={title} style={{ whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums", color: hit.line === "EMA200" ? "var(--cm-warning)" : "var(--cm-success)" }}>
+      {hit.line} +{(hit.distance_pct * 100).toFixed(2)}%
     </span>
   );
 }
 
-// BollSqueezePage 布林回踩：上涨趋势中 BOLL 缩口、价格接近下轨的合约。
-export default function BollSqueezePage() {
+// EmaPullbackPage EMA 回踩：上涨趋势中回落到 EMA100 / EMA200 并收在线上方的合约。
+export default function EmaPullbackPage() {
   const [items, setItems] = useState<Row[]>([]);
   const [updatedMs, setUpdatedMs] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const { settings: notify, save: saveNotify, isFav, toggleFav } = usePullbackNotify("/api/boll-squeeze/notify");
+  const { settings: notify, save: saveNotify, isFav, toggleFav } = usePullbackNotify("/api/ema-pullback/notify");
 
   useEffect(() => {
     let alive = true;
     const load = async () => {
       try {
-        const r = await fetch(`${API_BASE}/api/boll-squeeze`);
+        const r = await fetch(`${API_BASE}/api/ema-pullback`);
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const d = await r.json();
         if (alive) {
@@ -94,7 +92,7 @@ export default function BollSqueezePage() {
     <div className="cm-section">
       <div className="cm-sectionHeader">
         <Title heading={6} style={{ margin: 0 }}>
-          布林回踩
+          EMA 回踩
         </Title>
         <Text className="cm-muted">
           {updatedMs ? `更新于 ${new Date(updatedMs).toLocaleTimeString()}` : ""}
@@ -102,7 +100,7 @@ export default function BollSqueezePage() {
         </Text>
       </div>
       <Text className="cm-muted" style={{ display: "block", marginBottom: 8 }}>
-        条件（已收盘 K 线）：EMA100 &gt; EMA200、EMA200 比 10 根前高、收盘在 EMA200 上方；BOLL(20,2) 带宽比 3 根前窄且 ≤ 近 20 根最大带宽的 80%；收盘 %B 在 -0.2~0.35（0 = 下轨，1 = 上轨）。命中周期多的排前面。
+        条件（已收盘 K 线）：EMA100 &gt; EMA200、EMA200 比 10 根前高；K 线最低点碰到 EMA100 或 EMA200（离线 0.3% 以内或插到线下），收盘仍在线上方，且之前 10 根收盘都在这条线上方。两条线都碰到时显示更深的 EMA200（黄色）。百分比是收盘价离这条线的距离。命中周期多的排前面。
       </Text>
       <NotifyPanel settings={notify} onSave={saveNotify} />
       <Table rowKey="symbol" loading={loading} columns={columns} data={items} pagination={false} scroll={{ x: true }} border={false} />

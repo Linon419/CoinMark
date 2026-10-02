@@ -264,9 +264,9 @@ func TestPollPassesBollSqueezeEventsEvenWithMarketAnomalyOff(t *testing.T) {
 	}
 }
 
-func TestSplitBollSqueezeEvents(t *testing.T) {
-	boll, others := splitBollSqueezeEvents([]model.AnomalyEvent{{EventType: service.BollSqueezeEventType}, {EventType: "boll_pump"}})
-	if len(boll) != 1 || len(others) != 1 || others[0].EventType != "boll_pump" {
-		t.Fatalf("boll=%d others=%d", len(boll), len(others))
+func TestSplitPullbackEvents(t *testing.T) {
+	pullbacks, others := splitPullbackEvents([]model.AnomalyEvent{{EventType: service.BollSqueezeEventType}, {EventType: "boll_pump"}, {EventType: service.EMAPullbackEventType}})
+	if len(pullbacks) != 2 || len(others) != 1 || others[0].EventType != "boll_pump" {
+		t.Fatalf("pullbacks=%d others=%d", len(pullbacks), len(others))
 	}
 }

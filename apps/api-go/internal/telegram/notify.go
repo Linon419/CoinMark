@@ -79,8 +79,8 @@ func (n *AnomalyNotifier) RunLoop(ctx context.Context, sendFn func(text string) 
 
 			if shouldFlush && len(batch) > 0 {
 				arch, others := splitArchEvents(batch)
-				boll, others := splitBollSqueezeEvents(others)
-				for _, e := range boll {
+				pullbacks, others := splitPullbackEvents(others)
+				for _, e := range pullbacks {
 					if err := sendFn(e.Title); err != nil {
 						log.Printf("tg notify: send error: %v", err)
 					}
@@ -122,8 +122,8 @@ func (n *AnomalyNotifier) poll(ctx context.Context) []model.AnomalyEvent {
 		if binance.IsExcludedSymbol(r.Symbol) {
 			continue
 		}
-		if isArchEvent(r.EventType) || r.EventType == service.BollSqueezeEventType {
-			filtered = append(filtered, r) // CoinArch 格式、布林回踩按原文直推，不参与评分过滤
+		if isArchEvent(r.EventType) || isPullbackEvent(r.EventType) {
+			filtered = append(filtered, r) // CoinArch 格式、回踩类按原文直推，不参与评分过滤
 			continue
 		}
 		var details map[string]interface{}
@@ -215,16 +215,20 @@ func splitArchEvents(events []model.AnomalyEvent) (arch, others []model.AnomalyE
 	return arch, others
 }
 
-// splitBollSqueezeEvents 布林回踩通知每条单独发送（只有收藏币，数量很少）。
-func splitBollSqueezeEvents(events []model.AnomalyEvent) (boll, others []model.AnomalyEvent) {
+func isPullbackEvent(eventType string) bool {
+	return eventType == service.BollSqueezeEventType || eventType == service.EMAPullbackEventType
+}
+
+// splitPullbackEvents 布林回踩、EMA 回踩通知每条单独发送（只有收藏币，数量很少）。
+func splitPullbackEvents(events []model.AnomalyEvent) (pullbacks, others []model.AnomalyEvent) {
 	for _, e := range events {
-		if e.EventType == service.BollSqueezeEventType {
-			boll = append(boll, e)
+		if isPullbackEvent(e.EventType) {
+			pullbacks = append(pullbacks, e)
 		} else {
 			others = append(others, e)
 		}
 	}
-	return boll, others
+	return pullbacks, others
 }
 
 // formatArchBatch CoinArch 频道样式：按发生顺序逐条原文，末尾附时间。

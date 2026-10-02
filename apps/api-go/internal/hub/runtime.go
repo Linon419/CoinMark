@@ -28,6 +28,7 @@ type Runtime struct {
 	bn                    *binance.Client
 	marketState           *marketstate.State
 	bollSqueeze           *service.BollSqueezeScanner
+	emaPullback           *service.EMAPullbackScanner
 	potential             *service.PotentialScanner
 	stopCh                chan struct{}
 	lastSQLiteVacuum      time.Time
@@ -122,6 +123,8 @@ func (rt *Runtime) Start(ctx context.Context) {
 			// 布林回踩只读 WS 缓存；不用 REST 源，避免每分钟全市场拉 K 线
 			rt.bollSqueeze = service.NewBollSqueezeScanner(live, cfg.Market, rt.store)
 			go rt.bollSqueeze.Run(ctx, rt.stopCh)
+			rt.emaPullback = service.NewEMAPullbackScanner(live, cfg.Market, rt.store)
+			go rt.emaPullback.Run(ctx, rt.stopCh)
 			if rt.ch != nil {
 				rt.potential = service.NewPotentialScanner(live, rt.ch, rt.bn, rt.store)
 				go rt.potential.Run(ctx, rt.stopCh)
@@ -149,6 +152,11 @@ func (rt *Runtime) Start(ctx context.Context) {
 // BollSqueeze 返回布林回踩扫描器；未启用 BOLL WS 缓存时为 nil。
 func (rt *Runtime) BollSqueeze() *service.BollSqueezeScanner {
 	return rt.bollSqueeze
+}
+
+// EMAPullback 返回 EMA 回踩扫描器；未启用 BOLL WS 缓存时为 nil。
+func (rt *Runtime) EMAPullback() *service.EMAPullbackScanner {
+	return rt.emaPullback
 }
 
 // Potential 返回潜力区扫描器；未启用 BOLL WS 缓存或没有 ClickHouse 时为 nil。

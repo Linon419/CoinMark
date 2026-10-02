@@ -10,8 +10,7 @@ import (
 	"coinmark/api-go/internal/repo/sqlite"
 )
 
-// 布林回踩：上涨趋势中 BOLL 缩口、价格回到下轨附近。只用已收盘 K 线。
-var BollSqueezeTimeframes = []string{"15m", "30m", "1h", "4h"}
+// 布林回踩：上涨趋势中 BOLL 缩口、价格回到下轨附近。只用已收盘 K 线。周期见 PullbackTimeframes。
 
 const (
 	bollSqueezeMinBars        = 400 // EMA200 预热：400 根后初值影响 <2%，需要 BOLL_PUMP_WS_BOOTSTRAP_LIMIT ≥ 400
@@ -149,7 +148,7 @@ func (s *BollSqueezeScanner) scan(ctx context.Context) {
 	rows := make([]BollSqueezeRow, 0)
 	for _, symbol := range symbols {
 		var row BollSqueezeRow
-		for _, tf := range BollSqueezeTimeframes {
+		for _, tf := range PullbackTimeframes {
 			bars, err := s.source.Klines(ctx, s.market, symbol, tf, 499)
 			if err != nil {
 				continue // 缓存预热中或拉取失败，下一轮再试
