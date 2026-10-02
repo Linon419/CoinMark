@@ -138,3 +138,19 @@ func TestArchIntradayExtra(t *testing.T) {
 		t.Fatal("当日上涨时的上涨提醒不附加")
 	}
 }
+
+func TestArchScanSkipsStaleSymbols(t *testing.T) {
+	ms := marketstate.New(1440)
+	// 10:00~10:11 涨了 6%，之后没有任何成交（例如没有实时数据、只有启动时加载的历史）
+	for i := 0; i <= 11; i++ {
+		ms.Apply(marketstate.Trade{Market: "swap", Symbol: "GTCUSDT", TimeMs: archT0 + 10*60*yidongMinuteMs + int64(i)*yidongMinuteMs, Price: 100 + float64(i)*0.55, Qty: 1})
+	}
+	e := NewArchAlertEngine(ms, nil, nil)
+	moveEnd := archT0 + 10*60*yidongMinuteMs + 11*yidongMinuteMs
+	if got := e.scanPriceShock(moveEnd + 30*yidongMinuteMs); len(got) != 0 {
+		t.Fatalf("30 分钟没有新成交的币不应报异动: %v", got)
+	}
+	if got := e.scanPriceShock(moveEnd + 10_000); len(got) != 1 {
+		t.Fatalf("有实时成交时应正常报异动，got %d", len(got))
+	}
+}

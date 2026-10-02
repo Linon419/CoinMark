@@ -263,6 +263,10 @@ func (e *ArchAlertEngine) quote(symbol string, now int64) (archQuote, bool) {
 	if len(bars) == 0 || !ok || day.Open <= 0 {
 		return archQuote{}, false
 	}
+	// 最后一根须是当前或上一分钟：没有实时成交的币（如仅有启动时加载的历史）不检测，避免把旧行情当成新异动
+	if bars[len(bars)-1].StartMs < (now/yidongMinuteMs)*yidongMinuteMs-yidongMinuteMs {
+		return archQuote{}, false
+	}
 	price := bars[len(bars)-1].Close
 	return archQuote{
 		price: price, dayChg: (price/day.Open - 1) * 100, dayHigh: day.High, dayLow: day.Low,
