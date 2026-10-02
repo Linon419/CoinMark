@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"coinmark/api-go/internal/binance"
@@ -506,6 +507,7 @@ func (s *BollPumpScanner) telegramThreshold(level string) float64 {
 type binanceBollPumpSource struct {
 	bn          *binance.Client
 	symbolLimit int
+	quoteMu     sync.RWMutex // BOLL 扫描、布林回踩、潜力区会同时调用 Symbols
 	quoteCache  map[string]float64
 }
 
@@ -525,6 +527,8 @@ func (s *binanceBollPumpSource) Symbols(ctx context.Context, market string, limi
 		qv     float64
 	}
 	rows := make([]row, 0, len(tickers))
+	s.quoteMu.Lock()
+	defer s.quoteMu.Unlock()
 	for _, t := range tickers {
 		sym, _ := t["symbol"].(string)
 		sym = strings.ToUpper(strings.TrimSpace(sym))
@@ -580,7 +584,10 @@ func (s *binanceBollPumpSource) Klines(ctx context.Context, market, symbol, time
 }
 
 func (s *binanceBollPumpSource) QuoteVolume24h(ctx context.Context, market, symbol string) (float64, error) {
-	if v, ok := s.quoteCache[strings.ToUpper(symbol)]; ok {
+	s.quoteMu.RLock()
+	v, ok := s.quoteCache[strings.ToUpper(symbol)]
+	s.quoteMu.RUnlock()
+	if ok {
 		return v, nil
 	}
 	t, err := s.bn.GetTicker24h(ctx, market, symbol)
