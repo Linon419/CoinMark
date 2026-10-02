@@ -310,6 +310,24 @@ var schemaDDL = []string{
 	)`,
 	`CREATE INDEX IF NOT EXISTS ix_etf_flows_date ON etf_flows (date)`,
 
+	// potential_picks：潜力区每次上榜记录，之后补 4h/24h 表现，用于实盘验证
+	`CREATE TABLE IF NOT EXISTS potential_picks (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		list VARCHAR(16) NOT NULL,
+		symbol VARCHAR(32) NOT NULL,
+		entered_ms BIGINT NOT NULL,
+		entry_price DOUBLE PRECISION NOT NULL,
+		acc_3d DOUBLE PRECISION NOT NULL DEFAULT 0,
+		rise_from_low30 DOUBLE PRECISION NOT NULL DEFAULT 0,
+		ret_4h_before DOUBLE PRECISION NOT NULL DEFAULT 0,
+		ema_cross BOOLEAN NOT NULL DEFAULT 0,
+		ret_4h DOUBLE PRECISION,
+		ret_24h DOUBLE PRECISION,
+		first_touch_5 INTEGER,
+		UNIQUE (list, symbol, entered_ms)
+	)`,
+	`CREATE INDEX IF NOT EXISTS ix_potential_picks_entered ON potential_picks (entered_ms)`,
+
 	// tg_notify_prefs (group-level notify switches)
 	`CREATE TABLE IF NOT EXISTS tg_notify_prefs (
 		chat_id BIGINT PRIMARY KEY,

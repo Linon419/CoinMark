@@ -115,6 +115,7 @@ func TestBollPumpLiveKlineSourceHandlesClosedCombinedKline(t *testing.T) {
 				"l":"0.9500",
 				"v":"1000",
 				"q":"1200",
+				"Q":"700",
 				"x":true
 			}
 		}
@@ -124,7 +125,7 @@ func TestBollPumpLiveKlineSourceHandlesClosedCombinedKline(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("bars = %d, want 1", len(got))
 	}
-	if got[0].OpenTimeMs != 1638747600000 || got[0].Close != 1.2 || got[0].QuoteVolume != 1200 {
+	if got[0].OpenTimeMs != 1638747600000 || got[0].Close != 1.2 || got[0].QuoteVolume != 1200 || got[0].TakerBuyQuote != 700 {
 		t.Fatalf("bar = %#v, want parsed closed kline", got[0])
 	}
 }
@@ -154,6 +155,7 @@ func TestBollPumpLiveKlineSourceAggregatesOneMinuteToThreeMinute(t *testing.T) {
 				"l":"0.9000",
 				"v":"10",
 				"q":"12",
+				"Q":"5",
 				"x":true
 			}
 		}`))
@@ -167,7 +169,7 @@ func TestBollPumpLiveKlineSourceAggregatesOneMinuteToThreeMinute(t *testing.T) {
 	if bar.OpenTimeMs != baseOpen || bar.CloseTimeMs != baseOpen+179999 || bar.Open != 1 || bar.Close != 1.2 {
 		t.Fatalf("3m bar = %#v, want aggregated OHLC", bar)
 	}
-	if bar.High != 1.3 || bar.Low != 0.9 || bar.Volume != 30 || bar.QuoteVolume != 36 {
+	if bar.High != 1.3 || bar.Low != 0.9 || bar.Volume != 30 || bar.QuoteVolume != 36 || bar.TakerBuyQuote != 15 {
 		t.Fatalf("3m volume/range = %#v, want aggregated volume and range", bar)
 	}
 }

@@ -413,17 +413,18 @@ type bollPumpWSKlineEvent struct {
 	EventTime int64  `json:"E"`
 	Symbol    string `json:"s"`
 	Kline     struct {
-		OpenTime    int64  `json:"t"`
-		CloseTime   int64  `json:"T"`
-		Symbol      string `json:"s"`
-		Interval    string `json:"i"`
-		Open        string `json:"o"`
-		Close       string `json:"c"`
-		High        string `json:"h"`
-		Low         string `json:"l"`
-		Volume      string `json:"v"`
-		QuoteVolume string `json:"q"`
-		Closed      bool   `json:"x"`
+		OpenTime      int64  `json:"t"`
+		CloseTime     int64  `json:"T"`
+		Symbol        string `json:"s"`
+		Interval      string `json:"i"`
+		Open          string `json:"o"`
+		Close         string `json:"c"`
+		High          string `json:"h"`
+		Low           string `json:"l"`
+		Volume        string `json:"v"`
+		QuoteVolume   string `json:"q"`
+		TakerBuyQuote string `json:"Q"`
+		Closed        bool   `json:"x"`
 	} `json:"k"`
 }
 
@@ -446,16 +447,18 @@ func bollPumpBarFromWSKline(ev bollPumpWSKlineEvent) (BollPumpBar, bool) {
 	}
 	volume, _ := parseBollPumpWSFloat(ev.Kline.Volume)
 	quoteVolume, _ := parseBollPumpWSFloat(ev.Kline.QuoteVolume)
+	takerBuyQuote, _ := parseBollPumpWSFloat(ev.Kline.TakerBuyQuote)
 	return BollPumpBar{
-		OpenTimeMs:  ev.Kline.OpenTime,
-		CloseTimeMs: ev.Kline.CloseTime,
-		Open:        open,
-		High:        high,
-		Low:         low,
-		Close:       closePrice,
-		Volume:      volume,
-		QuoteVolume: quoteVolume,
-		Closed:      ev.Kline.Closed,
+		OpenTimeMs:    ev.Kline.OpenTime,
+		CloseTimeMs:   ev.Kline.CloseTime,
+		Open:          open,
+		High:          high,
+		Low:           low,
+		Close:         closePrice,
+		Volume:        volume,
+		QuoteVolume:   quoteVolume,
+		TakerBuyQuote: takerBuyQuote,
+		Closed:        ev.Kline.Closed,
 	}, true
 }
 
@@ -587,6 +590,7 @@ func aggregateBollPumpOneMinuteBars(bars []BollPumpBar, bucketStart, tfMs int64)
 		}
 		out.Volume += bar.Volume
 		out.QuoteVolume += bar.QuoteVolume
+		out.TakerBuyQuote += bar.TakerBuyQuote
 	}
 	return out, true
 }

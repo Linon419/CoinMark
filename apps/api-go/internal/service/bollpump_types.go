@@ -31,7 +31,9 @@ type BollPumpBar struct {
 	Close       float64
 	Volume      float64
 	QuoteVolume float64
-	Closed      bool
+	// TakerBuyQuote 主动买入成交额；主动买 − 主动卖 = 2*TakerBuyQuote − QuoteVolume（即净流入）
+	TakerBuyQuote float64
+	Closed        bool
 }
 
 type BollPumpIndicator struct {

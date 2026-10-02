@@ -77,6 +77,9 @@ export default function App() {
             <NavLink to="/boll-squeeze" className={({ isActive }) => `cm-navLink ${isActive ? "cm-navLink--active" : ""}`}>
               布林回踩
             </NavLink>
+            <NavLink to="/potential" className={({ isActive }) => `cm-navLink ${isActive ? "cm-navLink--active" : ""}`}>
+              潜力区
+            </NavLink>
           </Space>
 
           <Space className="cm-statusGroup">

@@ -572,6 +572,9 @@ func (s *binanceBollPumpSource) Klines(ctx context.Context, market, symbol, time
 			QuoteVolume: bollPumpToFloat(k[7]),
 			Closed:      true,
 		})
+		if len(k) > 10 {
+			out[len(out)-1].TakerBuyQuote = bollPumpToFloat(k[10])
+		}
 	}
 	return out, nil
 }

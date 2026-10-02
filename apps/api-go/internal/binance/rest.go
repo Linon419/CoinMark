@@ -186,6 +186,30 @@ func (c *Client) fetchPairsAndStatus(ctx context.Context, market string) ([]stri
 	return pairs, statusMap, nil
 }
 
+// GetFuturesNonCoinSymbols 返回 U 本位合约里标的不是加密币的交易对（股票、商品等，underlyingType != COIN）。
+func (c *Client) GetFuturesNonCoinSymbols(ctx context.Context) (map[string]bool, error) {
+	raw, err := c.getJSON(ctx, FuturesREST+"/fapi/v1/exchangeInfo", nil, 0)
+	if err != nil {
+		return nil, err
+	}
+	var data struct {
+		Symbols []struct {
+			Symbol         string `json:"symbol"`
+			UnderlyingType string `json:"underlyingType"`
+		} `json:"symbols"`
+	}
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return nil, err
+	}
+	out := make(map[string]bool)
+	for _, s := range data.Symbols {
+		if s.UnderlyingType != "" && s.UnderlyingType != "COIN" {
+			out[s.Symbol] = true
+		}
+	}
+	return out, nil
+}
+
 func (c *Client) GetPairs(ctx context.Context, market string) ([]string, error) {
 	c.mu.Lock()
 	cached, ok := c.pairsCache[market]
