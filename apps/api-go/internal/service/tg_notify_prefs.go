@@ -15,6 +15,7 @@ const (
 	TGNotifyCategoryWhaleWall     = "whale_wall"
 	TGNotifyCategoryAbsorption    = "absorption"
 	TGNotifyCategoryBollPump      = "boll_pump"
+	TGNotifyCategoryBollSqueeze   = "boll_squeeze"
 )
 
 type TGNotifyPrefs struct {
@@ -91,6 +92,8 @@ func TGNotifyEventCategory(eventType string) string {
 		return TGNotifyCategoryAbsorption
 	case "boll_pump":
 		return TGNotifyCategoryBollPump
+	case BollSqueezeEventType:
+		return TGNotifyCategoryBollSqueeze
 	}
 	if strings.HasPrefix(et, "absorption") {
 		return TGNotifyCategoryAbsorption
@@ -109,6 +112,8 @@ func IsTGNotifyEventEnabled(eventType string, prefs TGNotifyPrefs) bool {
 		return prefs.AbsorptionEnabled
 	case TGNotifyCategoryBollPump:
 		return prefs.BollPumpEnabled
+	case TGNotifyCategoryBollSqueeze:
+		return true // 开关在布林回踩页面的通知设置里
 	default:
 		return prefs.MarketAnomalyEnabled
 	}

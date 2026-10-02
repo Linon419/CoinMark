@@ -79,6 +79,12 @@ func (n *AnomalyNotifier) RunLoop(ctx context.Context, sendFn func(text string) 
 
 			if shouldFlush && len(batch) > 0 {
 				arch, others := splitArchEvents(batch)
+				boll, others := splitBollSqueezeEvents(others)
+				for _, e := range boll {
+					if err := sendFn(e.Title); err != nil {
+						log.Printf("tg notify: send error: %v", err)
+					}
+				}
 				step := max(1, n.batchMaxItems)
 				for i := 0; i < len(arch); i += step {
 					if err := sendFn(formatArchBatch(arch[i:min(i+step, len(arch))], time.Now())); err != nil {
@@ -116,8 +122,8 @@ func (n *AnomalyNotifier) poll(ctx context.Context) []model.AnomalyEvent {
 		if binance.IsExcludedSymbol(r.Symbol) {
 			continue
 		}
-		if isArchEvent(r.EventType) {
-			filtered = append(filtered, r) // CoinArch 格式按原文直推，不参与评分过滤
+		if isArchEvent(r.EventType) || r.EventType == service.BollSqueezeEventType {
+			filtered = append(filtered, r) // CoinArch 格式、布林回踩按原文直推，不参与评分过滤
 			continue
 		}
 		var details map[string]interface{}
@@ -207,6 +213,18 @@ func splitArchEvents(events []model.AnomalyEvent) (arch, others []model.AnomalyE
 		}
 	}
 	return arch, others
+}
+
+// splitBollSqueezeEvents 布林回踩通知每条单独发送（只有收藏币，数量很少）。
+func splitBollSqueezeEvents(events []model.AnomalyEvent) (boll, others []model.AnomalyEvent) {
+	for _, e := range events {
+		if e.EventType == service.BollSqueezeEventType {
+			boll = append(boll, e)
+		} else {
+			others = append(others, e)
+		}
+	}
+	return boll, others
 }
 
 // formatArchBatch CoinArch 频道样式：按发生顺序逐条原文，末尾附时间。

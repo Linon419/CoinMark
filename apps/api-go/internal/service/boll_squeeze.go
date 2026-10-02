@@ -6,6 +6,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"coinmark/api-go/internal/repo/sqlite"
 )
 
 // 布林回踩：上涨趋势中 BOLL 缩口、价格回到下轨附近。只用已收盘 K 线。
@@ -102,14 +104,15 @@ func bollSqueezeEMA(bars []BollPumpBar, period int) []float64 {
 type BollSqueezeScanner struct {
 	source BollPumpSource
 	market string
+	store  *sqlite.Store // 收藏币通知；nil 时不通知
 
 	mu        sync.RWMutex
 	rows      []BollSqueezeRow
 	updatedMs int64
 }
 
-func NewBollSqueezeScanner(source BollPumpSource, market string) *BollSqueezeScanner {
-	return &BollSqueezeScanner{source: source, market: market}
+func NewBollSqueezeScanner(source BollPumpSource, market string, store *sqlite.Store) *BollSqueezeScanner {
+	return &BollSqueezeScanner{source: source, market: market, store: store}
 }
 
 func (s *BollSqueezeScanner) Snapshot() ([]BollSqueezeRow, int64) {
@@ -179,4 +182,9 @@ func (s *BollSqueezeScanner) scan(ctx context.Context) {
 	s.mu.Lock()
 	s.rows, s.updatedMs = rows, nowMs
 	s.mu.Unlock()
+	if n, err := s.notify(ctx, nowMs); err != nil {
+		log.Printf("boll_squeeze: notify error: %v", err)
+	} else if n > 0 {
+		log.Printf("boll_squeeze: notify events=%d", n)
+	}
 }

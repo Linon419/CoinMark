@@ -120,7 +120,7 @@ func (rt *Runtime) Start(ctx context.Context) {
 			live.Start(ctx, rt.stopCh)
 			source = live
 			// 布林回踩只读 WS 缓存；不用 REST 源，避免每分钟全市场拉 K 线
-			rt.bollSqueeze = service.NewBollSqueezeScanner(live, cfg.Market)
+			rt.bollSqueeze = service.NewBollSqueezeScanner(live, cfg.Market, rt.store)
 			go rt.bollSqueeze.Run(ctx, rt.stopCh)
 			if rt.ch != nil {
 				rt.potential = service.NewPotentialScanner(live, rt.ch, rt.bn, rt.store)

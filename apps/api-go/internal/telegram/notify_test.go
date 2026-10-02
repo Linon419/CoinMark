@@ -246,3 +246,27 @@ func TestSplitArchEvents(t *testing.T) {
 		t.Fatalf("arch=%d others=%d", len(arch), len(others))
 	}
 }
+
+func TestPollPassesBollSqueezeEventsEvenWithMarketAnomalyOff(t *testing.T) {
+	ctx := context.Background()
+	store := openTelegramNotifyStore(t)
+	defer store.Close()
+	prefs := service.DefaultTGNotifyPrefs(12345)
+	prefs.MarketAnomalyEnabled = false
+	if err := service.SaveTGNotifyPrefs(ctx, store, prefs); err != nil {
+		t.Fatalf("save prefs: %v", err)
+	}
+	insertTelegramNotifyEvent(t, store, "swap", "ZECUSDT", service.BollSqueezeEventType, "4h", "", "布林回踩 · ZEC 4h\n₮1335.45  %B -0.01（下轨 1337）", `{}`)
+
+	n := &AnomalyNotifier{store: store, market: "swap", minLevel: "critical", chatIDInt: 12345, batchMaxItems: 5}
+	if got := n.poll(ctx); len(got) != 1 {
+		t.Fatalf("poll returned %d events, want 1", len(got))
+	}
+}
+
+func TestSplitBollSqueezeEvents(t *testing.T) {
+	boll, others := splitBollSqueezeEvents([]model.AnomalyEvent{{EventType: service.BollSqueezeEventType}, {EventType: "boll_pump"}})
+	if len(boll) != 1 || len(others) != 1 || others[0].EventType != "boll_pump" {
+		t.Fatalf("boll=%d others=%d", len(boll), len(others))
+	}
+}
