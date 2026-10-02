@@ -17,7 +17,7 @@ const (
 	bollSqueezeShrinkLookback = 3   // 带宽比 3 根前更窄 = 正在收口
 	bollSqueezeMaxBWRatio     = 0.8 // 带宽 ≤ 近 20 根最大带宽的 80%
 	bollSqueezePercentBMin    = -0.2
-	bollSqueezePercentBMax    = 0.2
+	bollSqueezePercentBMax    = 0.35
 	bollSqueezeScanInterval   = time.Minute
 )
 
@@ -41,7 +41,7 @@ type BollSqueezeRow struct {
 }
 
 // EvaluateBollSqueeze 判断最后一根已收盘 K 线是否满足：
-// 上涨趋势（EMA100 > EMA200、EMA200 向上、收盘 > EMA200）+ 缩口 + 收盘接近下轨（%B 在 -0.2~0.2）。
+// 上涨趋势（EMA100 > EMA200、EMA200 向上、收盘 > EMA200）+ 缩口 + 收盘接近下轨（%B 在 -0.2~0.35）。
 func EvaluateBollSqueeze(bars []BollPumpBar) (BollSqueezeHit, bool) {
 	n := len(bars)
 	if n < bollSqueezeMinBars {

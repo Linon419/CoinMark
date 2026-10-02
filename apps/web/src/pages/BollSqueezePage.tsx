@@ -90,7 +90,7 @@ export default function BollSqueezePage() {
         </Text>
       </div>
       <Text className="cm-muted" style={{ display: "block", marginBottom: 8 }}>
-        条件（已收盘 K 线）：EMA100 &gt; EMA200、EMA200 比 10 根前高、收盘在 EMA200 上方；BOLL(20,2) 带宽比 3 根前窄且 ≤ 近 20 根最大带宽的 80%；收盘 %B 在 -0.2~0.2（0 = 下轨）。命中周期多的排前面。
+        条件（已收盘 K 线）：EMA100 &gt; EMA200、EMA200 比 10 根前高、收盘在 EMA200 上方；BOLL(20,2) 带宽比 3 根前窄且 ≤ 近 20 根最大带宽的 80%；收盘 %B 在 -0.2~0.35（0 = 下轨，1 = 上轨）。命中周期多的排前面。
       </Text>
       <Table rowKey="symbol" loading={loading} columns={columns} data={items} pagination={false} scroll={{ x: true }} border={false} />
     </div>

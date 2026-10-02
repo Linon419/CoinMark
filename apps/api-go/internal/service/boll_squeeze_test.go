@@ -45,9 +45,18 @@ func TestEvaluateBollSqueezeHitsZECPullbackToLowerBand(t *testing.T) {
 
 func TestEvaluateBollSqueezeSkipsWhenPriceNotNearLowerBand(t *testing.T) {
 	bars := loadZECSqueezeBars(t)
-	// 前一根（10-01 12:00）收盘在 %B 0.21，还没到下轨
-	if _, ok := EvaluateBollSqueeze(bars[:len(bars)-1]); ok {
+	// 10-01 00:00 收盘在 %B 0.37，还没回到下轨附近
+	if _, ok := EvaluateBollSqueeze(bars[:len(bars)-4]); ok {
 		t.Fatal("expected no hit before price reached lower band")
+	}
+}
+
+func TestEvaluateBollSqueezeAllowsPercentBUpTo035(t *testing.T) {
+	bars := loadZECSqueezeBars(t)
+	// 10-01 08:00 收盘 %B 0.31：缩口中回落到下轨上方不远，也算
+	hit, ok := EvaluateBollSqueeze(bars[:len(bars)-2])
+	if !ok || hit.PercentB < 0.25 || hit.PercentB > 0.35 {
+		t.Fatalf("ok=%v percentB=%.3f", ok, hit.PercentB)
 	}
 }
 
