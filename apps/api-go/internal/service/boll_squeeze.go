@@ -19,7 +19,6 @@ const (
 	bollSqueezeMaxBWRatio     = 0.8 // 带宽 ≤ 近 20 根最大带宽的 80%
 	bollSqueezePercentBMin    = -0.2
 	bollSqueezePercentBMax    = 0.35
-	bollSqueezeScanInterval   = time.Minute
 )
 
 type BollSqueezeHit struct {
@@ -99,7 +98,7 @@ func bollSqueezeEMA(bars []BollPumpBar, period int) []float64 {
 	return out
 }
 
-// BollSqueezeScanner 每分钟用 BOLL 扫描的 K 线缓存扫一遍全部合约，结果只放内存。
+// BollSqueezeScanner 每 15 分钟用 BOLL 扫描的 K 线缓存扫一遍全部合约，结果只放内存。
 type BollSqueezeScanner struct {
 	source BollPumpSource
 	market string
@@ -124,18 +123,7 @@ func (s *BollSqueezeScanner) Snapshot() ([]BollSqueezeRow, int64) {
 }
 
 func (s *BollSqueezeScanner) Run(ctx context.Context, stopCh <-chan struct{}) {
-	ticker := time.NewTicker(bollSqueezeScanInterval)
-	defer ticker.Stop()
-	for {
-		s.scan(ctx)
-		select {
-		case <-ctx.Done():
-			return
-		case <-stopCh:
-			return
-		case <-ticker.C:
-		}
-	}
+	runPullbackScans(ctx, stopCh, s.scan)
 }
 
 func (s *BollSqueezeScanner) scan(ctx context.Context) {

@@ -6,7 +6,7 @@ import { FavStar, NotifyPanel, PULLBACK_TIMEFRAMES, usePullbackNotify } from "..
 
 const { Title, Text } = Typography;
 const API_BASE = (import.meta as any).env?.VITE_API_BASE || "";
-const REFRESH_MS = 60 * 1000; // 后端每分钟扫一次
+const REFRESH_MS = 60 * 1000; // 后端每 15 分钟扫一次（整刻钟后 30 秒），页面每分钟取一次最新结果
 
 type Hit = {
   timeframe: string;

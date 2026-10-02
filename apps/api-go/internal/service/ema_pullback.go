@@ -13,7 +13,7 @@ import (
 )
 
 // EMA 回踩：上涨趋势中价格回落到 EMA100 或 EMA200 附近并收在线上方。只用已收盘 K 线。
-// 2026-09 全市场试算：每根 K 线平均命中 15m 约 50、30m 约 39、1h 约 34、4h 约 20 个币。
+// 2026-09 全市场试算：每根 K 线平均命中 15m 约 50、30m 约 39、1h 约 34、4h 约 20 个币。每 15 分钟扫一次。
 const (
 	EMAPullbackEventType     = "ema_pullback"
 	emaPullbackTouchTol      = 0.003 // 低点 ≤ 线 × 1.003 算碰到
@@ -105,7 +105,7 @@ func emaPullbackSignal(symbol, tf string, bars []BollPumpBar) (pullbackSignal, b
 	}, true
 }
 
-// EMAPullbackScanner 每分钟用 BOLL 扫描的 K 线缓存扫一遍全部合约，结果只放内存；收藏币刚回踩时写通知事件。
+// EMAPullbackScanner 每 15 分钟用 BOLL 扫描的 K 线缓存扫一遍全部合约，结果只放内存；收藏币刚回踩时写通知事件。
 type EMAPullbackScanner struct {
 	source BollPumpSource
 	market string
@@ -130,18 +130,7 @@ func (s *EMAPullbackScanner) Snapshot() ([]EMAPullbackRow, int64) {
 }
 
 func (s *EMAPullbackScanner) Run(ctx context.Context, stopCh <-chan struct{}) {
-	ticker := time.NewTicker(bollSqueezeScanInterval)
-	defer ticker.Stop()
-	for {
-		s.scan(ctx)
-		select {
-		case <-ctx.Done():
-			return
-		case <-stopCh:
-			return
-		case <-ticker.C:
-		}
-	}
+	runPullbackScans(ctx, stopCh, s.scan)
 }
 
 func (s *EMAPullbackScanner) scan(ctx context.Context) {

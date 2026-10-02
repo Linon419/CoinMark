@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"strings"
+	"time"
 
 	"github.com/jmoiron/sqlx"
 
@@ -15,6 +16,38 @@ import (
 // （最新一根已收盘 K 线满足、前一根不满足）。事件写入 anomaly_events，由 TG 通知器发送。
 
 var PullbackTimeframes = []string{"15m", "30m", "1h", "4h"}
+
+// 每 15 分钟扫一次，对齐到整刻钟后 30 秒（15m/30m/1h/4h 都在整刻钟收盘，留时间让 1m 聚合出新 K 线）。
+const (
+	pullbackScanEvery = 15 * time.Minute
+	pullbackScanDelay = 30 * time.Second
+)
+
+// nextPullbackScan 下一次扫描时间：now 之后最近的 整刻钟 + 30 秒。
+func nextPullbackScan(now time.Time) time.Time {
+	t := now.Truncate(pullbackScanEvery).Add(pullbackScanDelay)
+	if !t.After(now) {
+		t = t.Add(pullbackScanEvery)
+	}
+	return t
+}
+
+// runPullbackScans 启动时先扫一次（重启后页面不用等 15 分钟），之后按 nextPullbackScan 扫。
+func runPullbackScans(ctx context.Context, stopCh <-chan struct{}, scan func(context.Context)) {
+	for {
+		scan(ctx)
+		timer := time.NewTimer(time.Until(nextPullbackScan(time.Now())))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-stopCh:
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
+}
 
 // 通知设置存在 boll_pump_settings 表里，按名字区分。
 const (
