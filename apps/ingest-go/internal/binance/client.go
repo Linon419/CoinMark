@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -20,10 +21,21 @@ import (
 type Client struct {
 	httpClient *http.Client
 	cfg        *config.Config
+	guard      *restGuard
 
 	mu         sync.Mutex
 	pairsCache map[string]pairsEntry
+	rankCache  map[string]rankEntry
 }
+
+// rankEntry 按 24h 成交额排好序的交易对。全市场 24h ticker 权重很高（合约 40、现货 80），
+// watchdog 每分钟、OI 每 10 分钟都要用，缓存 10 分钟。
+type rankEntry struct {
+	ts      time.Time
+	symbols []string
+}
+
+const rankCacheTTL = 10 * time.Minute
 
 type pairsEntry struct {
 	ts    time.Time
@@ -34,7 +46,9 @@ func NewClient(cfg *config.Config) *Client {
 	return &Client{
 		httpClient: &http.Client{Timeout: 20 * time.Second},
 		cfg:        cfg,
+		guard:      newRestGuard(),
 		pairsCache: make(map[string]pairsEntry),
+		rankCache:  make(map[string]rankEntry),
 	}
 }
 
@@ -54,14 +68,20 @@ func (c *Client) getJSON(ctx context.Context, endpoint string, query map[string]
 		return err
 	}
 	req.Header.Set("User-Agent", "coinmark-ingest/1.0")
+	if err := c.guard.check(u.Host); err != nil {
+		return err
+	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		c.guard.observe(u.Host, u.Path, resp, body)
 		return fmt.Errorf("binance status=%d url=%s", resp.StatusCode, u.String())
 	}
+	c.guard.observe(u.Host, u.Path, resp, nil)
 	return json.NewDecoder(resp.Body).Decode(out)
 }
 
@@ -204,6 +224,24 @@ func (c *Client) TopSymbolsByVolume(ctx context.Context, market string, topN int
 	if topN <= 0 {
 		topN = 1
 	}
+	ranked, err := c.rankedByVolume(ctx, market)
+	if err != nil {
+		return nil, err
+	}
+	if len(ranked) > topN {
+		ranked = ranked[:topN]
+	}
+	return append([]string(nil), ranked...), nil
+}
+
+// rankedByVolume 全部有效 USDT 交易对按 24h 成交额从大到小，缓存 rankCacheTTL。
+func (c *Client) rankedByVolume(ctx context.Context, market string) ([]string, error) {
+	c.mu.Lock()
+	if e, ok := c.rankCache[market]; ok && time.Since(e.ts) < rankCacheTTL {
+		c.mu.Unlock()
+		return e.symbols, nil
+	}
+	c.mu.Unlock()
 	pairs, err := c.GetPairs(ctx, market)
 	if err != nil {
 		return nil, err
@@ -239,13 +277,13 @@ func (c *Client) TopSymbolsByVolume(ctx context.Context, market string, topN int
 		arr = append(arr, ranked{Symbol: row.Symbol, Qv: qv})
 	}
 	sort.Slice(arr, func(i, j int) bool { return arr[i].Qv > arr[j].Qv })
-	if len(arr) > topN {
-		arr = arr[:topN]
-	}
 	out := make([]string, 0, len(arr))
 	for _, item := range arr {
 		out = append(out, item.Symbol)
 	}
+	c.mu.Lock()
+	c.rankCache[market] = rankEntry{ts: time.Now(), symbols: out}
+	c.mu.Unlock()
 	return out, nil
 }
 

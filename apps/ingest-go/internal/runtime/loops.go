@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,6 +29,7 @@ type Service struct {
 	watchdogMu         sync.Mutex
 	watchdogLastRepair map[string]int64
 	watchdogDiffCursor map[string]int
+	watchdogEmpty      map[string]map[int64]struct{} // REST 确认没有成交的分钟，不再当缺口反复补
 }
 
 func NewService(cfg *config.Config, st *store.Store, bc *binance.Client, stats *Stats, tradeAgg *ingest.TradeAggregator, obAgg *ingest.OrderbookAggregator) *Service {
@@ -41,6 +43,7 @@ func NewService(cfg *config.Config, st *store.Store, bc *binance.Client, stats *
 
 		watchdogLastRepair: make(map[string]int64),
 		watchdogDiffCursor: make(map[string]int),
+		watchdogEmpty:      make(map[string]map[int64]struct{}),
 	}
 }
 
@@ -518,7 +521,8 @@ func (s *Service) runTradeBucketWatchdogMarket(ctx context.Context, market strin
 
 	const minuteMS int64 = 60 * 1000
 	nowMS := ingest.UtcNowMS()
-	lastClosedStart := (nowMS/minuteMS)*minuteMS - minuteMS
+	// 最近 2 分钟采集端可能还没写入，不算缺口（原来每分钟都去补这两分钟，大量无效 REST 请求）
+	lastClosedStart := (nowMS/minuteMS)*minuteMS - (1+watchdogSettleMinutes)*minuteMS
 	// Keep a wider lookback to repair older gaps instead of only the latest few minutes.
 	windowMin := max(60, s.cfg.BucketWatchdogWindowMin)
 	startMS := lastClosedStart - int64(windowMin-1)*minuteMS
@@ -582,8 +586,14 @@ func (s *Service) runTradeBucketWatchdogMarket(ctx context.Context, market strin
 
 	for _, sym := range symbols {
 		byTs := bySymbol[sym]
-		issues := make([]int64, 0, windowMin)
-		issueSet := make(map[int64]struct{}, windowMin)
+		empty := s.watchdogEmptyMinutes(market, sym, startMS)
+		issues, symMissing, symAbnormal := collectWatchdogIssues(byTs, startMS, lastClosedStart, empty)
+		missing += symMissing
+		abnormal += symAbnormal
+		issueSet := make(map[int64]struct{}, len(issues))
+		for _, ts := range issues {
+			issueSet[ts] = struct{}{}
+		}
 		appendIssue := func(ts int64) {
 			if ts < startMS || ts > lastClosedStart {
 				return
@@ -593,18 +603,6 @@ func (s *Service) runTradeBucketWatchdogMarket(ctx context.Context, market strin
 			}
 			issueSet[ts] = struct{}{}
 			issues = append(issues, ts)
-		}
-		for ts := startMS; ts <= lastClosedStart; ts += minuteMS {
-			row, ok := byTs[ts]
-			if !ok {
-				missing++
-				appendIssue(ts)
-				continue
-			}
-			if badTradeBucketRow(row) {
-				abnormal++
-				appendIssue(ts)
-			}
 		}
 
 		if _, shouldCheckDiff := diffCheckSet[sym]; shouldCheckDiff {
@@ -631,7 +629,9 @@ func (s *Service) runTradeBucketWatchdogMarket(ctx context.Context, market strin
 
 		log.Printf("trade bucket watchdog repair start market=%s symbol=%s issues=%d range=[%d,%d] last_closed=%d",
 			market, sym, len(issues), issues[0], issues[len(issues)-1], lastClosedStart)
-		n, repairErr := s.repairTradeBucketsFromREST(ctx, market, sym, issues[0], issues[len(issues)-1], lastClosedStart, repairLimit)
+		sort.Slice(issues, func(i, j int) bool { return issues[i] < issues[j] })
+		n, emptyMinutes, repairErr := s.repairTradeBucketsFromREST(ctx, market, sym, issues[0], issues[len(issues)-1], lastClosedStart, repairLimit)
+		s.markWatchdogEmpty(market, sym, emptyMinutes)
 		if repairErr != nil {
 			failed++
 			log.Printf("trade bucket watchdog repair failed market=%s symbol=%s err=%v", market, sym, repairErr)
@@ -655,6 +655,62 @@ func (s *Service) runTradeBucketWatchdogMarket(ctx context.Context, market strin
 			market, len(symbols), diffChecked, missing, abnormal, mismatch, repairedSymbols, repairedBuckets, failed)
 	}
 	return nil
+}
+
+const watchdogSettleMinutes = 2
+
+// collectWatchdogIssues [startMS, endMS] 内缺失或异常的分钟；REST 已确认没有成交的分钟不算。
+func collectWatchdogIssues(byTs map[int64]store.TradeBucketHealthRow, startMS, endMS int64, empty map[int64]struct{}) (issues []int64, missing, abnormal int) {
+	const minuteMS int64 = 60 * 1000
+	for ts := startMS; ts <= endMS; ts += minuteMS {
+		if _, ok := empty[ts]; ok {
+			continue
+		}
+		row, ok := byTs[ts]
+		if !ok {
+			missing++
+			issues = append(issues, ts)
+			continue
+		}
+		if badTradeBucketRow(row) {
+			abnormal++
+			issues = append(issues, ts)
+		}
+	}
+	return issues, missing, abnormal
+}
+
+// watchdogEmptyMinutes 这个币已确认没有成交的分钟（顺便清掉窗口以前的）。
+func (s *Service) watchdogEmptyMinutes(market, symbol string, startMS int64) map[int64]struct{} {
+	key := market + ":" + symbol
+	s.watchdogMu.Lock()
+	defer s.watchdogMu.Unlock()
+	set := s.watchdogEmpty[key]
+	for ts := range set {
+		if ts < startMS {
+			delete(set, ts)
+		}
+	}
+	out := make(map[int64]struct{}, len(set))
+	for ts := range set {
+		out[ts] = struct{}{}
+	}
+	return out
+}
+
+func (s *Service) markWatchdogEmpty(market, symbol string, minutes []int64) {
+	if len(minutes) == 0 {
+		return
+	}
+	key := market + ":" + symbol
+	s.watchdogMu.Lock()
+	defer s.watchdogMu.Unlock()
+	if s.watchdogEmpty[key] == nil {
+		s.watchdogEmpty[key] = make(map[int64]struct{})
+	}
+	for _, ts := range minutes {
+		s.watchdogEmpty[key][ts] = struct{}{}
+	}
 }
 
 func (s *Service) claimWatchdogRepair(market, symbol string, nowMS, cooldownMS int64) bool {
@@ -800,15 +856,18 @@ func hasSignificantTradeBucketDiff(actual store.TradeBucketHealthRow, expectedNe
 	return false
 }
 
-func (s *Service) repairTradeBucketsFromREST(ctx context.Context, market, symbol string, issueStartMS, issueEndMS, lastClosedStart int64, limitMinutes int) (int, error) {
+// repairTradeBucketsFromREST 用 REST 1m K 线补 [issueStartMS, issueEndMS] 的成交桶；
+// 第二个返回值是 K 线确认没有成交的分钟（这些分钟本来就该是空的，之后不再当缺口）。
+func (s *Service) repairTradeBucketsFromREST(ctx context.Context, market, symbol string, issueStartMS, issueEndMS, lastClosedStart int64, limitMinutes int) (int, []int64, error) {
 	if issueStartMS > issueEndMS || issueEndMS < 0 {
-		return 0, nil
+		return 0, nil, nil
 	}
 	limit := max(10, limitMinutes)
 	klines, err := s.binance.GetKlines(ctx, market, symbol, "1m", limit)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
+	empty := emptyKlineMinutes(klines, issueStartMS, min(issueEndMS, lastClosedStart))
 
 	rows := make([]store.TradeBucketSnapshotRow, 0, len(klines))
 	for _, row := range klines {
@@ -872,9 +931,29 @@ func (s *Service) repairTradeBucketsFromREST(ctx context.Context, market, symbol
 	}
 
 	if len(rows) == 0 {
-		return 0, nil
+		return 0, empty, nil
 	}
-	return s.store.UpsertTradeBucketSnapshots(ctx, rows, s.cfg.IngestDBBatchSize)
+	n, err := s.store.UpsertTradeBucketSnapshots(ctx, rows, s.cfg.IngestDBBatchSize)
+	return n, empty, err
+}
+
+// emptyKlineMinutes [from, to] 内成交笔数或成交额为 0 的 1m K 线开盘时间。
+func emptyKlineMinutes(klines [][]interface{}, from, to int64) []int64 {
+	var out []int64
+	for _, row := range klines {
+		if len(row) < 11 {
+			continue
+		}
+		openTime, ok := toInt64(row[0])
+		if !ok || openTime < from || openTime > to {
+			continue
+		}
+		trades, _ := toInt64(row[8])
+		if trades <= 0 || !toDecimal(row[7]).GreaterThan(decimal.Zero) {
+			out = append(out, openTime)
+		}
+	}
+	return out
 }
 
 func (s *Service) refreshOI(ctx context.Context) error {
