@@ -25,7 +25,8 @@ const (
 )
 
 type Client struct {
-	http *http.Client
+	http  *http.Client
+	guard *restGuard
 
 	mu          sync.Mutex
 	pairsCache  map[string]cacheEntry[[]string]
@@ -42,6 +43,7 @@ type cacheEntry[T any] struct {
 func NewClient() *Client {
 	return &Client{
 		http:        &http.Client{Timeout: 20 * time.Second},
+		guard:       newRestGuard(),
 		pairsCache:  make(map[string]cacheEntry[[]string]),
 		statusCache: make(map[string]cacheEntry[map[string]string]),
 		oiHistCache: make(map[string]cacheEntry[[]map[string]interface{}]),
@@ -65,6 +67,9 @@ func (c *Client) getJSON(ctx context.Context, rawURL string, params map[string]s
 		httpClient = &http.Client{Timeout: timeout}
 	}
 
+	if err := c.guard.check(u.Host); err != nil {
+		return nil, err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return nil, err
@@ -78,6 +83,7 @@ func (c *Client) getJSON(ctx context.Context, rawURL string, params map[string]s
 	if err != nil {
 		return nil, err
 	}
+	c.guard.observe(u.Host, u.Path, resp, body)
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("binance: %s status %d: %s", rawURL, resp.StatusCode, string(body))
 	}

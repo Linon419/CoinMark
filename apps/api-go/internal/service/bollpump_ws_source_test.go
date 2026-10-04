@@ -254,3 +254,29 @@ func (s *warmingTrendSource) Klines(ctx context.Context, market, symbol, timefra
 func (s *warmingTrendSource) QuoteVolume24h(ctx context.Context, market, symbol string) (float64, error) {
 	return 3_000_000, nil
 }
+
+// 补拉还是拿不到新数据（例如币安限流、或这个币没有新 K 线）时，5 分钟内不再请求币安。
+func TestBollPumpLiveKlineSourceBacksOffStaleRefresh(t *testing.T) {
+	timeframe := "1m"
+	staleBars := bollPumpLiveKlineTestBarsEndingAt(timeframe, 90, time.Now().Add(-24*time.Hour).UnixMilli())
+	base := &fakeBollPumpSource{bars: map[string][]BollPumpBar{timeframe: staleBars}} // 补拉回来的也是旧数据
+	source := NewBollPumpLiveKlineSource(base, BollPumpLiveKlineSourceConfig{
+		Market: "swap", SymbolLimit: 10, Intervals: []string{timeframe}, BootstrapLimit: 120,
+	})
+	source.cache.Seed("swap", "XYZUSDT", timeframe, staleBars, 120)
+
+	for i := 0; i < 5; i++ {
+		if _, err := source.Klines(context.Background(), "swap", "XYZUSDT", timeframe, 80); err == nil {
+			t.Fatal("stale data should not be returned as fresh")
+		}
+	}
+	if len(base.requestedTFs) != 1 {
+		t.Fatalf("REST requests = %d, want 1 within backoff", len(base.requestedTFs))
+	}
+	// 别的币不受影响
+	source.cache.Seed("swap", "ABCUSDT", timeframe, staleBars, 120)
+	_, _ = source.Klines(context.Background(), "swap", "ABCUSDT", timeframe, 80)
+	if len(base.requestedTFs) != 2 {
+		t.Fatalf("REST requests = %d, want 2 (other symbol refreshed)", len(base.requestedTFs))
+	}
+}

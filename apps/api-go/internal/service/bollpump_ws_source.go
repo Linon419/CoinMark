@@ -40,7 +40,14 @@ type BollPumpLiveKlineSource struct {
 	startOnce sync.Once
 	symbolMu  sync.RWMutex
 	symbols   []string
+
+	refreshMu   sync.Mutex
+	lastRefresh map[string]time.Time // 缓存过期时 REST 补拉的时间，每个币每个周期最多 5 分钟一次
 }
+
+// bollPumpRefreshBackoff 缓存过期时 REST 补拉的最短间隔。原来没有间隔：WS 断线或聚合缺根时，
+// 每个扫描器每次读 K 线都会请求币安，几个扫描器叠加容易被限流封 IP。
+const bollPumpRefreshBackoff = 5 * time.Minute
 
 func NewBollPumpLiveKlineSource(base BollPumpSource, cfg BollPumpLiveKlineSourceConfig) *BollPumpLiveKlineSource {
 	cfg.Market = normalizeBollPumpMarket(cfg.Market)
@@ -117,7 +124,24 @@ func (s *BollPumpLiveKlineSource) Klines(ctx context.Context, market, symbol, ti
 	if bollPumpKlineCacheFresh(bars, timeframe, time.Now().UnixMilli()) {
 		return bars, nil
 	}
+	if !s.claimRefresh(bollPumpKlineCacheKey(market, symbol, timeframe)) {
+		return nil, &bollPumpKlineCacheWarmingError{Symbol: strings.ToUpper(symbol), Timeframe: timeframe, Have: len(bars), Want: minBars}
+	}
 	return s.refreshCachedKlines(ctx, market, symbol, timeframe, limit, minBars, len(bars))
+}
+
+// claimRefresh 距上次补拉不到 bollPumpRefreshBackoff 时返回 false（失败的补拉也算一次）。
+func (s *BollPumpLiveKlineSource) claimRefresh(key string) bool {
+	s.refreshMu.Lock()
+	defer s.refreshMu.Unlock()
+	if s.lastRefresh == nil {
+		s.lastRefresh = map[string]time.Time{}
+	}
+	if time.Since(s.lastRefresh[key]) < bollPumpRefreshBackoff {
+		return false
+	}
+	s.lastRefresh[key] = time.Now()
+	return true
 }
 
 func (s *BollPumpLiveKlineSource) refreshCachedKlines(ctx context.Context, market, symbol, timeframe string, limit, minBars, cachedBars int) ([]BollPumpBar, error) {
@@ -374,6 +398,8 @@ func (s *BollPumpLiveKlineSource) bootstrapLoop(ctx context.Context, stopCh <-ch
 	total := len(symbols) * len(s.cfg.Intervals)
 	done := 0
 	errors := 0
+	type job struct{ symbol, tf string }
+	var failed []job
 	for _, symbol := range symbols {
 		for _, tf := range s.cfg.Intervals {
 			if bollPumpStopped(ctx, stopCh) {
@@ -393,6 +419,7 @@ func (s *BollPumpLiveKlineSource) bootstrapLoop(ctx context.Context, stopCh <-ch
 			bars, err := s.base.Klines(ctx, s.cfg.Market, symbol, tf, s.cfg.BootstrapLimit)
 			if err != nil {
 				errors++
+				failed = append(failed, job{symbol, tf})
 				if errors <= 10 || errors%100 == 0 {
 					log.Printf("boll_pump_ws: bootstrap %s %s error=%v", symbol, tf, err)
 				}
@@ -406,6 +433,34 @@ func (s *BollPumpLiveKlineSource) bootstrapLoop(ctx context.Context, stopCh <-ch
 		}
 	}
 	log.Printf("boll_pump_ws: bootstrap complete jobs=%d errors=%d", done, errors)
+
+	// 失败的（例如预热时正好被币安限流）每 5 分钟重试一轮，最多 12 轮；WS 已经攒够的跳过。
+	for round := 1; len(failed) > 0 && round <= 12; round++ {
+		if !bollPumpSleep(ctx, stopCh, 5*time.Minute) {
+			return
+		}
+		var still []job
+		for _, j := range failed {
+			if s.cache.HasAtLeast(s.cfg.Market, j.symbol, j.tf, s.cfg.BootstrapLimit/2) {
+				continue
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-stopCh:
+				return
+			case <-ticker.C:
+			}
+			bars, err := s.base.Klines(ctx, s.cfg.Market, j.symbol, j.tf, s.cfg.BootstrapLimit)
+			if err != nil {
+				still = append(still, j)
+				continue
+			}
+			s.cache.Seed(s.cfg.Market, j.symbol, j.tf, bollPumpMarkClosedByTime(bars), s.cfg.BootstrapLimit)
+		}
+		log.Printf("boll_pump_ws: bootstrap retry round=%d retried=%d still_failed=%d", round, len(failed), len(still))
+		failed = still
+	}
 }
 
 type bollPumpWSKlineEvent struct {
