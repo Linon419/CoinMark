@@ -83,7 +83,11 @@ func (c *Client) getJSON(ctx context.Context, rawURL string, params map[string]s
 	if err != nil {
 		return nil, err
 	}
-	c.guard.observe(u.Host, u.Path, resp, body)
+	path := u.Path
+	if iv := q.Get("interval"); iv != "" {
+		path += "?interval=" + iv
+	}
+	c.guard.observe(u.Host, path, resp, body)
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("binance: %s status %d: %s", rawURL, resp.StatusCode, string(body))
 	}

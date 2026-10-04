@@ -54,3 +54,21 @@ func TestRestGuardDefaultsToOneMinute(t *testing.T) {
 		t.Fatal("expected default 1 minute pause")
 	}
 }
+
+func TestRestGuardCountsTopPathsPerMinute(t *testing.T) {
+	now := time.Unix(6000, 0)
+	g := newTestGuard(&now)
+	ok := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}}
+	for i := 0; i < 3; i++ {
+		g.observe("fapi.binance.com", "/fapi/v1/klines?interval=15m", ok, nil)
+	}
+	g.observe("fapi.binance.com", "/fapi/v1/premiumIndex", ok, nil)
+	if got := g.topCounts(1); got != "fapi.binance.com/fapi/v1/klines?interval=15m×3" {
+		t.Fatalf("top = %q", got)
+	}
+	now = now.Add(time.Minute) // 下一分钟重新计数
+	g.observe("fapi.binance.com", "/fapi/v1/premiumIndex", ok, nil)
+	if got := g.topCounts(3); got != "fapi.binance.com/fapi/v1/premiumIndex×1" {
+		t.Fatalf("top after minute = %q", got)
+	}
+}

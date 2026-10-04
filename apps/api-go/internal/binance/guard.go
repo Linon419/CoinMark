@@ -5,7 +5,9 @@ import (
 	"log"
 	"net/http"
 	"regexp"
+	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -18,6 +20,10 @@ type restGuard struct {
 	blockedUntil map[string]time.Time
 	lastWarn     map[string]time.Time
 	now          func() time.Time
+
+	// 每分钟按“接口 + K 线周期”计数，权重过半时把最多的几个一起打出来
+	minute int64
+	counts map[string]int
 }
 
 var bannedUntilRe = regexp.MustCompile(`banned until (\d{13})`)
@@ -31,7 +37,7 @@ func restWeightLimit(host string) int {
 }
 
 func newRestGuard() *restGuard {
-	return &restGuard{blockedUntil: map[string]time.Time{}, lastWarn: map[string]time.Time{}, now: time.Now}
+	return &restGuard{blockedUntil: map[string]time.Time{}, lastWarn: map[string]time.Time{}, now: time.Now, counts: map[string]int{}}
 }
 
 // check 封禁/限流期间直接返回错误，不发请求。
@@ -44,11 +50,15 @@ func (g *restGuard) check(host string) error {
 	return nil
 }
 
-// observe 记录响应：429/418 时暂停到币安给的时间；权重过半时记日志。
+// observe 记录响应：429/418 时暂停到币安给的时间；权重过半时记日志。path 可带上 K 线周期（如 /fapi/v1/klines?interval=1m）。
 func (g *restGuard) observe(host, path string, resp *http.Response, body []byte) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	now := g.now()
+	if m := now.Unix() / 60; m != g.minute {
+		g.minute, g.counts = m, map[string]int{}
+	}
+	g.counts[host+path]++
 	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusTeapot {
 		until := now.Add(time.Minute)
 		if s, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && s > 0 {
@@ -71,6 +81,24 @@ func (g *restGuard) observe(host, path string, resp *http.Response, body []byte)
 	}
 	if now.Sub(g.lastWarn[host]) >= 10*time.Second {
 		g.lastWarn[host] = now
-		log.Printf("binance: %s used weight %d/%d (last %s)", host, used, restWeightLimit(host), path)
+		log.Printf("binance: %s used weight %d/%d (this minute: %s)", host, used, restWeightLimit(host), g.topCounts(3))
 	}
+}
+
+// topCounts 本分钟请求次数最多的几个接口。
+func (g *restGuard) topCounts(n int) string {
+	type kv struct {
+		k string
+		v int
+	}
+	all := make([]kv, 0, len(g.counts))
+	for k, v := range g.counts {
+		all = append(all, kv{k, v})
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].v > all[j].v })
+	parts := make([]string, 0, n)
+	for i := 0; i < len(all) && i < n; i++ {
+		parts = append(parts, fmt.Sprintf("%s×%d", all[i].k, all[i].v))
+	}
+	return strings.Join(parts, ", ")
 }
