@@ -127,7 +127,38 @@ func (s *BollPumpLiveKlineSource) Klines(ctx context.Context, market, symbol, ti
 	if !s.claimRefresh(bollPumpKlineCacheKey(market, symbol, timeframe)) {
 		return nil, &bollPumpKlineCacheWarmingError{Symbol: strings.ToUpper(symbol), Timeframe: timeframe, Have: len(bars), Want: minBars}
 	}
+	s.debugStale(market, symbol, timeframe, bars)
 	return s.refreshCachedKlines(ctx, market, symbol, timeframe, limit, minBars, len(bars))
+}
+
+// debugStale 临时诊断：每个周期每分钟记一条缓存过期样本（缓存最后几根、1m 最新一根），查明聚合为什么没跟上。
+func (s *BollPumpLiveKlineSource) debugStale(market, symbol, timeframe string, bars []BollPumpBar) {
+	key := "debug:" + timeframe
+	minute := time.Now().Unix() / 60
+	s.refreshMu.Lock()
+	if s.lastRefresh[key].Unix()/60 == minute {
+		s.refreshMu.Unlock()
+		return
+	}
+	s.lastRefresh[key] = time.Now()
+	s.refreshMu.Unlock()
+	fmtBar := func(b BollPumpBar) string {
+		return fmt.Sprintf("%s/%s closed=%v", time.UnixMilli(b.OpenTimeMs).UTC().Format("01-02 15:04"), time.UnixMilli(b.CloseTimeMs).UTC().Format("15:04:05"), b.Closed)
+	}
+	tail := bars
+	if len(tail) > 3 {
+		tail = tail[len(tail)-3:]
+	}
+	parts := make([]string, 0, len(tail))
+	for _, b := range tail {
+		parts = append(parts, fmtBar(b))
+	}
+	m1 := s.cache.Klines(market, symbol, "1m", 2)
+	m1s := make([]string, 0, len(m1))
+	for _, b := range m1 {
+		m1s = append(m1s, fmtBar(b))
+	}
+	log.Printf("boll_pump_ws: stale debug %s %s n=%d tail=[%s] 1m=[%s] now=%s", symbol, timeframe, len(bars), strings.Join(parts, "; "), strings.Join(m1s, "; "), time.Now().UTC().Format("15:04:05"))
 }
 
 // claimRefresh 距上次补拉不到 bollPumpRefreshBackoff 时返回 false（失败的补拉也算一次）。
