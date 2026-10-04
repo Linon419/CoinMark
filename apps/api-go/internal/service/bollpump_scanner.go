@@ -29,6 +29,10 @@ type BollPumpScanner struct {
 	cfg         BollPumpConfig
 	symbolLimit int
 	oiGrowth    BollPumpOIGrowthProvider
+
+	// 运行时状态放内存，只在状态有变化时写库（只有“检查到哪根”前进不算变化）。只在 Run 的单个 goroutine 里用。
+	states map[string]BollPumpRuntimeState
+	saved  map[string]BollPumpRuntimeState
 }
 
 type BollPumpScanResult struct {
@@ -42,7 +46,8 @@ type BollPumpScanResult struct {
 
 func NewBollPumpScanner(source BollPumpSource, store *sqlite.Store, cfg BollPumpConfig) *BollPumpScanner {
 	cfg = NormalizeBollPumpConfig(cfg)
-	return &BollPumpScanner{source: source, store: store, cfg: cfg, symbolLimit: cfg.SymbolLimit}
+	return &BollPumpScanner{source: source, store: store, cfg: cfg, symbolLimit: cfg.SymbolLimit,
+		states: map[string]BollPumpRuntimeState{}, saved: map[string]BollPumpRuntimeState{}}
 }
 
 func (s *BollPumpScanner) SetOIGrowthProvider(provider BollPumpOIGrowthProvider) {
@@ -98,6 +103,7 @@ func (s *BollPumpScanner) ScanTimeframe(ctx context.Context, timeframe string) B
 		quoteVolume, _ := s.source.QuoteVolume24h(ctx, normalizeBollPumpMarket(s.cfg.Market), symbol)
 		ind := ComputeBollPumpIndicators(bars, s.cfg.BollPeriod, s.cfg.BollStdDev, s.cfg.ATRPeriod)
 		state := s.loadRuntimeState(ctx, symbol, timeframe)
+		bollPumpCapIdleReplay(&state, bars)
 		latest := bars[len(bars)-1]
 		latestInd := ind[len(ind)-1]
 		if bollPumpActiveLowerBandBreakdown(state, latest, latestInd) {
@@ -352,6 +358,7 @@ func (s *BollPumpScanner) Run(ctx context.Context, stopCh <-chan struct{}) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	lastRun := map[string]int64{}
+	var lastPerf time.Time
 	for {
 		select {
 		case <-stopCh:
@@ -379,6 +386,10 @@ func (s *BollPumpScanner) Run(ctx context.Context, stopCh <-chan struct{}) {
 				if result.Errors > 0 || result.SignalsFound > 0 {
 					log.Printf("boll_pump: tf=%s scanned=%d signals=%d errors=%d", tf, result.SymbolsScanned, result.SignalsFound, result.Errors)
 				}
+			}
+			if time.Since(lastPerf) >= 15*time.Minute {
+				lastPerf = time.Now()
+				s.logFillPerformance(ctx, lastPerf.UnixMilli())
 			}
 			if cfg.KeyK4HEnabled {
 				key := "key_k_4h"
@@ -457,23 +468,59 @@ func (s *BollPumpScanner) keyK4HKlineLimit() int {
 	return limit
 }
 
+// 空闲状态从数据库读出时，最多回放最近 30 根：空闲状态只在变化时才写库，重启后读到的“检查到哪根”可能很旧，
+// 全部回放会用很旧的 K 线重新触发观察。进行中的状态每根都要回放，不受影响。
+const bollPumpIdleReplayCandles = 30
+
+func bollPumpCapIdleReplay(state *BollPumpRuntimeState, bars []BollPumpBar) {
+	if state == nil || bollPumpStatusIsActive(state.Status) || len(bars) <= bollPumpIdleReplayCandles {
+		return
+	}
+	floor := bars[len(bars)-1-bollPumpIdleReplayCandles].OpenTimeMs
+	if state.LastCheckedCandleMs < floor {
+		state.LastCheckedCandleMs = floor
+	}
+}
+
+func bollPumpStateKey(market, symbol, timeframe string) string {
+	return normalizeBollPumpMarket(market) + "|" + strings.ToUpper(strings.TrimSpace(symbol)) + "|" + timeframe
+}
+
+// loadRuntimeState 先读内存；内存没有（启动后第一次）才读数据库。
 func (s *BollPumpScanner) loadRuntimeState(ctx context.Context, symbol, timeframe string) BollPumpRuntimeState {
-	fresh := NewBollPumpRuntimeState(s.cfg.Market, symbol, timeframe)
-	if s.store == nil {
-		return fresh
+	key := bollPumpStateKey(s.cfg.Market, symbol, timeframe)
+	if st, ok := s.states[key]; ok {
+		return st
 	}
-	st, err := GetBollPumpState(ctx, s.store, s.cfg.Market, symbol, timeframe)
-	if err != nil || st == nil {
-		return fresh
+	st := NewBollPumpRuntimeState(s.cfg.Market, symbol, timeframe)
+	if s.store != nil {
+		if row, err := GetBollPumpState(ctx, s.store, s.cfg.Market, symbol, timeframe); err == nil && row != nil {
+			st = runtimeStateFromModel(*row)
+		}
 	}
-	return runtimeStateFromModel(*st)
+	s.states[key] = st
+	s.saved[key] = st
+	return st
+}
+
+// bollPumpStateChanged 除了“检查到哪根”以外有没有变化。
+func bollPumpStateChanged(a, b BollPumpRuntimeState) bool {
+	a.LastCheckedCandleMs, b.LastCheckedCandleMs = 0, 0
+	return a != b
 }
 
 func (s *BollPumpScanner) persistState(ctx context.Context, state BollPumpRuntimeState) {
+	key := bollPumpStateKey(state.Market, state.Symbol, state.Timeframe)
+	s.states[key] = state
 	if s.store == nil {
 		return
 	}
-	_ = SaveBollPumpState(ctx, s.store, modelFromRuntimeState(state))
+	if prev, ok := s.saved[key]; ok && !bollPumpStateChanged(prev, state) {
+		return
+	}
+	if err := SaveBollPumpState(ctx, s.store, modelFromRuntimeState(state)); err == nil {
+		s.saved[key] = state
+	}
 }
 
 func (s *BollPumpScanner) persistSignal(ctx context.Context, sig model.BollPumpSignal) {
@@ -509,7 +556,11 @@ type binanceBollPumpSource struct {
 	symbolLimit int
 	quoteMu     sync.RWMutex // BOLL 扫描、布林回踩、潜力区会同时调用 Symbols
 	quoteCache  map[string]float64
+	quoteAt     time.Time // quoteCache 上次整体刷新时间
 }
+
+// bollPumpQuoteCacheTTL 24h 成交额缓存的有效期，过期后用一次全市场 ticker 请求整体刷新。
+const bollPumpQuoteCacheTTL = 10 * time.Minute
 
 func (s *binanceBollPumpSource) Symbols(ctx context.Context, market string, limit int) ([]string, error) {
 	if s == nil || s.bn == nil {
@@ -529,6 +580,7 @@ func (s *binanceBollPumpSource) Symbols(ctx context.Context, market string, limi
 	rows := make([]row, 0, len(tickers))
 	s.quoteMu.Lock()
 	defer s.quoteMu.Unlock()
+	s.quoteAt = time.Now()
 	for _, t := range tickers {
 		sym, _ := t["symbol"].(string)
 		sym = strings.ToUpper(strings.TrimSpace(sym))
@@ -583,7 +635,38 @@ func (s *binanceBollPumpSource) Klines(ctx context.Context, market, symbol, time
 	return out, nil
 }
 
+// refreshQuotes 用一次全市场 24h ticker 刷新成交额缓存（原来只在启动时取一次，之后一直是旧值）。
+// 先占住刷新时间再请求：失败时保留旧值、等下一个有效期再试，并发调用也只请求一次（这个请求权重 40）。
+func (s *binanceBollPumpSource) refreshQuotes(ctx context.Context, market string) {
+	s.quoteMu.Lock()
+	if time.Since(s.quoteAt) <= bollPumpQuoteCacheTTL {
+		s.quoteMu.Unlock()
+		return
+	}
+	s.quoteAt = time.Now()
+	s.quoteMu.Unlock()
+	tickers, err := s.bn.GetTicker24hAll(ctx, market)
+	if err != nil {
+		return
+	}
+	s.quoteMu.Lock()
+	defer s.quoteMu.Unlock()
+	for _, t := range tickers {
+		sym, _ := t["symbol"].(string)
+		sym = strings.ToUpper(strings.TrimSpace(sym))
+		if sym != "" {
+			s.quoteCache[sym] = bollPumpToFloat(t["quoteVolume"])
+		}
+	}
+}
+
 func (s *binanceBollPumpSource) QuoteVolume24h(ctx context.Context, market, symbol string) (float64, error) {
+	s.quoteMu.RLock()
+	stale := time.Since(s.quoteAt) > bollPumpQuoteCacheTTL
+	s.quoteMu.RUnlock()
+	if stale {
+		s.refreshQuotes(ctx, market)
+	}
 	s.quoteMu.RLock()
 	v, ok := s.quoteCache[strings.ToUpper(symbol)]
 	s.quoteMu.RUnlock()

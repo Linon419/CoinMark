@@ -430,6 +430,20 @@ export default function BollPumpPage() {
           <span className="cm-pill cm-bollBreakoutPill">4h突破 {resistanceBreakoutCount}</span>
           <span className="cm-pill">更新时间 {stats?.generatedAtMs ? new Date(stats.generatedAtMs).toLocaleTimeString() : "-"}</span>
         </Space>
+        <Space wrap style={{ marginTop: 6 }}>
+          <Text className="cm-muted">实盘表现（信号后 4h / 24h 上涨比例、中位收益；9 月回测随便买 4h 上涨约 49.5%）：</Text>
+          {["WATCH", "CONFIRM_1", "CONFIRM_2", "KEY_K_4H"].map((level) => {
+            const p = stats?.performanceByLevel?.[level];
+            if (!p) return null;
+            const pct = (v: number) => `${v > 0 ? "+" : ""}${(v * 100).toFixed(2)}%`;
+            return (
+              <span key={level} className="cm-pill" title={`4h 样本 ${p.count4h}，24h 样本 ${p.count24h}`}>
+                {level} 4h {(p.up4hRatio * 100).toFixed(0)}% / {pct(p.median4h)}
+                {p.count24h > 0 ? ` · 24h ${(p.up24hRatio * 100).toFixed(0)}% / ${pct(p.median24h)}` : ""}
+              </span>
+            );
+          })}
+        </Space>
       </div>
 
       <div className="cm-bollStats">

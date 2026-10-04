@@ -34,16 +34,17 @@ type BollPumpStateFilter struct {
 	Limit            int
 }
 
+// BollPumpPerformance 信号之后的表现；还没到时间（或数据不全）的为 nil，写库时不覆盖已有值。
 type BollPumpPerformance struct {
-	Perf1hMaxGain      float64
-	Perf1hMaxDrawdown  float64
-	Perf1hCloseReturn  float64
-	Perf4hMaxGain      float64
-	Perf4hMaxDrawdown  float64
-	Perf4hCloseReturn  float64
-	Perf24hMaxGain     float64
-	Perf24hMaxDrawdown float64
-	Perf24hCloseReturn float64
+	Perf1hMaxGain      *float64
+	Perf1hMaxDrawdown  *float64
+	Perf1hCloseReturn  *float64
+	Perf4hMaxGain      *float64
+	Perf4hMaxDrawdown  *float64
+	Perf4hCloseReturn  *float64
+	Perf24hMaxGain     *float64
+	Perf24hMaxDrawdown *float64
+	Perf24hCloseReturn *float64
 	UpdatedMs          int64
 }
 
@@ -310,9 +311,9 @@ func UpdateBollPumpPerformance(ctx context.Context, store *sqlite.Store, signalI
 	}
 	return store.Write(ctx, func(ctx context.Context, tx *sqlx.Tx) error {
 		_, err := tx.ExecContext(ctx, `UPDATE boll_pump_signals SET
-perf_1h_max_gain = ?, perf_1h_max_drawdown = ?, perf_1h_close_return = ?,
-perf_4h_max_gain = ?, perf_4h_max_drawdown = ?, perf_4h_close_return = ?,
-perf_24h_max_gain = ?, perf_24h_max_drawdown = ?, perf_24h_close_return = ?,
+perf_1h_max_gain = COALESCE(?, perf_1h_max_gain), perf_1h_max_drawdown = COALESCE(?, perf_1h_max_drawdown), perf_1h_close_return = COALESCE(?, perf_1h_close_return),
+perf_4h_max_gain = COALESCE(?, perf_4h_max_gain), perf_4h_max_drawdown = COALESCE(?, perf_4h_max_drawdown), perf_4h_close_return = COALESCE(?, perf_4h_close_return),
+perf_24h_max_gain = COALESCE(?, perf_24h_max_gain), perf_24h_max_drawdown = COALESCE(?, perf_24h_max_drawdown), perf_24h_close_return = COALESCE(?, perf_24h_close_return),
 performance_updated_ms = ?
 WHERE id = ?`,
 			perf.Perf1hMaxGain, perf.Perf1hMaxDrawdown, perf.Perf1hCloseReturn,
@@ -342,11 +343,16 @@ func BollPumpStats(ctx context.Context, store *sqlite.Store, market string, sinc
 	if err := store.SelectContext(ctx, &timeframes, `SELECT timeframe AS key, symbol FROM boll_pump_signals WHERE market = ? AND signal_time_ms >= ? AND symbol LIKE ?`, market, sinceMs, "%USDT"); err != nil {
 		return nil, err
 	}
+	perf, err := bollPumpPerformanceByLevel(ctx, store, market, sinceMs)
+	if err != nil {
+		return nil, err
+	}
 	return map[string]interface{}{
-		"market":            market,
-		"generatedAtMs":     time.Now().UnixMilli(),
-		"countsByLevel":     countTradableSymbolRowsMap(levels),
-		"countsByTimeframe": countTradableSymbolRowsMap(timeframes),
+		"market":             market,
+		"generatedAtMs":      time.Now().UnixMilli(),
+		"countsByLevel":      countTradableSymbolRowsMap(levels),
+		"countsByTimeframe":  countTradableSymbolRowsMap(timeframes),
+		"performanceByLevel": perf,
 	}, nil
 }
 
