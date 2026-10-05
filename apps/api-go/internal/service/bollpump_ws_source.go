@@ -127,38 +127,7 @@ func (s *BollPumpLiveKlineSource) Klines(ctx context.Context, market, symbol, ti
 	if !s.claimRefresh(bollPumpKlineCacheKey(market, symbol, timeframe)) {
 		return nil, &bollPumpKlineCacheWarmingError{Symbol: strings.ToUpper(symbol), Timeframe: timeframe, Have: len(bars), Want: minBars}
 	}
-	s.debugStale(market, symbol, timeframe, bars)
 	return s.refreshCachedKlines(ctx, market, symbol, timeframe, limit, minBars, len(bars))
-}
-
-// debugStale 临时诊断：每个周期每分钟记一条缓存过期样本（缓存最后几根、1m 最新一根），查明聚合为什么没跟上。
-func (s *BollPumpLiveKlineSource) debugStale(market, symbol, timeframe string, bars []BollPumpBar) {
-	key := "debug:" + timeframe
-	minute := time.Now().Unix() / 60
-	s.refreshMu.Lock()
-	if s.lastRefresh[key].Unix()/60 == minute {
-		s.refreshMu.Unlock()
-		return
-	}
-	s.lastRefresh[key] = time.Now()
-	s.refreshMu.Unlock()
-	fmtBar := func(b BollPumpBar) string {
-		return fmt.Sprintf("%s/%s closed=%v", time.UnixMilli(b.OpenTimeMs).UTC().Format("01-02 15:04"), time.UnixMilli(b.CloseTimeMs).UTC().Format("15:04:05"), b.Closed)
-	}
-	tail := bars
-	if len(tail) > 3 {
-		tail = tail[len(tail)-3:]
-	}
-	parts := make([]string, 0, len(tail))
-	for _, b := range tail {
-		parts = append(parts, fmtBar(b))
-	}
-	m1 := s.cache.Klines(market, symbol, "1m", 2)
-	m1s := make([]string, 0, len(m1))
-	for _, b := range m1 {
-		m1s = append(m1s, fmtBar(b))
-	}
-	log.Printf("boll_pump_ws: stale debug %s %s n=%d tail=[%s] 1m=[%s] now=%s", symbol, timeframe, len(bars), strings.Join(parts, "; "), strings.Join(m1s, "; "), time.Now().UTC().Format("15:04:05"))
 }
 
 // claimRefresh 距上次补拉不到 bollPumpRefreshBackoff 时返回 false（失败的补拉也算一次）。
@@ -358,30 +327,26 @@ func (s *BollPumpLiveKlineSource) readStream(ctx context.Context, stopCh <-chan 
 	defer close(done)
 
 	log.Printf("boll_pump_ws: connected connection=%d streams=%d", index, len(streams))
-	// 临时诊断：每分钟记一次本连接的消息数、收盘事件数、收盘事件最大延迟、单条处理最长耗时
+	// 每 10 分钟记一次本连接收到的消息数和处理掉的收盘 K 线数。收盘数为 0 说明解析出了问题
+	// （曾经因为 JSON 字段大小写冲突，所有收盘事件都被丢掉、缓存全靠 REST 补拉，导致被币安封 IP）。
 	var stMsgs, stCloses int
-	var stMaxLag, stMaxHandle time.Duration
 	stAt := time.Now()
 	for {
 		_, msg, err := conn.ReadMessage()
 		if err != nil {
 			return err
 		}
-		t0 := time.Now()
-		closeMs := s.handleWSMessage(msg)
-		if d := time.Since(t0); d > stMaxHandle {
-			stMaxHandle = d
-		}
 		stMsgs++
-		if closeMs > 0 {
+		if s.handleWSMessage(msg) > 0 {
 			stCloses++
-			if lag := t0.Sub(time.UnixMilli(closeMs)); lag > stMaxLag {
-				stMaxLag = lag
-			}
 		}
-		if time.Since(stAt) >= time.Minute {
-			log.Printf("boll_pump_ws: stats connection=%d msgs=%d closes=%d max_close_lag=%s max_handle=%s", index, stMsgs, stCloses, stMaxLag.Round(time.Millisecond), stMaxHandle.Round(time.Microsecond))
-			stMsgs, stCloses, stMaxLag, stMaxHandle, stAt = 0, 0, 0, 0, time.Now()
+		if time.Since(stAt) >= 10*time.Minute {
+			if stCloses == 0 && stMsgs > 0 {
+				log.Printf("boll_pump_ws: WARNING connection=%d received %d messages but no closed klines in 10m", index, stMsgs)
+			} else {
+				log.Printf("boll_pump_ws: connection=%d msgs=%d closed_klines=%d (10m)", index, stMsgs, stCloses)
+			}
+			stMsgs, stCloses, stAt = 0, 0, time.Now()
 		}
 	}
 }
@@ -532,6 +497,10 @@ type bollPumpWSKlineEvent struct {
 		QuoteVolume   string `json:"q"`
 		TakerBuyQuote string `json:"Q"`
 		Closed        bool   `json:"x"`
+		// encoding/json 匹配字段不区分大小写：币安推送里的 "L"（末笔成交 ID，数字）会落到 Low（"l"）上导致整条解析失败，
+		// "V" 会覆盖 Volume（"v"）。显式声明这些字段，让它们各归各位。
+		LastTradeID    int64  `json:"L"`
+		TakerBuyVolume string `json:"V"`
 	} `json:"k"`
 }
 

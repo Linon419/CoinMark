@@ -280,3 +280,19 @@ func TestBollPumpLiveKlineSourceBacksOffStaleRefresh(t *testing.T) {
 		t.Fatalf("REST requests = %d, want 2 (other symbol refreshed)", len(base.requestedTFs))
 	}
 }
+
+// 币安真实的 kline 推送带 "f"/"L"（首末成交 ID，数字）和 "V"/"B"。encoding/json 的字段匹配不区分大小写，
+// "L" 会落到 Low（"l"，字符串）上导致整条解析报错、收盘事件被丢掉；"V" 会覆盖 Volume（"v"）。
+func TestBollPumpLiveKlineSourceParsesRealBinanceKlinePayload(t *testing.T) {
+	source := NewBollPumpLiveKlineSource(&fakeBollPumpSource{}, BollPumpLiveKlineSourceConfig{
+		Market: "swap", SymbolLimit: 10, Intervals: []string{"1m"}, BootstrapLimit: 120,
+	})
+	msg := `{"stream":"btcusdt@kline_1m","data":{"e":"kline","E":1790935260012,"s":"BTCUSDT","k":{"t":1790935200000,"T":1790935259999,"s":"BTCUSDT","i":"1m","f":7130470413,"L":7130471247,"o":"122650.10","c":"122688.00","h":"122700.00","l":"122640.00","v":"85.123","n":835,"x":true,"q":"10441234.56","V":"40.111","Q":"4920000.12","B":"0"}}}`
+	if closeMs := source.handleWSMessage([]byte(msg)); closeMs != 1790935259999 {
+		t.Fatalf("closeMs = %d, want closed kline processed", closeMs)
+	}
+	got := source.cache.Klines("swap", "BTCUSDT", "1m", 1)
+	if len(got) != 1 || got[0].Low != 122640 || got[0].Volume != 85.123 || got[0].TakerBuyQuote != 4920000.12 {
+		t.Fatalf("bar = %+v", got)
+	}
+}
