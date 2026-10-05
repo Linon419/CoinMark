@@ -358,16 +358,36 @@ func (s *BollPumpLiveKlineSource) readStream(ctx context.Context, stopCh <-chan 
 	defer close(done)
 
 	log.Printf("boll_pump_ws: connected connection=%d streams=%d", index, len(streams))
+	// 临时诊断：每分钟记一次本连接的消息数、收盘事件数、收盘事件最大延迟、单条处理最长耗时
+	var stMsgs, stCloses int
+	var stMaxLag, stMaxHandle time.Duration
+	stAt := time.Now()
 	for {
 		_, msg, err := conn.ReadMessage()
 		if err != nil {
 			return err
 		}
-		s.handleWSMessage(msg)
+		t0 := time.Now()
+		closeMs := s.handleWSMessage(msg)
+		if d := time.Since(t0); d > stMaxHandle {
+			stMaxHandle = d
+		}
+		stMsgs++
+		if closeMs > 0 {
+			stCloses++
+			if lag := t0.Sub(time.UnixMilli(closeMs)); lag > stMaxLag {
+				stMaxLag = lag
+			}
+		}
+		if time.Since(stAt) >= time.Minute {
+			log.Printf("boll_pump_ws: stats connection=%d msgs=%d closes=%d max_close_lag=%s max_handle=%s", index, stMsgs, stCloses, stMaxLag.Round(time.Millisecond), stMaxHandle.Round(time.Microsecond))
+			stMsgs, stCloses, stMaxLag, stMaxHandle, stAt = 0, 0, 0, 0, time.Now()
+		}
 	}
 }
 
-func (s *BollPumpLiveKlineSource) handleWSMessage(msg []byte) {
+// handleWSMessage 处理一条 WS 消息；是收盘 K 线时返回它的收盘时间（毫秒），否则返回 0。
+func (s *BollPumpLiveKlineSource) handleWSMessage(msg []byte) int64 {
 	var combined struct {
 		Data json.RawMessage `json:"data"`
 	}
@@ -376,16 +396,17 @@ func (s *BollPumpLiveKlineSource) handleWSMessage(msg []byte) {
 	}
 	var ev bollPumpWSKlineEvent
 	if err := json.Unmarshal(msg, &ev); err != nil || ev.EventType != "kline" || !ev.Kline.Closed {
-		return
+		return 0
 	}
 	bar, ok := bollPumpBarFromWSKline(ev)
 	if !ok {
-		return
+		return 0
 	}
 	s.cache.Upsert(s.cfg.Market, ev.Symbol, ev.Kline.Interval, bar, s.cfg.BootstrapLimit)
 	if ev.Kline.Interval == "1m" {
 		s.aggregateFromOneMinute(ev.Symbol, bar)
 	}
+	return bar.CloseTimeMs
 }
 
 func (s *BollPumpLiveKlineSource) aggregateFromOneMinute(symbol string, bar BollPumpBar) {
