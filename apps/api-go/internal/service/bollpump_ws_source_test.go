@@ -296,3 +296,18 @@ func TestBollPumpLiveKlineSourceParsesRealBinanceKlinePayload(t *testing.T) {
 		t.Fatalf("bar = %+v", got)
 	}
 }
+
+func TestBollPumpLiveKlineSourceCacheLimitPerInterval(t *testing.T) {
+	source := NewBollPumpLiveKlineSource(&fakeBollPumpSource{}, BollPumpLiveKlineSourceConfig{
+		Market: "swap", SymbolLimit: 10, Intervals: []string{"1m", "3m", "5m", "15m", "4h"}, BootstrapLimit: 499,
+	})
+	for tf, want := range map[string]int{"1m": 260, "3m": 260, "5m": 499, "15m": 499, "4h": 499} {
+		if got := source.cacheLimit(tf); got != want {
+			t.Fatalf("%s limit = %d, want %d", tf, got, want)
+		}
+	}
+	// 1m 缓存要够聚合一根 4h（240 根 + 余量）
+	if bollPumpShortIntervalLimit < 4*60+4 {
+		t.Fatal("1m cache too short to aggregate 4h")
+	}
+}

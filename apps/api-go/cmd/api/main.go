@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"os/signal"
 	"syscall"
@@ -33,6 +34,10 @@ func main() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+
+	if cfg.PprofAddr != "" {
+		go servePprof(cfg.PprofAddr)
+	}
 
 	// SQLite
 	sqliteStore, err := sqlite.Open(cfg.DatabaseURL)
@@ -142,5 +147,18 @@ func runMarketState(ctx context.Context, cfg *config.Config, ch *chrepo.Client, 
 			return
 		case <-time.After(30 * time.Second):
 		}
+	}
+}
+
+// servePprof 单独端口提供 /debug/pprof（不挂在对外的 API 路由上），用于查内存占用。
+func servePprof(addr string) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	log.Printf("pprof: listening on %s", addr)
+	if err := http.ListenAndServe(addr, mux); err != nil {
+		log.Printf("pprof: %v", err)
 	}
 }

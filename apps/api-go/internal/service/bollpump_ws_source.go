@@ -130,6 +130,18 @@ func (s *BollPumpLiveKlineSource) Klines(ctx context.Context, market, symbol, ti
 	return s.refreshCachedKlines(ctx, market, symbol, timeframe, limit, minBars, len(bars))
 }
 
+// 1m、3m 不需要 499 根：BOLL 泵盘扫描取 200 根，1m 聚合 4h 需要 244 根，留 260 根。
+// 5m 保留 499 根（补 24h 信号表现要 40 小时的 5m），15m 以上保留 499 根（EMA200）。
+const bollPumpShortIntervalLimit = 260
+
+// cacheLimit 每个周期缓存保留的根数。
+func (s *BollPumpLiveKlineSource) cacheLimit(timeframe string) int {
+	if (timeframe == "1m" || timeframe == "3m") && s.cfg.BootstrapLimit > bollPumpShortIntervalLimit {
+		return bollPumpShortIntervalLimit
+	}
+	return s.cfg.BootstrapLimit
+}
+
 // claimRefresh 距上次补拉不到 bollPumpRefreshBackoff 时返回 false（失败的补拉也算一次）。
 func (s *BollPumpLiveKlineSource) claimRefresh(key string) bool {
 	s.refreshMu.Lock()
@@ -158,7 +170,7 @@ func (s *BollPumpLiveKlineSource) refreshCachedKlines(ctx context.Context, marke
 		fetchLimit = minBars
 	}
 	if fetchLimit <= 0 {
-		fetchLimit = s.cfg.BootstrapLimit
+		fetchLimit = s.cacheLimit(timeframe)
 	}
 	freshBars, err := s.base.Klines(ctx, market, symbol, timeframe, fetchLimit)
 	if err != nil {
@@ -169,7 +181,7 @@ func (s *BollPumpLiveKlineSource) refreshCachedKlines(ctx context.Context, marke
 			Want:      minBars,
 		}
 	}
-	cacheLimit := s.cfg.BootstrapLimit
+	cacheLimit := s.cacheLimit(timeframe)
 	if cacheLimit < fetchLimit {
 		cacheLimit = fetchLimit
 	}
@@ -367,7 +379,7 @@ func (s *BollPumpLiveKlineSource) handleWSMessage(msg []byte) int64 {
 	if !ok {
 		return 0
 	}
-	s.cache.Upsert(s.cfg.Market, ev.Symbol, ev.Kline.Interval, bar, s.cfg.BootstrapLimit)
+	s.cache.Upsert(s.cfg.Market, ev.Symbol, ev.Kline.Interval, bar, s.cacheLimit(ev.Kline.Interval))
 	if ev.Kline.Interval == "1m" {
 		s.aggregateFromOneMinute(ev.Symbol, bar)
 	}
@@ -396,7 +408,7 @@ func (s *BollPumpLiveKlineSource) aggregateFromOneMinute(symbol string, bar Boll
 		if !ok {
 			continue
 		}
-		s.cache.Upsert(s.cfg.Market, symbol, tf, agg, s.cfg.BootstrapLimit)
+		s.cache.Upsert(s.cfg.Market, symbol, tf, agg, s.cacheLimit(tf))
 	}
 }
 
@@ -422,7 +434,7 @@ func (s *BollPumpLiveKlineSource) bootstrapLoop(ctx context.Context, stopCh <-ch
 			if bollPumpStopped(ctx, stopCh) {
 				return
 			}
-			if s.cache.HasAtLeast(s.cfg.Market, symbol, tf, s.cfg.BootstrapLimit/2) {
+			if s.cache.HasAtLeast(s.cfg.Market, symbol, tf, s.cacheLimit(tf)/2) {
 				done++
 				continue
 			}
@@ -433,7 +445,7 @@ func (s *BollPumpLiveKlineSource) bootstrapLoop(ctx context.Context, stopCh <-ch
 				return
 			case <-ticker.C:
 			}
-			bars, err := s.base.Klines(ctx, s.cfg.Market, symbol, tf, s.cfg.BootstrapLimit)
+			bars, err := s.base.Klines(ctx, s.cfg.Market, symbol, tf, s.cacheLimit(tf))
 			if err != nil {
 				errors++
 				failed = append(failed, job{symbol, tf})
@@ -442,7 +454,7 @@ func (s *BollPumpLiveKlineSource) bootstrapLoop(ctx context.Context, stopCh <-ch
 				}
 				continue
 			}
-			s.cache.Seed(s.cfg.Market, symbol, tf, bollPumpMarkClosedByTime(bars), s.cfg.BootstrapLimit)
+			s.cache.Seed(s.cfg.Market, symbol, tf, bollPumpMarkClosedByTime(bars), s.cacheLimit(tf))
 			done++
 			if done%250 == 0 || done == total {
 				log.Printf("boll_pump_ws: bootstrap progress=%d/%d errors=%d", done, total, errors)
@@ -458,7 +470,7 @@ func (s *BollPumpLiveKlineSource) bootstrapLoop(ctx context.Context, stopCh <-ch
 		}
 		var still []job
 		for _, j := range failed {
-			if s.cache.HasAtLeast(s.cfg.Market, j.symbol, j.tf, s.cfg.BootstrapLimit/2) {
+			if s.cache.HasAtLeast(s.cfg.Market, j.symbol, j.tf, s.cacheLimit(j.tf)/2) {
 				continue
 			}
 			select {
@@ -468,12 +480,12 @@ func (s *BollPumpLiveKlineSource) bootstrapLoop(ctx context.Context, stopCh <-ch
 				return
 			case <-ticker.C:
 			}
-			bars, err := s.base.Klines(ctx, s.cfg.Market, j.symbol, j.tf, s.cfg.BootstrapLimit)
+			bars, err := s.base.Klines(ctx, s.cfg.Market, j.symbol, j.tf, s.cacheLimit(j.tf))
 			if err != nil {
 				still = append(still, j)
 				continue
 			}
-			s.cache.Seed(s.cfg.Market, j.symbol, j.tf, bollPumpMarkClosedByTime(bars), s.cfg.BootstrapLimit)
+			s.cache.Seed(s.cfg.Market, j.symbol, j.tf, bollPumpMarkClosedByTime(bars), s.cacheLimit(j.tf))
 		}
 		log.Printf("boll_pump_ws: bootstrap retry round=%d retried=%d still_failed=%d", round, len(failed), len(still))
 		failed = still

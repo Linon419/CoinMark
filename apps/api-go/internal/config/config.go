@@ -38,6 +38,7 @@ type Config struct {
 
 	// 内存市场状态（消费 NATS 原始成交）
 	MarketStateEnabled     bool
+	PprofAddr              string // 内存/CPU 分析接口地址，例如 :6060；空 = 不开启。不要映射到宿主机端口
 	MarketStateNATSURL     string
 	MarketStateNATSStream  string
 	MarketStateNATSSubject string
@@ -195,6 +196,7 @@ func Load() (*Config, error) {
 		HubClimaxScanIntervalSec:    getenvInt("HUB_CLIMAX_SCAN_INTERVAL_SEC", 60),
 
 		MarketStateEnabled:     getenvBool("MARKET_STATE_ENABLED", false),
+		PprofAddr:              getenv("PPROF_ADDR", ""),
 		MarketStateNATSURL:     getenv("MARKET_STATE_NATS_URL", "nats://nats:4222"),
 		MarketStateNATSStream:  getenv("MARKET_STATE_NATS_STREAM", "COINMARK_RAW"),
 		MarketStateNATSSubject: getenv("MARKET_STATE_NATS_SUBJECT", "coinmark.raw.trade"),
