@@ -91,17 +91,10 @@ func (rt *Runtime) Start(ctx context.Context) {
 		if rt.cfg.ClimaxScanEnabled {
 			go rt.climaxLoop(ctx)
 		}
-		archAlerts := rt.cfg.ArchAlertsEnabled && rt.marketState != nil
-		if archAlerts {
-			// CoinArch 格式的市场异动替代旧的市场异动扫描
-			go service.NewArchAlertEngine(rt.marketState, rt.ch, rt.store).Run(ctx, rt.stopCh)
-		} else if rt.cfg.ArchAlertsEnabled {
-			log.Println("hub: ARCH_ALERTS_ENABLED 需要同时开启 MARKET_STATE_ENABLED，仍使用旧的市场异动扫描")
-		}
-		if rt.cfg.MarketYidongMinuteEnabled && !archAlerts {
+		if rt.cfg.MarketYidongMinuteEnabled {
 			go rt.marketYidongMinuteLoop(ctx)
 		}
-		if rt.cfg.MarketYidongVolumeEnabled && !archAlerts {
+		if rt.cfg.MarketYidongVolumeEnabled {
 			go rt.marketYidongVolumeLoop(ctx)
 		}
 		if rt.cfg.AbsorptionScanEnabled && rt.bn != nil {

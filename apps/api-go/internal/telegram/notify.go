@@ -78,16 +78,9 @@ func (n *AnomalyNotifier) RunLoop(ctx context.Context, sendFn func(text string) 
 				(len(batch) > 0 && time.Since(lastFlush) >= time.Duration(n.batchWindowSec)*time.Second)
 
 			if shouldFlush && len(batch) > 0 {
-				arch, others := splitArchEvents(batch)
-				pullbacks, others := splitPullbackEvents(others)
+				pullbacks, others := splitPullbackEvents(batch)
 				for _, e := range pullbacks {
 					if err := sendFn(e.Title); err != nil {
-						log.Printf("tg notify: send error: %v", err)
-					}
-				}
-				step := max(1, n.batchMaxItems)
-				for i := 0; i < len(arch); i += step {
-					if err := sendFn(formatArchBatch(arch[i:min(i+step, len(arch))], time.Now())); err != nil {
 						log.Printf("tg notify: send error: %v", err)
 					}
 				}
@@ -122,8 +115,8 @@ func (n *AnomalyNotifier) poll(ctx context.Context) []model.AnomalyEvent {
 		if binance.IsExcludedSymbol(r.Symbol) {
 			continue
 		}
-		if isArchEvent(r.EventType) || isPullbackEvent(r.EventType) {
-			filtered = append(filtered, r) // CoinArch 格式、回踩类按原文直推，不参与评分过滤
+		if isPullbackEvent(r.EventType) {
+			filtered = append(filtered, r) // 回踩类按原文直推，不参与评分过滤
 			continue
 		}
 		var details map[string]interface{}
@@ -200,21 +193,6 @@ func (n *AnomalyNotifier) persistLastID(ctx context.Context) {
 	_ = n.redis.Set(ctx, key, strconv.FormatInt(n.lastID, 10), 0)
 }
 
-func isArchEvent(eventType string) bool {
-	return strings.HasPrefix(eventType, "arch_")
-}
-
-func splitArchEvents(events []model.AnomalyEvent) (arch, others []model.AnomalyEvent) {
-	for _, e := range events {
-		if isArchEvent(e.EventType) {
-			arch = append(arch, e)
-		} else {
-			others = append(others, e)
-		}
-	}
-	return arch, others
-}
-
 func isPullbackEvent(eventType string) bool {
 	return eventType == service.BollSqueezeEventType || eventType == service.EMAPullbackEventType
 }
@@ -229,17 +207,6 @@ func splitPullbackEvents(events []model.AnomalyEvent) (pullbacks, others []model
 		}
 	}
 	return pullbacks, others
-}
-
-// formatArchBatch CoinArch 频道样式：按发生顺序逐条原文，末尾附时间。
-func formatArchBatch(events []model.AnomalyEvent, now time.Time) string {
-	sorted := append([]model.AnomalyEvent(nil), events...)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].ID < sorted[j].ID })
-	lines := make([]string, 0, len(sorted))
-	for _, e := range sorted {
-		lines = append(lines, e.Title)
-	}
-	return strings.Join(lines, "\n") + "\n\n" + now.UTC().Format("2006-01-02 15:04:05") + " UTC"
 }
 
 func (n *AnomalyNotifier) buildChunks(events []model.AnomalyEvent) [][]model.AnomalyEvent {
