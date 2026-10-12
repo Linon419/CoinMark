@@ -192,8 +192,9 @@ func TestYidongMinuteMapPrefersReadyMarketState(t *testing.T) {
 func TestYidongDailyCacheFetchesInChunks(t *testing.T) {
 	c := newYidongDailyCache()
 	var calls []fetchCall
-	syms := make([]string, 0, 95)
-	for i := 0; i < 95; i++ {
+	n := 2*yidongDailyFetchChunk + 15
+	syms := make([]string, 0, n)
+	for i := 0; i < n; i++ {
 		syms = append(syms, fmt.Sprintf("S%dUSDT", i))
 	}
 	got, err := c.get(context.Background(), "swap", syms, testDayStart, testDayStart+10*yidongMinuteMs, fakeDailyFetch(&calls))
@@ -201,10 +202,10 @@ func TestYidongDailyCacheFetchesInChunks(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 一次性查几百个币 × 29 天会撑爆 ClickHouse 内存，须分批
-	if len(calls) != 3 || len(calls[0].symbols) != yidongDailyFetchChunk || len(calls[2].symbols) != 95-2*yidongDailyFetchChunk {
+	if len(calls) != 3 || len(calls[0].symbols) != yidongDailyFetchChunk || len(calls[2].symbols) != 15 {
 		t.Fatalf("应按 %d 个一批分 3 批: %d 批", yidongDailyFetchChunk, len(calls))
 	}
-	if len(got) != 95 || len(got["S94USDT"]) != yidongDailyLookbackDays {
+	if len(got) != n || len(got[fmt.Sprintf("S%dUSDT", n-1)]) != yidongDailyLookbackDays {
 		t.Fatalf("分批后结果应完整: %d", len(got))
 	}
 }

@@ -37,8 +37,9 @@ const (
 	yidongDailyLookbackDays = 29
 	// 收盘不足 5 分钟的日线可能还有分钟桶没写完/在修复，下一轮重新拉取
 	yidongDailyFinalDelayMs = 5 * yidongMinuteMs
-	// 每次最多查这么多币：日线由 1m 现场聚合，几百个币 × 29 天一次查会超出 ClickHouse 内存上限
-	yidongDailyFetchChunk = 40
+	// 每次最多查这么多币：日线由 1m 现场聚合，几百个币 × 29 天一次查会超出 ClickHouse 内存上限。
+	// 40 个一批约 1.1GB，api 重启时和其他启动查询叠加仍会超限，改为 20
+	yidongDailyFetchChunk = 20
 )
 
 type yidongDailyFetch func(ctx context.Context, market string, symbols []string, startMs, endMs int64) ([]model.CHTradeRow, error)
