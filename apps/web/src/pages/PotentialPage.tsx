@@ -105,6 +105,7 @@ export default function PotentialPage() {
   }, []);
 
   const itemColumns = [
+    { title: "#", fixed: "left" as const, width: 56, render: (_: any, _r: Item, i: number) => <span className="cm-number--mono">{i + 1}</span> },
     {
       title: "币",
       fixed: "left" as const,
@@ -120,13 +121,13 @@ export default function PotentialPage() {
         </span>
       ),
     },
-    { title: "价格", render: (_: any, r: Item) => <span style={{ fontVariantNumeric: "tabular-nums" }}>{r.price}</span> },
+    { title: "价格", sorter: (a: Item, b: Item) => a.price - b.price, render: (_: any, r: Item) => <span style={{ fontVariantNumeric: "tabular-nums" }}>{r.price}</span> },
     { title: "3 天积累", sorter: (a: Item, b: Item) => a.acc_3d - b.acc_3d, render: (_: any, r: Item) => <span style={{ color: tone(r.acc_3d) }}>{fmtUsdCn(r.acc_3d)}</span> },
-    { title: "离 30 天低点", render: (_: any, r: Item) => (r.rise_from_low30 ? pct(r.rise_from_low30) : "—") },
+    { title: "离 30 天低点", sorter: (a: Item, b: Item) => a.rise_from_low30 - b.rise_from_low30, render: (_: any, r: Item) => (r.rise_from_low30 ? pct(r.rise_from_low30) : "—") },
     { title: "4h 涨幅", sorter: (a: Item, b: Item) => a.ret_4h - b.ret_4h, render: (_: any, r: Item) => <Pct v={r.ret_4h} /> },
-    { title: "24h 成交额", render: (_: any, r: Item) => fmtUsdCn(r.vol_24h, false) },
-    { title: "持仓", render: (_: any, r: Item) => fmtUsdCn(r.oi_usd, false) },
-    { title: "市值", render: (_: any, r: Item) => (r.market_cap ? fmtUsdCn(r.market_cap, false) : "—") },
+    { title: "24h 成交额", sorter: (a: Item, b: Item) => a.vol_24h - b.vol_24h, render: (_: any, r: Item) => fmtUsdCn(r.vol_24h, false) },
+    { title: "持仓", sorter: (a: Item, b: Item) => a.oi_usd - b.oi_usd, render: (_: any, r: Item) => fmtUsdCn(r.oi_usd, false) },
+    { title: "市值", sorter: (a: Item, b: Item) => a.market_cap - b.market_cap, render: (_: any, r: Item) => (r.market_cap ? fmtUsdCn(r.market_cap, false) : "—") },
   ];
 
   const historyColumns = [
@@ -153,9 +154,9 @@ export default function PotentialPage() {
 
   // 别追名单多一列“拉升前积累”（截到 4 小时前的 3 天积累）
   const avoidColumns = [
-    ...itemColumns.slice(0, 3),
-    { title: "拉升前积累", render: (_: any, r: Item) => <span style={{ color: tone(r.acc_3d_pre4h) }}>{fmtUsdCn(r.acc_3d_pre4h)}</span> },
-    ...itemColumns.slice(3),
+    ...itemColumns.slice(0, 4),
+    { title: "拉升前积累", sorter: (a: Item, b: Item) => a.acc_3d_pre4h - b.acc_3d_pre4h, render: (_: any, r: Item) => <span style={{ color: tone(r.acc_3d_pre4h) }}>{fmtUsdCn(r.acc_3d_pre4h)}</span> },
+    ...itemColumns.slice(4),
   ];
   const statOf = (list: string) => stats.find((s) => s.list === list);
   const table = (data: Item[], columns = itemColumns) => <Table rowKey="symbol" loading={loading} columns={columns} data={data} pagination={false} scroll={{ x: true }} border={false} />;
