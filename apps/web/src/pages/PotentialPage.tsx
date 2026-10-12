@@ -12,7 +12,6 @@ type Item = {
   decision_ms: number;
   price: number;
   acc_3d: number;
-  acc_3d_pre4h: number;
   rise_from_low30: number;
   ret_4h: number;
   vol_24h: number;
@@ -22,7 +21,7 @@ type Item = {
 };
 type Pick = {
   id: number;
-  list: "watch" | "avoid";
+  list: "watch" | "pump" | "avoid"; // avoid：已取消的别追名单，只剩历史记录
   symbol: string;
   entered_ms: number;
   entry_price: number;
@@ -32,7 +31,7 @@ type Pick = {
   first_touch_5: number | null;
 };
 type Stats = {
-  list: "watch" | "avoid";
+  list: "watch" | "pump";
   done: number;
   up_4h_ratio: number;
   median_24h: number;
@@ -52,11 +51,15 @@ function Pct({ v }: { v: number | null | undefined }) {
   return <span style={{ color: tone(v), fontVariantNumeric: "tabular-nums" }}>{pct(v)}</span>;
 }
 
-function StatsLine({ s, backtest }: { s?: Stats; backtest: string }) {
+function StatsLine({ s, backtest }: { s?: Stats; backtest?: string }) {
   return (
     <Text className="cm-muted" style={{ display: "block", marginBottom: 8 }}>
-      回测（2026 年 7~9 月）：{backtest}
-      <br />
+      {backtest && (
+        <>
+          回测（2026 年 7~9 月）：{backtest}
+          <br />
+        </>
+      )}
       实盘：
       {!s || s.done === 0
         ? "还没有满 24 小时的记录"
@@ -65,10 +68,10 @@ function StatsLine({ s, backtest }: { s?: Stats; backtest: string }) {
   );
 }
 
-// PotentialPage 潜力区：观察名单（低位高积累）与别追名单（没积累的暴涨），附上榜记录的实盘表现。
+// PotentialPage 潜力区：观察名单（低位高积累）与短时暴涨（4 小时涨 ≥ 10%），附上榜记录的实盘表现。
 export default function PotentialPage() {
   const [watch, setWatch] = useState<Item[]>([]);
-  const [avoid, setAvoid] = useState<Item[]>([]);
+  const [pump, setPump] = useState<Item[]>([]);
   const [history, setHistory] = useState<Pick[]>([]);
   const [stats, setStats] = useState<Stats[]>([]);
   const [updatedMs, setUpdatedMs] = useState(0);
@@ -84,7 +87,7 @@ export default function PotentialPage() {
         const d = await r.json();
         if (alive) {
           setWatch(d.watch || []);
-          setAvoid(d.avoid || []);
+          setPump(d.pump || []);
           setHistory(d.history || []);
           setStats(d.stats || []);
           setUpdatedMs(d.updated_ms || 0);
@@ -132,7 +135,7 @@ export default function PotentialPage() {
 
   const historyColumns = [
     { title: "上榜时间", render: (_: any, r: Pick) => <span style={{ whiteSpace: "nowrap" }}>{fmtTime(r.entered_ms)}</span> },
-    { title: "名单", render: (_: any, r: Pick) => (r.list === "watch" ? <Tag color="green">观察</Tag> : <Tag color="red">别追</Tag>) },
+    { title: "名单", render: (_: any, r: Pick) => (r.list === "watch" ? <Tag color="green">观察</Tag> : r.list === "pump" ? <Tag color="orange">暴涨</Tag> : <Tag color="red">别追</Tag>) },
     {
       title: "币",
       render: (_: any, r: Pick) => (
@@ -152,14 +155,8 @@ export default function PotentialPage() {
     },
   ];
 
-  // 别追名单多一列“拉升前积累”（截到 4 小时前的 3 天积累）
-  const avoidColumns = [
-    ...itemColumns.slice(0, 4),
-    { title: "拉升前积累", sorter: (a: Item, b: Item) => a.acc_3d_pre4h - b.acc_3d_pre4h, render: (_: any, r: Item) => <span style={{ color: tone(r.acc_3d_pre4h) }}>{fmtUsdCn(r.acc_3d_pre4h)}</span> },
-    ...itemColumns.slice(4),
-  ];
   const statOf = (list: string) => stats.find((s) => s.list === list);
-  const table = (data: Item[], columns = itemColumns) => <Table rowKey="symbol" loading={loading} columns={columns} data={data} pagination={false} scroll={{ x: true }} border={false} />;
+  const table = (data: Item[]) => <Table rowKey="symbol" loading={loading} columns={itemColumns} data={data} pagination={false} scroll={{ x: true }} border={false} />;
 
   return (
     <>
@@ -183,14 +180,14 @@ export default function PotentialPage() {
       <div className="cm-section">
         <div className="cm-sectionHeader">
           <Title heading={6} style={{ margin: 0 }}>
-            别追名单（没积累的暴涨）
+            短时暴涨（4 小时涨 ≥ 10%）
           </Title>
         </div>
         <Text className="cm-muted" style={{ display: "block", marginBottom: 4 }}>
-          条件：同样的小币范围；4 小时涨幅 ≥ 10%，并且没有积累——现在的 3 天净流入 &lt; 50 万，或拉升前（截到 4 小时前）的 3 天净流入 &lt; 50 万，满足一个就算（拉升当下才放量进钱的也算）。
+          条件：同样的小币范围；4 小时涨幅 ≥ 10%，有没有积累都算。用已收盘的 1 小时 K 线判断，每 5 分钟扫一次，按 4h 涨幅从高到低排。
         </Text>
-        <StatsLine s={statOf("avoid")} backtest="4h 后 58% 下跌，24h 后中位跌 4.8%（1452 次、363 个币，前后两段一致）；其中拉升当下才放量进钱的 173 次，24h 后中位跌 5.7%。偶尔会被继续暴拉，不建议直接做空。" />
-        {table(avoid, avoidColumns)}
+        <StatsLine s={statOf("pump")} />
+        {table(pump)}
       </div>
 
       <div className="cm-section">

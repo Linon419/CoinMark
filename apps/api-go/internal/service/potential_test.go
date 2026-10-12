@@ -38,10 +38,6 @@ func TestPotentialHourlyMetricsAccumulatesThreeDaysOfNetInflow(t *testing.T) {
 	if it.Acc3d != 71*200+1000 {
 		t.Fatalf("acc3d = %v", it.Acc3d)
 	}
-	// 拉升前（截到 4 根前）：第 24~95 根，其中 28~95 每根 200、第 90 根 1000
-	if it.Acc3dPre4h != 67*200+1000 {
-		t.Fatalf("acc3d pre4h = %v", it.Acc3dPre4h)
-	}
 	if it.Vol24 != 24000 {
 		t.Fatalf("vol24 = %v", it.Vol24)
 	}
@@ -104,21 +100,20 @@ func TestPotentialEMACrossRecent(t *testing.T) {
 	}
 }
 
-func TestPotentialIsAvoid(t *testing.T) {
+func TestPotentialIsPump(t *testing.T) {
 	cases := []struct {
 		name string
 		it   PotentialItem
 		want bool
 	}{
-		{"没积累的暴涨", PotentialItem{Ret4h: 0.12, Acc3d: -3e5, Acc3dPre4h: -3e5}, true},
-		// SAND 2026-10-02：拉升前 3 天净流出，拉升这一小时放量进了 125 万
-		{"拉升前没积累、拉升当下进钱", PotentialItem{Ret4h: 0.27, Acc3d: 9e5, Acc3dPre4h: -3.4e5}, true},
-		{"拉升前有积累、拉升当下流出", PotentialItem{Ret4h: 0.15, Acc3d: 2e5, Acc3dPre4h: 8e5}, true},
-		{"前后都有积累", PotentialItem{Ret4h: 0.15, Acc3d: 9e5, Acc3dPre4h: 8e5}, false},
-		{"涨得不够", PotentialItem{Ret4h: 0.076, Acc3d: -3.4e5, Acc3dPre4h: -3.4e5}, false},
+		{"没积累的暴涨", PotentialItem{Ret4h: 0.12, Acc3d: -3e5}, true},
+		// 有没有积累都算：只看 4 小时涨幅（DOS 2026-10-13 拉升当下进钱，也要列出来）
+		{"有积累的暴涨", PotentialItem{Ret4h: 0.15, Acc3d: 9e5}, true},
+		{"刚好 10%", PotentialItem{Ret4h: 0.10}, true},
+		{"涨得不够", PotentialItem{Ret4h: 0.076, Acc3d: -3.4e5}, false},
 	}
 	for _, c := range cases {
-		if got := potentialIsAvoid(c.it); got != c.want {
+		if got := potentialIsPump(c.it); got != c.want {
 			t.Fatalf("%s: got %v want %v", c.name, got, c.want)
 		}
 	}
