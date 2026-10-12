@@ -42,6 +42,7 @@ func RegisterRoutes(r *gin.Engine, d *Deps) {
 	registerEtfRoutes(api, d)
 	registerBollSqueezeRoutes(api, d)
 	registerPotentialRoutes(api, d)
+	registerCachedKlineRoutes(api, d)
 
 	bot := api.Group("/bot")
 	registerBotRoutes(bot, d)

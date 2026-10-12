@@ -311,3 +311,27 @@ func TestBollPumpLiveKlineSourceCacheLimitPerInterval(t *testing.T) {
 		t.Fatal("1m cache too short to aggregate 4h")
 	}
 }
+
+func TestBollPumpLiveKlineSourceCachedKlinesReturnsClosedBarsWithoutREST(t *testing.T) {
+	base := &fakeBollPumpSource{}
+	source := NewBollPumpLiveKlineSource(base, BollPumpLiveKlineSourceConfig{
+		Market: "swap", SymbolLimit: 10, Intervals: []string{"5m"}, BootstrapLimit: 120,
+	})
+	bars := bollPumpLiveKlineTestBars("5m", 50)
+	open := bars[len(bars)-1]
+	open.OpenTimeMs += 5 * 60 * 1000
+	open.CloseTimeMs = time.Now().Add(time.Minute).UnixMilli() // 还没收盘
+	open.Closed = false
+	source.cache.Seed("swap", "XYZUSDT", "5m", append(bars, open), 120)
+
+	got := source.CachedKlines("XYZUSDT", "5m", 10)
+	if len(got) != 10 || got[len(got)-1].OpenTimeMs != bars[len(bars)-1].OpenTimeMs {
+		t.Fatalf("got %d bars, last open %d; want last 10 closed bars", len(got), got[len(got)-1].OpenTimeMs)
+	}
+	if len(base.requestedTFs) != 0 {
+		t.Fatalf("REST requests = %v, want none", base.requestedTFs)
+	}
+	if got := source.CachedKlines("NOPEUSDT", "5m", 10); len(got) != 0 {
+		t.Fatalf("unknown symbol: got %d bars", len(got))
+	}
+}

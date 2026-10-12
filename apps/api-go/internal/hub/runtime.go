@@ -29,6 +29,7 @@ type Runtime struct {
 	marketState           *marketstate.State
 	bollSqueeze           *service.BollSqueezeScanner
 	emaPullback           *service.EMAPullbackScanner
+	liveKlines            *service.BollPumpLiveKlineSource
 	potential             *service.PotentialScanner
 	stopCh                chan struct{}
 	lastSQLiteVacuum      time.Time
@@ -120,6 +121,7 @@ func (rt *Runtime) Start(ctx context.Context) {
 			))
 			live.Start(ctx, rt.stopCh)
 			source = live
+			rt.liveKlines = live
 			// 布林回踩只读 WS 缓存；不用 REST 源，避免每分钟全市场拉 K 线
 			rt.bollSqueeze = service.NewBollSqueezeScanner(live, cfg.Market, rt.store)
 			go rt.bollSqueeze.Run(ctx, rt.stopCh)
@@ -152,6 +154,11 @@ func (rt *Runtime) Start(ctx context.Context) {
 // BollSqueeze 返回布林回踩扫描器；未启用 BOLL WS 缓存时为 nil。
 func (rt *Runtime) BollSqueeze() *service.BollSqueezeScanner {
 	return rt.bollSqueeze
+}
+
+// LiveKlines 返回 WS K 线缓存（只读缓存用）；未启用 BOLL WS 缓存时为 nil。
+func (rt *Runtime) LiveKlines() *service.BollPumpLiveKlineSource {
+	return rt.liveKlines
 }
 
 // EMAPullback 返回 EMA 回踩扫描器；未启用 BOLL WS 缓存时为 nil。

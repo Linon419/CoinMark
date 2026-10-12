@@ -107,6 +107,27 @@ func (s *BollPumpLiveKlineSource) Symbols(ctx context.Context, market string, li
 	return s.cachedSymbols(limit), nil
 }
 
+// CachedKlines 只读缓存里已收盘的 K 线（不会请求币安），给外部服务（如 strategy2_ml 的升档扫描）取数据用。
+// 周期必须是缓存里有的（见 Intervals）；没有数据返回空。
+func (s *BollPumpLiveKlineSource) CachedKlines(symbol, timeframe string, limit int) []BollPumpBar {
+	if s == nil || s.cache == nil {
+		return nil
+	}
+	bars := bollPumpClosedBarsBefore(s.cache.Klines(s.cfg.Market, symbol, timeframe, 0), time.Now().UnixMilli())
+	if limit > 0 && len(bars) > limit {
+		bars = bars[len(bars)-limit:]
+	}
+	return bars
+}
+
+// CachedSymbols 缓存覆盖的全部交易对，以及缓存里有的周期。
+func (s *BollPumpLiveKlineSource) CachedSymbols() ([]string, []string) {
+	if s == nil {
+		return nil, nil
+	}
+	return s.cachedSymbols(0), append([]string{}, s.cfg.Intervals...)
+}
+
 func (s *BollPumpLiveKlineSource) Klines(ctx context.Context, market, symbol, timeframe string, limit int) ([]BollPumpBar, error) {
 	if s == nil || s.cache == nil {
 		return nil, fmt.Errorf("boll pump websocket source is nil")
