@@ -229,6 +229,23 @@ func TestPollPassesBollSqueezeEventsEvenWithMarketAnomalyOff(t *testing.T) {
 	}
 }
 
+func TestPollPassesPotentialPumpEventsEvenWithMarketAnomalyOff(t *testing.T) {
+	ctx := context.Background()
+	store := openTelegramNotifyStore(t)
+	defer store.Close()
+	prefs := service.DefaultTGNotifyPrefs(12345)
+	prefs.MarketAnomalyEnabled = false
+	if err := service.SaveTGNotifyPrefs(ctx, store, prefs); err != nil {
+		t.Fatalf("save prefs: %v", err)
+	}
+	insertTelegramNotifyEvent(t, store, "swap", "DOSUSDT", service.PotentialPumpEventType, "1h", "", "短时暴涨 · DOS\n₮0.325  4h +12.4%", `{}`)
+
+	n := &AnomalyNotifier{store: store, market: "swap", minLevel: "critical", chatIDInt: 12345, batchMaxItems: 5}
+	if got := n.poll(ctx); len(got) != 1 {
+		t.Fatalf("poll returned %d events, want 1", len(got))
+	}
+}
+
 func TestSplitPullbackEvents(t *testing.T) {
 	pullbacks, others := splitPullbackEvents([]model.AnomalyEvent{{EventType: service.BollSqueezeEventType}, {EventType: "boll_pump"}, {EventType: service.EMAPullbackEventType}})
 	if len(pullbacks) != 2 || len(others) != 1 || others[0].EventType != "boll_pump" {

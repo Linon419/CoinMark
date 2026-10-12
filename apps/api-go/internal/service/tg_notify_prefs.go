@@ -17,6 +17,7 @@ const (
 	TGNotifyCategoryBollPump      = "boll_pump"
 	TGNotifyCategoryBollSqueeze   = "boll_squeeze"
 	TGNotifyCategoryEMAPullback   = "ema_pullback"
+	TGNotifyCategoryPotentialPump = "potential_pump"
 )
 
 type TGNotifyPrefs struct {
@@ -97,6 +98,8 @@ func TGNotifyEventCategory(eventType string) string {
 		return TGNotifyCategoryBollSqueeze
 	case EMAPullbackEventType:
 		return TGNotifyCategoryEMAPullback
+	case PotentialPumpEventType:
+		return TGNotifyCategoryPotentialPump
 	}
 	if strings.HasPrefix(et, "absorption") {
 		return TGNotifyCategoryAbsorption
@@ -115,8 +118,8 @@ func IsTGNotifyEventEnabled(eventType string, prefs TGNotifyPrefs) bool {
 		return prefs.AbsorptionEnabled
 	case TGNotifyCategoryBollPump:
 		return prefs.BollPumpEnabled
-	case TGNotifyCategoryBollSqueeze, TGNotifyCategoryEMAPullback:
-		return true // 开关在布林回踩 / EMA 回踩页面的通知设置里
+	case TGNotifyCategoryBollSqueeze, TGNotifyCategoryEMAPullback, TGNotifyCategoryPotentialPump:
+		return true // 开关在布林回踩 / EMA 回踩 / 潜力区页面的通知设置里
 	default:
 		return prefs.MarketAnomalyEnabled
 	}

@@ -359,23 +359,26 @@ func (s *PotentialScanner) scan(ctx context.Context) {
 	if s.store == nil {
 		return
 	}
-	if err := s.record(ctx, PotentialListWatch, watch); err != nil {
+	if _, err := s.record(ctx, PotentialListWatch, watch); err != nil {
 		log.Printf("potential: record watch error: %v", err)
 	}
-	if err := s.record(ctx, PotentialListPump, pump); err != nil {
+	if added, err := s.record(ctx, PotentialListPump, pump); err != nil {
 		log.Printf("potential: record pump error: %v", err)
+	} else if _, err := s.notifyPump(ctx, added); err != nil {
+		log.Printf("potential: notify pump error: %v", err)
 	}
 	if err := s.fillOutcomes(ctx, nowMs); err != nil {
 		log.Printf("potential: fill outcomes error: %v", err)
 	}
 }
 
-// record 同一个币同一个名单 24 小时内只记一次（与回测去重一致）。
-func (s *PotentialScanner) record(ctx context.Context, list string, items []PotentialItem) error {
+// record 同一个币同一个名单 24 小时内只记一次（与回测去重一致），返回这次新记下的。
+func (s *PotentialScanner) record(ctx context.Context, list string, items []PotentialItem) ([]PotentialItem, error) {
 	if len(items) == 0 {
-		return nil
+		return nil, nil
 	}
-	return s.store.Write(ctx, func(_ context.Context, tx *sqlx.Tx) error {
+	var added []PotentialItem
+	err := s.store.Write(ctx, func(_ context.Context, tx *sqlx.Tx) error {
 		for _, it := range items {
 			var n int
 			if err := tx.Get(&n, `SELECT COUNT(*) FROM potential_picks WHERE list = ? AND symbol = ? AND entered_ms > ?`,
@@ -385,14 +388,19 @@ func (s *PotentialScanner) record(ctx context.Context, list string, items []Pote
 			if n > 0 {
 				continue
 			}
-			if _, err := tx.Exec(`INSERT OR IGNORE INTO potential_picks
+			res, err := tx.Exec(`INSERT OR IGNORE INTO potential_picks
 (list, symbol, entered_ms, entry_price, acc_3d, rise_from_low30, ret_4h_before, ema_cross) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-				list, it.Symbol, it.DecisionMs, it.Price, it.Acc3d, it.RiseFromLow30, it.Ret4h, it.EMACross); err != nil {
+				list, it.Symbol, it.DecisionMs, it.Price, it.Acc3d, it.RiseFromLow30, it.Ret4h, it.EMACross)
+			if err != nil {
 				return err
+			}
+			if n, _ := res.RowsAffected(); n > 0 {
+				added = append(added, it)
 			}
 		}
 		return nil
 	})
+	return added, err
 }
 
 type PotentialPick struct {

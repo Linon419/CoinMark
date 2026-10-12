@@ -172,12 +172,12 @@ func TestPotentialRecordFillAndSummarize(t *testing.T) {
 	s := NewPotentialScanner(src, nil, nil, store)
 
 	item := PotentialItem{Symbol: "XYZUSDT", DecisionMs: entered, Price: 10, Acc3d: 6e6}
-	if err := s.record(ctx, PotentialListWatch, []PotentialItem{item}); err != nil {
-		t.Fatal(err)
+	if added, err := s.record(ctx, PotentialListWatch, []PotentialItem{item}); err != nil || len(added) != 1 {
+		t.Fatalf("first record: added=%d err=%v", len(added), err)
 	}
 	item.DecisionMs += 5 * potentialTestHour // 24h 内再次上榜，不重复记
-	if err := s.record(ctx, PotentialListWatch, []PotentialItem{item}); err != nil {
-		t.Fatal(err)
+	if added, err := s.record(ctx, PotentialListWatch, []PotentialItem{item}); err != nil || len(added) != 0 {
+		t.Fatalf("second record within 24h: added=%d err=%v", len(added), err)
 	}
 	if err := s.fillOutcomes(ctx, entered+25*potentialTestHour); err != nil {
 		t.Fatal(err)
@@ -195,5 +195,31 @@ func TestPotentialRecordFillAndSummarize(t *testing.T) {
 	}
 	if stats[0].List != PotentialListWatch || stats[0].Done != 1 || stats[0].TouchUp5 != 1 || math.Abs(stats[0].Median24h-0.1) > 1e-9 {
 		t.Fatalf("stats = %+v", stats[0])
+	}
+}
+
+func TestPotentialNotifyPumpOnlyWhenEnabled(t *testing.T) {
+	store := openBollPumpTestStore(t)
+	defer store.Close()
+	ctx := context.Background()
+	s := NewPotentialScanner(nil, nil, nil, store)
+	items := []PotentialItem{{Symbol: "DOSUSDT", DecisionMs: 1000 * potentialTestHour, Price: 0.325, Ret4h: 0.1238, Vol24: 4.628e7, OIUSD: 1.038e7, Acc3d: -2.64e5}}
+
+	if n, err := s.notifyPump(ctx, items); err != nil || n != 0 {
+		t.Fatalf("默认关闭，不应推送: n=%d err=%v", n, err)
+	}
+	if _, err := SavePotentialNotifySettings(ctx, store, PotentialNotifySettings{Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.notifyPump(ctx, items); err != nil || n != 1 {
+		t.Fatalf("打开后应推送 1 条: n=%d err=%v", n, err)
+	}
+	var titles []string
+	if err := store.SelectContext(ctx, &titles, `SELECT title FROM anomaly_events WHERE event_type = ?`, PotentialPumpEventType); err != nil {
+		t.Fatal(err)
+	}
+	want := "短时暴涨 · DOS\n₮0.325  4h +12.4%\n24h 成交额 4628万 · 持仓 1038万 · 3 天积累 -26万"
+	if len(titles) != 1 || titles[0] != want {
+		t.Fatalf("titles = %q, want %q", titles, want)
 	}
 }

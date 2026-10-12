@@ -193,8 +193,9 @@ func (n *AnomalyNotifier) persistLastID(ctx context.Context) {
 	_ = n.redis.Set(ctx, key, strconv.FormatInt(n.lastID, 10), 0)
 }
 
+// isPullbackEvent 回踩类和潜力区短时暴涨：按原文逐条发送，不参与评分过滤。
 func isPullbackEvent(eventType string) bool {
-	return eventType == service.BollSqueezeEventType || eventType == service.EMAPullbackEventType
+	return eventType == service.BollSqueezeEventType || eventType == service.EMAPullbackEventType || eventType == service.PotentialPumpEventType
 }
 
 // splitPullbackEvents 布林回踩、EMA 回踩通知每条单独发送（只有收藏币，数量很少）。

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Table, Tag, Typography } from "@arco-design/web-react";
+import { Message, Switch, Table, Tag, Typography } from "@arco-design/web-react";
 import { fmtUsdCn } from "./etfFlows";
 
 const { Title, Text } = Typography;
@@ -77,6 +77,28 @@ export default function PotentialPage() {
   const [updatedMs, setUpdatedMs] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [notify, setNotify] = useState<{ enabled: boolean; tg_configured?: boolean } | null>(null);
+
+  useEffect(() => {
+    fetch(`${API_BASE}/api/potential/notify`)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then(setNotify)
+      .catch(() => setNotify(null));
+  }, []);
+
+  const saveNotify = async (enabled: boolean) => {
+    try {
+      const r = await fetch(`${API_BASE}/api/potential/notify`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      setNotify(await r.json());
+    } catch (e: any) {
+      Message.error(`保存失败：${e?.message || e}`);
+    }
+  };
 
   useEffect(() => {
     let alive = true;
@@ -182,9 +204,16 @@ export default function PotentialPage() {
           <Title heading={6} style={{ margin: 0 }}>
             短时暴涨（4 小时涨 ≥ 10%）
           </Title>
+          {notify && (
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+              <Switch size="small" checked={notify.enabled} onChange={saveNotify} />
+              <Text>Telegram 通知</Text>
+              {notify.tg_configured === false && <Text style={{ color: "var(--cm-danger)" }}>服务器未配置 Telegram 通知群，暂时发不出去</Text>}
+            </span>
+          )}
         </div>
         <Text className="cm-muted" style={{ display: "block", marginBottom: 4 }}>
-          条件：同样的小币范围；4 小时涨幅 ≥ 10%，有没有积累都算。用已收盘的 1 小时 K 线判断，每 5 分钟扫一次，按 4h 涨幅从高到低排。
+          条件：同样的小币范围；4 小时涨幅 ≥ 10%，有没有积累都算。用已收盘的 1 小时 K 线判断，每 5 分钟扫一次，按 4h 涨幅从高到低排。打开 Telegram 通知后，币新进入名单时推一次（同一个币 24 小时内只推一次）。
         </Text>
         <StatsLine s={statOf("pump")} />
         {table(pump)}
