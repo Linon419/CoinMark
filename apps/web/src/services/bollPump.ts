@@ -5,7 +5,7 @@ export type BollPumpSignal = {
   market: string;
   symbol: string;
   timeframe: string;
-  signal_level: "WATCH" | "CONFIRM_1" | "CONFIRM_2" | "KEY_K_4H";
+  signal_level: "WATCH" | "CONFIRM_1" | "CONFIRM_2" | "KEY_K_4H" | "SHORT";
   price: number;
   volume_ratio: number;
   boll_bandwidth: number;
@@ -117,6 +117,7 @@ export type BollPumpSettings = {
   confirm1_telegram_threshold: number;
   confirm2_telegram_threshold: number;
   short_telegram_enabled: boolean;
+  short_telegram_threshold: number;
   confluence_window_ms: number;
   stage_expiry_candles: number;
 };

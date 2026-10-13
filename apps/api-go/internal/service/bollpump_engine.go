@@ -80,6 +80,7 @@ func DefaultBollPumpConfig() BollPumpConfig {
 		WatchTelegramThreshold:        70,
 		Confirm1TelegramThreshold:     75,
 		Confirm2TelegramThreshold:     80,
+		ShortTelegramThreshold:        80,
 		ConfluenceWindowMs:            10 * 60 * 1000,
 		StageExpiryCandles:            60,
 	}

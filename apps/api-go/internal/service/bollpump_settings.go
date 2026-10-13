@@ -229,6 +229,9 @@ func NormalizeBollPumpConfig(in BollPumpConfig) BollPumpConfig {
 		out.OIGrowthMaxBonus = clampFloat(in.OIGrowthMaxBonus, 0, 50)
 	}
 	out.ShortTelegramEnabled = in.ShortTelegramEnabled
+	if in.ShortTelegramThreshold > 0 {
+		out.ShortTelegramThreshold = clampFloat(in.ShortTelegramThreshold, 0, 200)
+	}
 	if in.WatchTelegramThreshold > 0 {
 		out.WatchTelegramThreshold = clampFloat(in.WatchTelegramThreshold, 0, 100)
 	}

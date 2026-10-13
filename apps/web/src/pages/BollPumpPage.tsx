@@ -91,6 +91,7 @@ function defaultBollPumpSettings(): BollPumpSettings {
     confirm1_telegram_threshold: 75,
     confirm2_telegram_threshold: 80,
     short_telegram_enabled: false,
+    short_telegram_threshold: 80,
     confluence_window_ms: 10 * 60 * 1000,
     stage_expiry_candles: 60,
   };
@@ -305,7 +306,16 @@ export default function BollPumpPage() {
         ),
       },
       { title: "周期", dataIndex: "timeframe", width: 70 },
-      { title: "等级", width: 108, render: (_: any, r: BollPumpSignal) => <Tag color={levelColor(r.signal_level)}>{r.signal_level}</Tag> },
+      {
+        title: "等级",
+        width: 108,
+        render: (_: any, r: BollPumpSignal) => (
+          <Tag color={levelColor(r.signal_level)}>
+            {r.signal_level}
+            {r.signal_level === "SHORT" && Number(r.bounce_count) >= 2 ? ` 第${r.bounce_count}段` : ""}
+          </Tag>
+        ),
+      },
       { title: "价格", width: 112, align: "right", render: (_: any, r: BollPumpSignal) => <span className="cm-mono">{fmtPrice(Number(r.price || 0))}</span> },
       { title: "量能", width: 92, align: "right", render: (_: any, r: BollPumpSignal) => <span className="cm-mono">{fmtNum(Number(r.volume_ratio || 0))}x</span> },
       { title: "带宽", width: 96, align: "right", render: (_: any, r: BollPumpSignal) => <span className="cm-mono">{fmtNum(Number(r.boll_bandwidth || 0), 4)}</span> },
@@ -999,6 +1009,10 @@ export default function BollPumpPage() {
               <label>
                 <span>做空推送</span>
                 <Switch checked={settingsDraft.short_telegram_enabled} onChange={(v) => patchDraft({ short_telegram_enabled: v })} />
+              </label>
+              <label>
+                <span>做空推送分</span>
+                <InputNumber min={0} max={200} value={settingsDraft.short_telegram_threshold} onChange={(v) => patchDraft({ short_telegram_threshold: Number(v || 80) })} />
               </label>
               <label>
                 <span>共振窗口分钟</span>

@@ -114,6 +114,7 @@ type BollPumpConfig struct {
 	Confirm1TelegramThreshold     float64            `json:"confirm1_telegram_threshold"`
 	Confirm2TelegramThreshold     float64            `json:"confirm2_telegram_threshold"`
 	ShortTelegramEnabled          bool               `json:"short_telegram_enabled"` // 做空信号推 Telegram，默认关
+	ShortTelegramThreshold        float64            `json:"short_telegram_threshold"`
 	ConfluenceWindowMs            int64              `json:"confluence_window_ms"`
 	StageExpiryCandles            int                `json:"stage_expiry_candles"`
 }

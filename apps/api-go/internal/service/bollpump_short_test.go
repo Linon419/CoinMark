@@ -170,3 +170,132 @@ func TestBollPumpStatsBySide(t *testing.T) {
 		}
 	}
 }
+
+// bollShortAddEpisode 在下跌 K 线后面接一段“碰上轨（压力 K）→ 跌破”，再接 gap 根继续下跌的普通 K 线。
+func bollShortAddEpisode(bars []BollPumpBar, stepMs int64, gap int) []BollPumpBar {
+	add := func(open, high, low, close, vol float64) {
+		i := len(bars)
+		bars = append(bars, BollPumpBar{OpenTimeMs: int64(i) * stepMs, CloseTimeMs: int64(i+1)*stepMs - 1,
+			Open: open, High: high, Low: low, Close: close, Volume: vol, QuoteVolume: vol * close, Closed: true})
+	}
+	p := bars[len(bars)-1].Close
+	add(p, p, p-0.5, p-0.2, 300) // 压力 K
+	r := len(bars) - 1
+	ind := ComputeBollPumpIndicators(bars, 20, 2, 14)
+	bars[r].High = ind[r].Upper * 1.002
+	add(p-0.3, p-0.1, p-0.8, p-0.7, 100) // 跌破压力 K 最低价
+	for i := 0; i < gap; i++ {
+		q := bars[len(bars)-1].Close
+		add(q, q+0.05, q-0.25, q-0.2, 100)
+	}
+	return bars
+}
+
+func TestBollShortSegments(t *testing.T) {
+	bars := bollPumpLineBars(250, 150, 100, 60_000)
+	bars = bollShortAddEpisode(bars, 60_000, 8)
+	bars = bollShortAddEpisode(bars, 60_000, 0)
+	ind := bollShortInd(bars)
+	if _, ok := bollShortTrigger(bars, ind); !ok {
+		t.Fatal("第二段应触发")
+	}
+	if got := bollShortSegments(bars, ind, 60); got != 2 {
+		t.Fatalf("连续两段碰上轨回落，段数 = %d, want 2", got)
+	}
+
+	// 两段之间有一根收盘站上上轨：下跌被打断，只算这一段
+	broken := bollPumpLineBars(250, 150, 100, 60_000)
+	broken = bollShortAddEpisode(broken, 60_000, 8)
+	mid := len(broken) - 4
+	ind = bollShortInd(broken)
+	broken[mid].Close = ind[mid].Upper * 1.01
+	broken[mid].High = broken[mid].Close
+	broken = bollShortAddEpisode(broken, 60_000, 0)
+	ind = bollShortInd(broken)
+	if _, ok := bollShortTrigger(broken, ind); !ok {
+		t.Fatal("第二段本身仍应触发")
+	}
+	if got := bollShortSegments(broken, ind, 60); got != 1 {
+		t.Fatalf("中间站上过上轨，段数 = %d, want 1", got)
+	}
+}
+
+func TestBollShortCandleScore(t *testing.T) {
+	bars := bollPumpLineBars(250, 150, 100, 60_000)
+	bars = bollShortAddEpisode(bars, 60_000, 0)
+	ind := bollShortInd(bars)
+	r := len(bars) - 2
+	// 压力 K：放量 3 倍、长上影
+	bars[r].Volume = 300
+	score, _ := bollShortCandleScore(bars, ind, r, 1)
+	if score != 60+10+10 {
+		t.Fatalf("放量 + 长上影，一段：分数 = %v, want 80", score)
+	}
+	if score, _ := bollShortCandleScore(bars, ind, r, 2); score != 60+10+10+15 {
+		t.Fatalf("再加连续两段：分数 = %v, want 95", score)
+	}
+	bars[r].Volume = 100
+	bars[r].High = bars[r].Open + 0.01 // 上影线很短
+	if score, _ := bollShortCandleScore(bars, ind, r, 1); score != 60 {
+		t.Fatalf("不放量、没有长上影：分数 = %v, want 60", score)
+	}
+}
+
+func TestBollShortTelegramUsesScoreThreshold(t *testing.T) {
+	ctx := context.Background()
+	cfg := DefaultBollPumpConfig()
+	cfg.Timeframes = []string{"1m"}
+	cfg.Resistance4HBreakoutBonus = 0
+	cfg.ShortTelegramEnabled = true
+	trigger := bollShortFixture(250, 60_000)
+	for _, tc := range []struct {
+		threshold float64
+		want      int
+	}{{60, 1}, {119, 0}} {
+		store := openBollPumpTestStore(t)
+		c := cfg
+		c.ShortTelegramThreshold = tc.threshold
+		if _, err := SaveBollPumpConfig(ctx, store, c); err != nil {
+			t.Fatal(err)
+		}
+		NewBollPumpScanner(&fakeBollPumpSource{
+			bars:  map[string][]BollPumpBar{"1m": trigger, "3m": bollPumpLineBars(250, 150, 100, 180_000)},
+			quote: map[string]float64{"XYZUSDT": 3_000_000},
+		}, store, c).ScanTimeframe(ctx, "1m")
+		rows, _ := ListBollPumpSignals(ctx, store, BollPumpSignalFilter{Market: "swap", Side: "short", Limit: 10})
+		var events int
+		_ = store.GetContext(ctx, &events, `SELECT COUNT(*) FROM anomaly_events WHERE event_type = ?`, BollShortEventType)
+		store.Close()
+		if len(rows) != 1 || rows[0].PriorityScore < 60 {
+			t.Fatalf("应有 1 条带分数的做空信号: %#v", rows)
+		}
+		if events != tc.want {
+			t.Fatalf("门槛 %v：通知 %d 条, want %d（分数 %v）", tc.threshold, events, tc.want, rows[0].PriorityScore)
+		}
+	}
+}
+
+func TestBollShortTrendAndFourHourMirrorLongRules(t *testing.T) {
+	ctx := context.Background()
+	cfg := DefaultBollPumpConfig()
+	falling := bollPumpLineBars(120, 150, 100, 900_000)
+	rising := bollPumpLineBars(120, 100, 150, 900_000)
+	s := NewBollPumpScanner(&fakeBollPumpSource{bars: map[string][]BollPumpBar{"15m": falling}}, nil, cfg)
+	if !s.shortTrendDown(ctx, "XYZUSDT", "1m", nil) {
+		t.Fatal("15m 一路下跌：应算趋势向下")
+	}
+	s = NewBollPumpScanner(&fakeBollPumpSource{bars: map[string][]BollPumpBar{"15m": rising}}, nil, cfg)
+	if s.shortTrendDown(ctx, "XYZUSDT", "1m", nil) {
+		t.Fatal("15m 一路上涨：不应算趋势向下")
+	}
+
+	// 做多测试里“突破 4h 阻力”的 K 线取倒数，就是“跌破 4h 支撑”
+	breakout := bollPumpFixtureFourHourResistanceBreakout()
+	if !bollPumpFourHourResistanceBreakout(breakout, cfg).Triggered {
+		t.Fatal("前提：原 K 线应判为突破阻力")
+	}
+	s = NewBollPumpScanner(&fakeBollPumpSource{bars: map[string][]BollPumpBar{"4h": bollPumpInvertBars(breakout)}}, nil, cfg)
+	if b := s.shortFourHourBreakdown(ctx, "XYZUSDT"); !b.Triggered || b.Bonus != cfg.Resistance4HBreakoutBonus {
+		t.Fatalf("取倒数后应判为跌破支撑: %+v", b)
+	}
+}
