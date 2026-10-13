@@ -18,6 +18,7 @@ export type BollPumpCandidateSignal = {
   signal_time_ms?: number;
   score?: number;
   priority_score?: number;
+  bounce_count?: number;
   reason?: string;
 };
 
@@ -143,4 +144,40 @@ export function buildBollPumpTradeCandidates(
   });
 
   return limit > 0 ? sorted.slice(0, limit) : sorted;
+}
+
+// 做空没有状态机：候选直接用做空信号，每个币+周期取最近一条，信号后 10 根该周期 K 线内有效，按分数排。
+const shortCandidateCandles = 10;
+const shortTimeframeMs: Record<string, number> = { "1m": 60_000, "3m": 180_000, "5m": 300_000, "15m": 900_000, "30m": 1_800_000, "1h": 3_600_000 };
+const shortHigherTimeframe: Record<string, string> = { "1m": "3m", "3m": "5m", "5m": "15m", "15m": "30m", "30m": "1h" };
+
+export function buildBollShortCandidates(signals: BollPumpCandidateSignal[], nowMs = Date.now()): BollPumpTradeCandidate[] {
+  const latestByKey = new Map<string, BollPumpCandidateSignal>();
+  for (const signal of signals) {
+    if (String(signal.signal_level || "").toUpperCase() !== "SHORT") continue;
+    const tfMs = shortTimeframeMs[signal.timeframe];
+    const ts = Number(signal.signal_time_ms || 0);
+    if (!tfMs || ts <= 0 || nowMs - ts > shortCandidateCandles * tfMs) continue;
+    const key = `${signal.symbol}:${signal.timeframe}`;
+    const prev = latestByKey.get(key);
+    if (!prev || ts > Number(prev.signal_time_ms || 0)) latestByKey.set(key, signal);
+  }
+  return [...latestByKey.values()]
+    .map((signal) => {
+      const score = Number(signal.priority_score || signal.score || 0);
+      const segments = Number(signal.bounce_count || 0);
+      return {
+        symbol: signal.symbol,
+        timeframe: signal.timeframe,
+        dominant_timeframe: shortHigherTimeframe[signal.timeframe] || signal.timeframe,
+        status: "SHORT",
+        priority_score: score,
+        current_score: score,
+        bounce_count: segments,
+        trade_label: score >= 85 || segments >= 2 ? "重点" : "可参与",
+        latest_signal_id: signal.id,
+        has_4h_breakout: false,
+      } satisfies BollPumpTradeCandidate;
+    })
+    .sort((a, b) => b.priority_score - a.priority_score || a.symbol.localeCompare(b.symbol));
 }

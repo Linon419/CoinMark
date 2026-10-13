@@ -3,6 +3,7 @@ import { Button, Drawer, InputNumber, Message, Pagination, Radio, Select, Space,
 import BollPumpChart from "../components/BollPumpChart";
 import {
   buildBollPumpTradeCandidates,
+  buildBollShortCandidates,
   filterActiveBollPumpStates,
   hasBollPumpFourHourBreakout,
   isBollPumpFourHourKeyK,
@@ -369,7 +370,10 @@ export default function BollPumpPage() {
   const countsByTimeframe = stats?.countsByTimeframe || {};
   const resistanceBreakoutCount = useMemo(() => signals.filter(hasFourHourResistanceBreakout).length, [signals]);
   const keyK4HCount = useMemo(() => signals.filter(isFourHourKeyK).length, [signals]);
-  const tradeCandidates = useMemo(() => buildBollPumpTradeCandidates(states, signals, 0), [states, signals]);
+  const tradeCandidates = useMemo(
+    () => (side === "long" ? buildBollPumpTradeCandidates(states, signals, 0) : buildBollShortCandidates(signals)),
+    [states, signals, side],
+  );
   const candidatePageCount = Math.max(1, Math.ceil(tradeCandidates.length / TRADE_CANDIDATE_PAGE_SIZE));
   const effectiveCandidatePage = Math.min(candidatePage, candidatePageCount);
   const candidatePageStart = (effectiveCandidatePage - 1) * TRADE_CANDIDATE_PAGE_SIZE;
@@ -489,7 +493,6 @@ export default function BollPumpPage() {
         ))}
       </div>
 
-      {side === "long" ? (
       <div className="cm-bollTradeBand">
         <div className="cm-sectionHeader">
           <Title heading={6} style={{ margin: 0 }}>
@@ -499,8 +502,14 @@ export default function BollPumpPage() {
             <Text className="cm-muted cm-bollCandidateCount">
               {candidateRangeStart}-{candidatePageEnd} / {tradeCandidates.length}
             </Text>
-            <Tag color="orange">CONFIRM_1</Tag>
-            <Tag color="red">CONFIRM_2 / COMPLETED</Tag>
+            {side === "long" ? (
+              <>
+                <Tag color="orange">CONFIRM_1</Tag>
+                <Tag color="red">CONFIRM_2 / COMPLETED</Tag>
+              </>
+            ) : (
+              <Text className="cm-muted">做空信号后 10 根 K 线内，按分数排</Text>
+            )}
           </Space>
         </div>
         {tradeCandidates.length > 0 ? (
@@ -548,10 +557,9 @@ export default function BollPumpPage() {
             ) : null}
           </>
         ) : (
-          <div className="cm-bollCandidateEmpty">暂无确认候选</div>
+          <div className="cm-bollCandidateEmpty">{side === "long" ? "暂无确认候选" : "暂无做空候选（信号后 10 根 K 线内有效）"}</div>
         )}
       </div>
-      ) : null}
 
       <div className="cm-bollWorkbench">
         <div className="cm-card cm-bollPanel">
