@@ -116,6 +116,7 @@ export type BollPumpSettings = {
   watch_telegram_threshold: number;
   confirm1_telegram_threshold: number;
   confirm2_telegram_threshold: number;
+  short_telegram_enabled: boolean;
   confluence_window_ms: number;
   stage_expiry_candles: number;
 };

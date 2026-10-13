@@ -106,6 +106,9 @@ func (s *BollPumpScanner) ScanTimeframe(ctx context.Context, timeframe string) B
 		bollPumpCapIdleReplay(&state, bars)
 		latest := bars[len(bars)-1]
 		latestInd := ind[len(ind)-1]
+		if s.scanShort(ctx, symbol, timeframe, bars, ind, quoteVolume) {
+			result.SignalsFound++
+		}
 		if bollPumpActiveLowerBandBreakdown(state, latest, latestInd) {
 			bollPumpInvalidateRuntimeState(&state)
 			s.persistState(ctx, state)

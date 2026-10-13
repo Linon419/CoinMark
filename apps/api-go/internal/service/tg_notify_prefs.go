@@ -92,7 +92,7 @@ func TGNotifyEventCategory(eventType string) string {
 		return TGNotifyCategoryWhaleWall
 	case "signal_lab_persistent_buy":
 		return TGNotifyCategoryAbsorption
-	case "boll_pump":
+	case "boll_pump", BollShortEventType:
 		return TGNotifyCategoryBollPump
 	case BollSqueezeEventType:
 		return TGNotifyCategoryBollSqueeze

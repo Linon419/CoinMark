@@ -10,14 +10,25 @@ import (
 // 缓存里 1m/3m 有 260 根，其他周期 499 根，按 499 取即可，不会多发 REST。
 const bollPumpEMAGateBars = 499
 
-// bollPumpAboveEMA100And200 最新一根收盘价同时高于 EMA100 和 EMA200；不足 200 根时 EMA200 不可靠，不算通过。
-func bollPumpAboveEMA100And200(bars []BollPumpBar) bool {
+// bollPumpLastEMA100And200 最新一根收盘价和 EMA100、EMA200；不足 200 根时 EMA200 不可靠，ok = false。
+func bollPumpLastEMA100And200(bars []BollPumpBar) (c, e100, e200 float64, ok bool) {
 	if len(bars) < 200 {
-		return false
+		return 0, 0, 0, false
 	}
 	last := len(bars) - 1
-	c := bars[last].Close
-	return c > bollSqueezeEMA(bars, 100)[last] && c > bollSqueezeEMA(bars, 200)[last]
+	return bars[last].Close, bollSqueezeEMA(bars, 100)[last], bollSqueezeEMA(bars, 200)[last], true
+}
+
+// bollPumpAboveEMA100And200 最新一根收盘价同时高于 EMA100 和 EMA200。
+func bollPumpAboveEMA100And200(bars []BollPumpBar) bool {
+	c, e100, e200, ok := bollPumpLastEMA100And200(bars)
+	return ok && c > e100 && c > e200
+}
+
+// bollPumpBelowEMA100And200 最新一根收盘价同时低于 EMA100 和 EMA200（做空用）。
+func bollPumpBelowEMA100And200(bars []BollPumpBar) bool {
+	c, e100, e200, ok := bollPumpLastEMA100And200(bars)
+	return ok && c < e100 && c < e200
 }
 
 // emaGate 触发周期和主导周期都在 EMA100、EMA200 之上才放行信号。

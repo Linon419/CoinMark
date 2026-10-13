@@ -20,6 +20,7 @@ type BollPumpSignalFilter struct {
 	Symbol      string
 	Timeframe   string
 	SignalLevel string
+	Side        string // long：不含做空信号；short：只要做空信号；空 = 全部
 	MinScore    float64
 	SinceMs     int64
 	Limit       int
@@ -244,6 +245,10 @@ func ListBollPumpSignals(ctx context.Context, store *sqlite.Store, f BollPumpSig
 		where = append(where, "signal_level = ?")
 		args = append(args, lvl)
 	}
+	if clause := bollPumpSideClause(f.Side); clause != "" {
+		where = append(where, clause)
+		args = append(args, string(BollPumpLevelShort))
+	}
 	if f.MinScore > 0 {
 		where = append(where, "priority_score >= ?")
 		args = append(args, f.MinScore)
@@ -324,7 +329,19 @@ WHERE id = ?`,
 	})
 }
 
-func BollPumpStats(ctx context.Context, store *sqlite.Store, market string, sinceMs int64) (map[string]interface{}, error) {
+// bollPumpSideClause long：不含做空信号；short：只要做空信号；其他 = 不过滤。参数为 BollPumpLevelShort。
+func bollPumpSideClause(side string) string {
+	switch strings.TrimSpace(side) {
+	case "long":
+		return "signal_level <> ?"
+	case "short":
+		return "signal_level = ?"
+	}
+	return ""
+}
+
+// BollPumpStats side 同 BollPumpSignalFilter.Side，只影响按级别、按周期的数量；表现按级别分开，做空就是 SHORT。
+func BollPumpStats(ctx context.Context, store *sqlite.Store, market string, sinceMs int64, side string) (map[string]interface{}, error) {
 	if store == nil {
 		return nil, fmt.Errorf("boll pump signal store is nil")
 	}
@@ -335,12 +352,18 @@ func BollPumpStats(ctx context.Context, store *sqlite.Store, market string, sinc
 	if sinceMs <= 0 {
 		sinceMs = time.Now().UnixMilli() - 30*24*60*60*1000
 	}
+	where := "market = ? AND signal_time_ms >= ? AND symbol LIKE ?"
+	args := []interface{}{market, sinceMs, "%USDT"}
+	if clause := bollPumpSideClause(side); clause != "" {
+		where += " AND " + clause
+		args = append(args, string(BollPumpLevelShort))
+	}
 	var levels []bollPumpSymbolKeyRow
-	if err := store.SelectContext(ctx, &levels, `SELECT signal_level AS key, symbol FROM boll_pump_signals WHERE market = ? AND signal_time_ms >= ? AND symbol LIKE ?`, market, sinceMs, "%USDT"); err != nil {
+	if err := store.SelectContext(ctx, &levels, `SELECT signal_level AS key, symbol FROM boll_pump_signals WHERE `+where, args...); err != nil {
 		return nil, err
 	}
 	var timeframes []bollPumpSymbolKeyRow
-	if err := store.SelectContext(ctx, &timeframes, `SELECT timeframe AS key, symbol FROM boll_pump_signals WHERE market = ? AND signal_time_ms >= ? AND symbol LIKE ?`, market, sinceMs, "%USDT"); err != nil {
+	if err := store.SelectContext(ctx, &timeframes, `SELECT timeframe AS key, symbol FROM boll_pump_signals WHERE `+where, args...); err != nil {
 		return nil, err
 	}
 	perf, err := bollPumpPerformanceByLevel(ctx, store, market, sinceMs)

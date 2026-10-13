@@ -179,7 +179,7 @@ func TestBollPumpStatsFilterNonUSDTPairs(t *testing.T) {
 		}
 	}
 
-	stats, err := BollPumpStats(ctx, store, "swap", now-1)
+	stats, err := BollPumpStats(ctx, store, "swap", now-1, "")
 	if err != nil {
 		t.Fatalf("stats: %v", err)
 	}

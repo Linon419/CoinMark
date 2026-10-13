@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Button, Drawer, InputNumber, Message, Pagination, Select, Space, Switch, Table, Tag, Typography } from "@arco-design/web-react";
+import { Button, Drawer, InputNumber, Message, Pagination, Radio, Select, Space, Switch, Table, Tag, Typography } from "@arco-design/web-react";
 import BollPumpChart from "../components/BollPumpChart";
 import {
   buildBollPumpTradeCandidates,
@@ -90,6 +90,7 @@ function defaultBollPumpSettings(): BollPumpSettings {
     watch_telegram_threshold: 70,
     confirm1_telegram_threshold: 75,
     confirm2_telegram_threshold: 80,
+    short_telegram_enabled: false,
     confluence_window_ms: 10 * 60 * 1000,
     stage_expiry_candles: 60,
   };
@@ -104,6 +105,7 @@ function levelColor(level: string) {
   if (level === "COMPLETED") return "red";
   if (level === "CONFIRM_2") return "red";
   if (level === "CONFIRM_1") return "orange";
+  if (level === "SHORT") return "green";
   return "arcoblue";
 }
 
@@ -162,6 +164,7 @@ export default function BollPumpPage() {
   const [loading, setLoading] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
   const [selectedTimeframe, setSelectedTimeframe] = useState<string | null>(null);
+  const [side, setSide] = useState<"long" | "short">("long"); // 做多 / 做空（碰上轨回落）
   const [inactiveStateCount, setInactiveStateCount] = useState(0);
   const [candidatePage, setCandidatePage] = useState(1);
   const [flowSnapshots, setFlowSnapshots] = useState<Record<string, BollPumpFlowSnapshot>>({});
@@ -170,10 +173,11 @@ export default function BollPumpPage() {
     setLoading(true);
     try {
       const timeframeParam = selectedTimeframe ? `&timeframe=${encodeURIComponent(selectedTimeframe)}` : "";
+      // 做空没有状态机，不取活跃状态
       const [sig, st, stat] = await Promise.all([
-        fetchBollPumpSignals(`market=swap&limit=300${timeframeParam}`),
-        fetchBollPumpStates(`market=swap&limit=300&min_priority_score=60${timeframeParam}`),
-        fetchBollPumpStats(),
+        fetchBollPumpSignals(`market=swap&limit=300&side=${side}${timeframeParam}`),
+        side === "long" ? fetchBollPumpStates(`market=swap&limit=300&min_priority_score=60${timeframeParam}`) : Promise.resolve({ items: [] as BollPumpState[], limit: 0 }),
+        fetchBollPumpStats(`market=swap&side=${side}`),
       ]);
       const activeStates = filterActiveBollPumpStates((st.items || []) as BollPumpState[]);
       setSignals(sig.items || []);
@@ -183,7 +187,7 @@ export default function BollPumpPage() {
     } finally {
       setLoading(false);
     }
-  }, [selectedTimeframe]);
+  }, [selectedTimeframe, side]);
 
   const loadSettings = async () => {
     const res = await fetchBollPumpSettings();
@@ -400,9 +404,13 @@ export default function BollPumpPage() {
             <Title heading={5} style={{ margin: 0 }}>
               BOLL 泵盘扫描器
             </Title>
-            <Text className="cm-muted">swap | BOLL多周期 + 4h关键K</Text>
+            <Text className="cm-muted">{side === "long" ? "swap | BOLL多周期 + 4h关键K" : "swap | 做空：碰上轨回落，触发周期和上一级周期都收在 EMA100/200 之下"}</Text>
           </div>
           <Space>
+            <Radio.Group type="button" size="small" value={side} onChange={(v) => setSide(v)}>
+              <Radio value="long">做多</Radio>
+              <Radio value="short">做空</Radio>
+            </Radio.Group>
             <Button loading={loading} onClick={refresh}>
               刷新
             </Button>
@@ -420,26 +428,36 @@ export default function BollPumpPage() {
         <Space wrap>
           <Tag color={settings.enabled ? "green" : "gray"}>{settings.enabled ? "扫描开启" : "扫描暂停"}</Tag>
           <span className="cm-pill">信号 {signals.length}</span>
-          <span className="cm-pill">活跃 {states.length}</span>
-          <span className="cm-pill">候选 {tradeCandidates.length}</span>
-          {inactiveStateCount > 0 ? <span className="cm-pill">隐藏失效 {inactiveStateCount}</span> : null}
-          <span className="cm-pill">WATCH {countsByLevel.WATCH || 0}</span>
-          <span className="cm-pill">CONFIRM_1 {countsByLevel.CONFIRM_1 || 0}</span>
-          <span className="cm-pill">CONFIRM_2 {countsByLevel.CONFIRM_2 || 0}</span>
-          <span className="cm-pill cm-bollKeyKPill">4h关键K {countsByLevel.KEY_K_4H || keyK4HCount}</span>
-          <span className="cm-pill cm-bollBreakoutPill">4h突破 {resistanceBreakoutCount}</span>
+          {side === "long" ? (
+            <>
+              <span className="cm-pill">活跃 {states.length}</span>
+              <span className="cm-pill">候选 {tradeCandidates.length}</span>
+              {inactiveStateCount > 0 ? <span className="cm-pill">隐藏失效 {inactiveStateCount}</span> : null}
+              <span className="cm-pill">WATCH {countsByLevel.WATCH || 0}</span>
+              <span className="cm-pill">CONFIRM_1 {countsByLevel.CONFIRM_1 || 0}</span>
+              <span className="cm-pill">CONFIRM_2 {countsByLevel.CONFIRM_2 || 0}</span>
+              <span className="cm-pill cm-bollKeyKPill">4h关键K {countsByLevel.KEY_K_4H || keyK4HCount}</span>
+              <span className="cm-pill cm-bollBreakoutPill">4h突破 {resistanceBreakoutCount}</span>
+            </>
+          ) : (
+            <span className="cm-pill">SHORT {countsByLevel.SHORT || 0}</span>
+          )}
           <span className="cm-pill">更新时间 {stats?.generatedAtMs ? new Date(stats.generatedAtMs).toLocaleTimeString() : "-"}</span>
         </Space>
         <Space wrap style={{ marginTop: 6 }}>
-          <Text className="cm-muted">实盘表现（信号后 4h / 24h 上涨比例、中位收益；9 月回测随便买 4h 上涨约 49.5%）：</Text>
-          {["WATCH", "CONFIRM_1", "CONFIRM_2", "KEY_K_4H"].map((level) => {
+          <Text className="cm-muted">
+            {side === "long" ? "实盘表现（信号后 4h / 24h 上涨比例、中位收益；9 月回测随便买 4h 上涨约 49.5%）：" : "实盘表现（做空：信号后 4h / 24h 下跌比例、价格中位涨跌，负数对做空有利）："}
+          </Text>
+          {(side === "long" ? ["WATCH", "CONFIRM_1", "CONFIRM_2", "KEY_K_4H"] : ["SHORT"]).map((level) => {
             const p = stats?.performanceByLevel?.[level];
             if (!p) return null;
             const pct = (v: number) => `${v > 0 ? "+" : ""}${(v * 100).toFixed(2)}%`;
+            // 做空显示下跌比例
+            const ratio = (up: number) => ((side === "long" ? up : 1 - up) * 100).toFixed(0);
             return (
               <span key={level} className="cm-pill" title={`4h 样本 ${p.count4h}，24h 样本 ${p.count24h}`}>
-                {level} 4h {(p.up4hRatio * 100).toFixed(0)}% / {pct(p.median4h)}
-                {p.count24h > 0 ? ` · 24h ${(p.up24hRatio * 100).toFixed(0)}% / ${pct(p.median24h)}` : ""}
+                {level} 4h {ratio(p.up4hRatio)}% / {pct(p.median4h)}
+                {p.count24h > 0 ? ` · 24h ${ratio(p.up24hRatio)}% / ${pct(p.median24h)}` : ""}
               </span>
             );
           })}
@@ -461,6 +479,7 @@ export default function BollPumpPage() {
         ))}
       </div>
 
+      {side === "long" ? (
       <div className="cm-bollTradeBand">
         <div className="cm-sectionHeader">
           <Title heading={6} style={{ margin: 0 }}>
@@ -522,6 +541,7 @@ export default function BollPumpPage() {
           <div className="cm-bollCandidateEmpty">暂无确认候选</div>
         )}
       </div>
+      ) : null}
 
       <div className="cm-bollWorkbench">
         <div className="cm-card cm-bollPanel">
@@ -546,14 +566,16 @@ export default function BollPumpPage() {
             }}
           />
         </div>
-        <div className="cm-card cm-bollPanel">
-          <div className="cm-sectionHeader">
-            <Title heading={6} style={{ margin: 0 }}>
-              活跃状态
-            </Title>
+        {side === "long" ? (
+          <div className="cm-card cm-bollPanel">
+            <div className="cm-sectionHeader">
+              <Title heading={6} style={{ margin: 0 }}>
+                活跃状态
+              </Title>
+            </div>
+            <Table className="cm-bollTable" rowKey="id" size="small" columns={stateColumns as any} data={states as any} pagination={{ pageSize: 20 }} scroll={{ x: 620 }} />
           </div>
-          <Table className="cm-bollTable" rowKey="id" size="small" columns={stateColumns as any} data={states as any} pagination={{ pageSize: 20 }} scroll={{ x: 620 }} />
-        </div>
+        ) : null}
       </div>
 
       <Drawer className="cm-bollDetailDrawer" width="80%" visible={open} onCancel={() => setOpen(false)} footer={null} title={detail?.signal ? `${detail.signal.symbol} ${detail.signal.timeframe}` : "BOLL detail"}>
@@ -973,6 +995,10 @@ export default function BollPumpPage() {
               <label>
                 <span>CONFIRM_2提醒分</span>
                 <InputNumber min={0} max={100} value={settingsDraft.confirm2_telegram_threshold} onChange={(v) => patchDraft({ confirm2_telegram_threshold: Number(v || 80) })} />
+              </label>
+              <label>
+                <span>做空推送</span>
+                <Switch checked={settingsDraft.short_telegram_enabled} onChange={(v) => patchDraft({ short_telegram_enabled: v })} />
               </label>
               <label>
                 <span>共振窗口分钟</span>

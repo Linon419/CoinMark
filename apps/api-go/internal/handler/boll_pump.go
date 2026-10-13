@@ -36,6 +36,7 @@ func handleBollPumpSignals(d *Deps) gin.HandlerFunc {
 			Symbol:      strings.ToUpper(c.Query("symbol")),
 			Timeframe:   c.Query("timeframe"),
 			SignalLevel: c.Query("signal_level"),
+			Side:        c.Query("side"),
 			MinScore:    queryFloat(c, "min_score", 0),
 			SinceMs:     queryInt64(c, "since", 0),
 			Limit:       queryInt(c, "limit", 100, 1, 1000),
@@ -191,7 +192,7 @@ func bollPumpStateViews(ctx context.Context, d *Deps, rows []model.BollPumpState
 
 func handleBollPumpStats(d *Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		stats, err := service.BollPumpStats(c.Request.Context(), d.Store, queryMarket(c), queryInt64(c, "since", time.Now().UnixMilli()-30*24*60*60*1000))
+		stats, err := service.BollPumpStats(c.Request.Context(), d.Store, queryMarket(c), queryInt64(c, "since", time.Now().UnixMilli()-30*24*60*60*1000), c.Query("side"))
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
