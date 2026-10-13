@@ -183,50 +183,10 @@ func bollPumpStateViews(ctx context.Context, d *Deps, rows []model.BollPumpState
 	for _, row := range rows {
 		out = append(out, bollPumpStateView{
 			BollPumpState:     row,
-			DominantTimeframe: bollPumpDominantTimeframe(row, bySymbol[row.Symbol]),
+			DominantTimeframe: service.BollPumpDominantTimeframe(row, bySymbol[row.Symbol]),
 		})
 	}
 	return out, nil
-}
-
-func bollPumpDominantTimeframe(row model.BollPumpState, peers []model.BollPumpState) string {
-	baseRank := bollPumpTimeframeRank(row.Timeframe)
-	if baseRank < 0 {
-		return row.Timeframe
-	}
-	best := row.Timeframe
-	bestRank := 99
-	for _, peer := range peers {
-		rank := bollPumpTimeframeRank(peer.Timeframe)
-		if rank <= baseRank || rank >= bestRank {
-			continue
-		}
-		if peer.PriorityScore < 70 || peer.Status == string(service.BollPumpStatusInvalidated) {
-			continue
-		}
-		best = peer.Timeframe
-		bestRank = rank
-	}
-	return best
-}
-
-func bollPumpTimeframeRank(tf string) int {
-	switch tf {
-	case "1m":
-		return 0
-	case "3m":
-		return 1
-	case "5m":
-		return 2
-	case "15m":
-		return 3
-	case "30m":
-		return 4
-	case "1h":
-		return 5
-	default:
-		return -1
-	}
 }
 
 func handleBollPumpStats(d *Deps) gin.HandlerFunc {

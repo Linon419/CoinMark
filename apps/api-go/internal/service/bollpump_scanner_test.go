@@ -53,7 +53,7 @@ func TestBollPumpScannerScansOneTimeframe(t *testing.T) {
 	cfg.MinimumTrendGainPct = 0.001
 	cfg.MinimumTrendRisingRatio = 0.1
 	source := &fakeBollPumpSource{
-		bars:  map[string][]BollPumpBar{"15m": bollPumpFixtureQuietBaseThenResistanceBreakout("15m")},
+		bars:  map[string][]BollPumpBar{"15m": bollPumpWithHistory(bollPumpFixtureQuietBaseThenResistanceBreakout("15m"), 150, 80)},
 		quote: map[string]float64{"XYZUSDT": 3_000_000},
 	}
 	scanner := NewBollPumpScanner(source, nil, cfg)
@@ -144,7 +144,7 @@ func TestBollPumpScannerAddsFourHourResistanceBreakoutScore(t *testing.T) {
 	cfg.MinimumTrendCheckCandles = 3
 	cfg.MinimumTrendGainPct = 0.001
 	cfg.MinimumTrendRisingRatio = 0.1
-	signalBars := bollPumpFixtureUntilFirstWatch("15m", cfg)
+	signalBars := bollPumpWithHistory(bollPumpFixtureUntilFirstWatch("15m", cfg), 150, 80) // 补足历史，EMA200 才算得出来
 	source := &fakeBollPumpSource{
 		bars: map[string][]BollPumpBar{
 			"15m": signalBars,
@@ -189,7 +189,7 @@ func TestBollPumpScannerAddsOIGrowthScoreToSignalAndState(t *testing.T) {
 	cfg.OIGrowthMinPct = 0.05
 	cfg.OIGrowthFullPct = 0.30
 	cfg.OIGrowthMaxBonus = 20
-	signalBars := bollPumpFixtureUntilFirstWatch("15m", cfg)
+	signalBars := bollPumpWithHistory(bollPumpFixtureUntilFirstWatch("15m", cfg), 150, 80) // 补足历史，EMA200 才算得出来
 	source := &fakeBollPumpSource{
 		bars:  map[string][]BollPumpBar{"15m": signalBars},
 		quote: map[string]float64{"XYZUSDT": 3_000_000},

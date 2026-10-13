@@ -124,11 +124,18 @@ func (s *BollPumpScanner) ScanTimeframe(ctx context.Context, timeframe string) B
 		latestOpen := bars[len(bars)-1].OpenTimeMs
 		var resistanceBreakout bollPumpResistanceBreakoutResult
 		resistanceChecked := false
+		emaPass, emaChecked := false, false
 		for i := 0; i < len(bars); i++ {
 			out := AdvanceBollPumpState(&state, bars[:i+1], ind[:i+1], quoteVolume, s.cfg)
 			for _, sig := range out.Signals {
 				if s.store != nil && sig.CandleStartMs != latestOpen {
 					continue
+				}
+				if !emaChecked {
+					emaPass, emaChecked = s.emaGate(ctx, symbol, timeframe), true
+				}
+				if !emaPass {
+					continue // 触发周期或主导周期没站上 EMA100/EMA200
 				}
 				gate := checkTrend()
 				if !resistanceChecked {
